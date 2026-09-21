@@ -1,0 +1,701 @@
+# lite-loglogn Research Notes
+
+**Status**: Living research document
+**Scope**: Design decisions, theoretical anchors, and experimental directions for a tree-shakeable,
+zero-GC family of **sub-logarithmic integer data structures** in JavaScript/TypeScript that doubles as a
+teachable textbook -- each member solves a real predecessor/successor/ordered-integer problem AND proves
+that it beats O(log n) by exploiting a bounded integer universe under the word-RAM model. It is the
+deliberate O(log log U) sibling of [[lite-logn]] (O(log n)) and [[lite-o1]] (O(1)); the three span the
+"how fast is your structure, and can you prove it?" spectrum from the constant, through the logarithm, to
+the double-logarithm.
+
+> **The one honesty that governs everything below**: these structures are O(log log **U**) in the
+> UNIVERSE size U (the key bit-width), NOT O(log log n) in the element count. They win ONLY for integer
+> keys drawn from a bounded universe [0, U). Outside that niche they lose to [[lite-logn]]'s comparator
+> structures. The package name is the banner; the bound, the model, and the space cost are stated on every
+> member. See sections 2 and 5.
+
+---
+
+## 1. Core Identity
+
+- **The complexity class IS the product.** Every member's headline op (predecessor / successor / member /
+  min / max over an ordered integer domain) is O(log log U) -- worst-case (van Emde Boas), or expected /
+  amortized (y-fast trie) -- and the library's job is to PROVE the double-logarithm, not assert it (see
+  section 2). "O(log log U)" without evidence is a claim; the witness makes it a shape you can see.
+- **Bounded integer universe, word-RAM model.** Keys are w-bit integers in [0, U), U = 2^w. The
+  sub-logarithmic bound depends on standard arithmetic and bitwise ops on a w-bit word being O(1) (the
+  word-RAM model). In JS that means w <= 32 naturally (bitwise ops are 32-bit); wider universes need a
+  labeled split-word or BigInt variant (section 5). `null` is not zero; an absent key returns `undefined`,
+  never key 0. Fail closed on every unverified state.
+- Zero garbage collection on the steady-state hot path (0 B/op). This is the family's HARDEST problem yet:
+  a textbook vEB is a RECURSIVE tree of cluster objects, an x-fast trie is w hash tables of node objects --
+  both allocate per level. lite-loglogn removes it by flattening every recursion into typed arrays and
+  bit-packed level tables (see "the honest unifying thread").
+- Structure-of-Arrays (SoA) + typed-array substrate for cache locality. Ordering is by the integer key
+  itself (the universe is the order) -- never by boxing keys into comparator objects.
+- Tree-shakeable: import ONE structure and extend it. No barrel forces the others into the bundle.
+- Single-file ESM per package, zero runtime dependencies, `node:test` only, ASCII-only source.
+- **"Measure the double-logarithm, and state the space" as the primary product differentiators** (sections
+  2 and 5). Speed is half the story here; space is the other half, and the honest members say so.
+
+The library does not compete on generality with a comparator BST, nor on breadth with a collections
+package. It wins on a narrow, sharp axis: the integer predecessor/successor structures that actually beat
+O(log n) when your keys are bounded integers (entity IDs, timestamps compressed into a universe, ports,
+LBAs, priorities), each zero-GC, each shipped with a harness that DEMONSTRATES the doubly-logarithmic cost
+curve against an O(log n) foil, and each written to teach the trick -- recursing on the universe, not on
+the data -- that buys the log log.
+
+### The honest unifying thread
+
+O(log log U) structures are heterogeneous the same way the O(log n) family is: a van Emde Boas tree, an
+x-fast trie, and a fusion tree share no single swappable interface. What unifies them is:
+
+1. **The complexity guarantee** -- every member's headline op is O(log log U) (or O(log_w U) for the
+   stratified-bitset member), ALWAYS labeled which flavor: worst-case, expected, or amortized (section 5),
+   and ALWAYS in U, never in n.
+2. **The bounded-integer domain** -- keys are w-bit integers in [0, U); the order is the integer order.
+   Every member supports the predecessor/successor spine (`has` / `min` / `max` / `successor(x)` /
+   `predecessor(x)` / `add` / `delete`); structure-specific extras extend it.
+3. **The recurse-on-the-universe substrate** -- two shapes, chosen per member:
+   - **Array-embedded / bit-packed** structures (the stratified hierarchical bitset; a flattened vEB
+     layout) live in flat `Uint32Array`s with implicit index arithmetic (`x >>> 5` to climb a summary
+     level, `& 31` for the bit) -- no nodes at all, naturally zero-GC. The count-trailing-zeros /
+     count-leading-zeros word primitive (`Math.clz32`) is the O(1) word-RAM op the whole family leans on.
+   - **Pointer-free node/level tables** (x-fast / y-fast trie) replace `new Node` and hash-table objects
+     with open-addressing `Uint32Array` level tables (one bit-prefix table per trie level) plus a
+     pointer-free representative index. A "pointer" is an integer index; a "null pointer" is a reserved
+     sentinel (`NIL = 0`). This is the family's teachable substrate and the counterpart to [[lite-logn]]'s
+     `NodePool` and [[lite-o1]]'s `SlotPool` -- reconcile, do not fork (section 6).
+4. **The doubly-logarithmic-growth witness** -- one measurement harness (section 2) proves the log log for
+   every member the same way: a straight line against `log2(w)` (the universe bit-width axis), far flatter
+   than the O(log n) foil.
+
+The predecessor/successor spine DOES fit every member here (unlike the heterogeneous O(log n) family),
+because the whole package is about one operation: "given x, what is the nearest present key?" over a
+bounded integer universe. That shared spine is a real asset lite-logn could not claim.
+
+---
+
+## 2. The Analytical Anchor: The O(log log U) Witness (doubly-logarithmic growth)
+
+### Why it belongs in the project
+
+lite-lru's killer feature is "% of Belady optimal." lite-filter's is "measured vs theoretical FPR."
+[[lite-o1]]'s is the **O(1) Witness** (flat ops/ms). [[lite-logn]]'s is the **O(log n) Witness** (a
+straight line vs `log2(n)`). lite-loglogn inherits the discipline (measure the real structure against a
+provable reference, never a marketing number) but its anchor is a different, subtler shape:
+
+> **lite-loglogn's analytical anchor is doubly-logarithmic growth made visible: per-op cost that rises by
+> a CONSTANT ADDITIVE STEP each time the universe BIT-WIDTH `w` DOUBLES (i.e., each time `log U` doubles)
+> -- one extra level of the universe recursion per doubling of the bit-width. The bound is O(log log U).**
+
+The critical twist versus lite-logn: the independent variable is NOT `n`, it is the universe bit-width `w
+= log2(U)`. Plot per-op time against `log2(w)` and an O(log log U) structure draws a STRAIGHT LINE:
+doubling the bit-width (16-bit keys -> 32-bit keys) adds one constant step of work. Because `w` itself
+only ranges over a handful of values in practice (16, 24, 32, ... up to 32 in JS), the ABSOLUTE movement
+is tiny -- and that near-flatness, contrasted with an O(log n) structure whose cost climbs steadily with
+`n` on the SAME data, is exactly the theorem made visible.
+
+Two complementary sweeps make the shape legible, and the witness runs BOTH:
+
+- **The U-sweep (the defining shape).** Hold `n` fixed (a dense-enough fill), sweep the universe
+  `U = 2^16, 2^20, 2^24, 2^28, 2^32`. ns/op vs `log2(w)` is the doubly-logarithmic straight line; the fit
+  `nsPerOp = intercept + slope*log2(w)` gives `R^2 >= floor` and a small `slope`. (For the stratified
+  bitset the natural axis is `w` itself, giving O(log_w U) = O(w / log w) levels -- still far flatter than
+  log n; the member declares which axis it fits.)
+- **The n-sweep (the payoff vs the foil).** Hold `U` fixed at 32 bits, sweep `n = 1e3 .. 1e7`. The
+  member's ns/op stays NEARLY FLAT (its cost is bounded by `log log U <= 5`, independent of n) while the
+  O(log n) foil -- a balanced BST / skip list, or [[lite-logn]]'s own members -- climbs its straight
+  `log2(n)` line and crosses above the member as `n` grows. This is the "why you would ever use this"
+  panel.
+
+**Why it is a killer feature**:
+
+- "A vEB tree is fast" is meaningless without the axis. "vEB predecessor's ns/op fits `a + b*log2(w)` with
+  R^2 = 0.98, slope ~ constant across w = 16..32, and on a fixed 32-bit universe it stays flat at ~X ns/op
+  from n=1e3 to n=1e7 while a red-black-tree foil climbs from Y to 3Y" is immediately convincing: the
+  double-log is real, it is bounded by the WORD SIZE not the data, and it overtakes the O(log n) default a
+  working programmer would reach for.
+- Almost no JS library ships an O(log log U) integer structure at all, let alone the evidence that the
+  bound survives a real engine (megamorphic sites, GC, cache misses) AND an honest accounting of its space
+  cost. This one does both.
+
+### The witness, precisely
+
+Per member, over each sweep:
+
+- **ns/op at each point** across the geometric sweep (U-sweep: over w; n-sweep: over n).
+- **The log-linear fit** on the U-sweep: least-squares `nsPerOp = intercept + slope * log2(w)`.
+  O(log log U) => high `R^2` (a straight line fits vs `log2(w)`) and a small bounded `slope`. An
+  accidentally-O(log U) member (e.g. an x-fast UPDATE path) would fit `log2(w)` poorly but fit `w` well --
+  the harness fits both axes and reports which wins, so a mislabeled bound is caught.
+- **The crossover** on the n-sweep: the `n` at which the member's ns/op drops below the O(log n) foil's.
+  Reported as a fact ("wins for n above ~K on a 32-bit universe"), the honest answer to "is this worth it
+  for my size?"
+- **Step constancy**: the first-difference of ns/op per bit-width doubling should stay ~constant. A rising
+  trend betrays a hidden O(log U) or O(w) term masquerading as O(log log U).
+
+Paired with the suite's zero-alloc proof (`0 B/op` via lite-leak + lite-gc-profiler) AND the space report
+(section 5), the witness closes all THREE parts of an honest O(log log U) claim: **the double-log is a
+straight line, there is no per-op allocation, and the space cost is stated.** Space is not optional
+color here -- a vEB's O(U) space is the reason the whole niche is "bounded universe," so the space number
+sits beside the speed number, always.
+
+### Reference harness (the witness)
+
+```js
+/**
+ * The O(log log U) Witness: doubly-logarithmic growth under a growing universe.
+ *
+ * U-sweep: times a fixed batch of the hot op at each universe bit-width w, reports ns/op,
+ * then fits ns/op = intercept + slope*log2(w). O(log log U) => a straight line vs log2(w)
+ * with a small slope; an O(log U) impostor fits w (not log2(w)) far better -- so the
+ * harness fits BOTH axes and returns both R^2 values, and the caller asserts the log2(w)
+ * fit wins. Warms up to defeat JIT tiering, then measures. An OFFLINE proof tool, never a
+ * hot-path dependency.
+ *
+ * @param {(w:number)=>{op:(i:number)=>void}} build  builds a warmed structure over a
+ *                                                   universe of 2^w keys and returns its
+ *                                                   hot op closure
+ * @param {number[]} widths   bit-width sweep, ascending (e.g. [16,20,24,28,32])
+ * @param {number}   batch    ops timed per width (fixed, so ns/op is comparable)
+ * @returns {{rows:{w,opsPerMs,nsPerOp}[], slopeLogW:number, r2LogW:number, slopeW:number, r2W:number, steps:number[]}}
+ */
+export function logLogWitness(build, widths, batch) {
+    const rows = [];
+    for (let s = 0; s < widths.length; s++) {
+        const w = widths[s] | 0;
+        const { op } = build(w);
+        for (let i = 0; i < batch; i++) op(i);            // warm-up: tier up to optimized code
+        const t0 = performance.now();
+        for (let i = 0; i < batch; i++) op(i);
+        const dt = performance.now() - t0;
+        rows.push({ w, opsPerMs: dt > 0 ? batch / dt : Infinity, nsPerOp: dt > 0 ? (dt * 1e6) / batch : 0 });
+    }
+    const ys = rows.map(r => r.nsPerOp);
+    const fit = (xs) => {                                  // least-squares slope + R^2 of ys vs xs
+        const m = xs.length;
+        let sx = 0, sy = 0, sxx = 0, sxy = 0;
+        for (let i = 0; i < m; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; sxy += xs[i] * ys[i]; }
+        const denom = m * sxx - sx * sx;
+        const slope = denom !== 0 ? (m * sxy - sx * sy) / denom : 0;
+        const intercept = (sy - slope * sx) / m;
+        let ssTot = 0, ssRes = 0; const ymean = sy / m;
+        for (let i = 0; i < m; i++) {
+            const pred = intercept + slope * xs[i];
+            ssRes += (ys[i] - pred) * (ys[i] - pred);
+            ssTot += (ys[i] - ymean) * (ys[i] - ymean);
+        }
+        return { slope, r2: ssTot > 0 ? 1 - ssRes / ssTot : 0 };
+    };
+    const logW = fit(rows.map(r => Math.log2(r.w)));       // the O(log log U) axis
+    const linW = fit(rows.map(r => r.w));                  // the O(log U) impostor axis
+    const steps = [];                                      // ns added per bit-width doubling
+    const lx = rows.map(r => Math.log2(r.w));
+    for (let i = 1; i < ys.length; i++) steps.push((ys[i] - ys[i - 1]) / ((lx[i] - lx[i - 1]) || 1));
+    return { rows, slopeLogW: logW.slope, r2LogW: logW.r2, slopeW: linW.slope, r2W: linW.r2, steps };
+}
+```
+
+### The foil (making the shape legible)
+
+Every member's bench ships two foils on the identical data, so the reader sees the payoff and the price:
+
+- **The O(log n) foil (the payoff).** A balanced BST / skip list from [[lite-logn]] (or a sorted array
+  with binary search) doing the SAME predecessor/successor queries. On the n-sweep at a fixed 32-bit
+  universe, the member stays flat (log log U) while the foil climbs log n and is overtaken -- the honest
+  "this is when the double-log wins" picture. This is the primary foil.
+- **The O(1) hash-set counter-foil (what you give up in ORDER, what they give up in SPACE).** A native
+  `Set` answers `has` in O(1) but CANNOT answer `successor`/`predecessor`/`min` without an O(n) scan; the
+  bench shows the `Set` winning raw membership and losing the moment order is required -- and, on the
+  space axis, shows the member's universe-proportional footprint versus the `Set`'s n-proportional one
+  (the honest reverse: sometimes the hash set is the right tool precisely because of space).
+- **The naive bitset foil (the family's own poor cousin).** A single flat bitset answers `has` in O(1)
+  but `successor` by a linear word scan (O(U/w)); the stratified member adds the summary pyramid to make
+  that scan O(log_w U). Showing both makes the summary hierarchy's value legible.
+
+---
+
+## 3. The Benchmark Suite (the ecosystem MVP)
+
+**`benchmark/` is the flagship deliverable, not a supporting tool** -- exactly as in [[lite-o1]] and
+[[lite-logn]]. The O(log log U) Witness of section 2 is the analytical ANCHOR, but the growth shape is
+NECESSARY and far from SUFFICIENT: for this family especially, it hides the SPACE cost that defines the
+whole niche, plus latency tails, cache effects, GC jitter, and real workloads. The suite ships both
+TABLES and GRAPHS and compares every member against the language builtins (`Set`/`Map`) and against a
+[[lite-logn]] O(log n) baseline, so a user sees exactly where the library wins and where it does not.
+
+The witness (section 2) is dimension 1. **These are the same eight dimensions [[lite-o1]] defines** (the
+user's authoritative benchmark spec), adapted where O(log log U) changes the emphasis:
+
+1. **Growth shape + fit quality (the witness).** The U-sweep double-log fit AND the n-sweep crossover vs
+   the O(log n) foil. Reports which axis (log2(w) vs w) the member fits -- catching a mislabeled bound.
+2. **Latency distribution.** p50/p90/p99/p99.9/max per op, WITH and WITHOUT forced GC. The y-fast trie's
+   bucket splits/merges and any rehash of a level table produce a tail; the vEB's recursion is worst-case
+   flat -- the distribution proves which member is truly worst-case and which is amortized/expected.
+3. **Amortized cost over long mixed traces.** Millions of interleaved add/delete/successor ops; cumulative
+   cost/op should track `log log U`, not drift as the structure fills and empties.
+4. **MEMORY footprint and stability -- promoted to co-headline here.** Bytes per LIVE element AND bytes
+   per UNIVERSE slot. This is THE dimension for this package: a vEB is O(U) (a 2^24 universe is already
+   heavy; 2^32 is infeasible), an x-fast trie is O(n*w), a y-fast trie is O(n), a stratified bitset is
+   O(U/w). The suite plots footprint vs both U and n so the reader sees exactly which member to pick for
+   their density. High-water after fill -> delete -> refill; retained bytes after `clear()`.
+5. **Cache and memory-subsystem behaviour.** Array-embedded/bit-packed members (stratified bitset,
+   flattened vEB) are cache-friendly; the level-table members chase indices across `Uint32Array`s. The
+   `Math.clz32` word primitive's throughput matters. Sequential vs random-key access gap.
+6. **GC pressure and allocation rate.** Allocs/op and total GC pause -- the axis that exposes a per-level
+   `new` in a naive recursive vEB. Extends the `0 B/op` gate into a curve.
+7. **Scalability across universe sizes, densities, and key distributions.** U = 2^16 .. 2^32; density
+   n/U from sparse to near-full; sequential vs random vs clustered vs adversarial key streams (clustered
+   keys are where a stratified bitset's summaries stay hot and where an x-fast trie's shared prefixes
+   matter). Load factor of the level tables.
+8. **Workload micro-benches.** Predecessor/successor sweeps (IP-longest-prefix-ish, interval stabbing by
+   nearest key), ordered iteration by repeated `successor`, min-drain (priority-queue-by-integer-key),
+   nearest-timestamp lookup, gap-finding (`successor(x) - x`).
+
+> **Authoritative steer (user, 2026-09-16):** the eight-dimension benchmark suite is **COMPLETE** and is
+> NOT to be reinvented. lite-o1 shipped it as Bench v2 -- the full-rigor blueprint (strong baselines +
+> bootstrap CI + Mann-Whitney + overhead-subtraction + a load-factor curve) with a `Template.mjs` and a
+> `METHODOLOGY.md` **written expressly for the siblings to copy**. lite-loglogn ADOPTS that framework
+> wholesale: copy the harness, the child-process-per-cell orchestrator, the honesty header, the vacuity
+> gate, and the inline-SVG report renderer verbatim, then swap in only what is genuinely O(log log U)-
+> specific -- the U-sweep double-log FIT (both axes, section 2) in dimension 1, the O(log n) [[lite-logn]]
+> foil with its crossover, and the MEMORY kernel (footprint vs U AND vs n), which is this family's
+> co-headline dimension. There is no "design the suite" session and no reuse-vs-fork question: the suite
+> exists as a dev-only shared blueprint; the member-specific work is a port plus the memory kernel and the
+> double-log fit, not a rebuild.
+
+---
+
+## 4. The Candidate Roster (all candidates)
+
+O(log log U) here means the HEADLINE op; every member states its exact bound, its flavor (worst-case /
+expected / amortized), AND its space bound (the honesty co-headline, section 5). Build order is one concept
+per release, simplest-and-most-implementable-zero-GC first. **The roster folds in the user's candidate
+list (van Emde Boas, x-fast trie, y-fast trie, fusion tree) as the authoritative input, plus the
+stratified bitset as the practical array-embedded entry point.**
+
+### Tier 1 -- core roster (the members to ship)
+
+| Structure        | Headline op(s)                                   | Time bound (flavor)          | Space   | Why it earns a slot |
+|------------------|--------------------------------------------------|------------------------------|---------|---------------------|
+| **StratifiedBitset** | add / delete / has / successor / predecessor / min / max | O(log_w U) worst-case (w=32) | O(U/w)  | The array-embedded, naturally-zero-GC ENTRY POINT -- a pyramid of `Uint32` summary words, find-next via `clz32`. Not strictly O(log log U) (it is O(log_w U) = a handful of levels for 32-bit keys), but it TEACHES the "recurse on the universe" idea with real, correct, allocation-free code and gives the cleanest witness. The BinaryHeap-equivalent headline: simplest correct member first. |
+| XFastTrie        | successor / predecessor / has                     | successor O(log log U) worst; update O(w) | O(n*w)  | The teachable building block: a bit-prefix trie whose `successor` is a BINARY SEARCH over the `w` levels (O(log w) = O(log log U)). Introduces the level-table substrate. The honest caveat is baked in: fast query, O(w) update, O(n*w) space -- which y-fast then fixes. |
+| YFastTrie        | add / delete / successor / predecessor            | O(log log U) expected/amortized | O(n) | The PRACTICAL member: an x-fast trie over O(n/w) representatives + balanced buckets of O(w) keys, dropping space to O(n) and making update O(log log U) amortized. The "you can actually use this on a 32-bit universe" answer, and the space-fix teaching beat. |
+| vEBTree          | add / delete / has / successor / predecessor / min / max | O(log log U) worst-case      | O(U)    | THE named structure and the worst-case showpiece: every op deterministically O(log log U) via the recurse-on-sqrt(U) split (summary + clusters). Flattened into typed arrays for zero-GC. The O(U) space is the honest ceiling -- ship it for modest universes and cross-link y-fast for large ones. |
+
+### Tier 2 -- strong candidates (next releases)
+
+| Structure        | Headline op(s)                        | Bound (flavor)                 | Note |
+|------------------|---------------------------------------|--------------------------------|------|
+| FusionTree       | predecessor / successor                | O(log_w n) worst-case (static) | Word-level parallelism packs `w` keys into one machine word and compares in O(1); beats a BST only for large `w` and is notoriously subtle (sketch compression, most-significant-differing-bit). Likely a RESEARCH-track member with an honest "why this is hard and when it pays" note, not an early ship. In JS w=32 caps the win; label it. |
+| IntUniverseMap   | successor + a VALUE column (handle)    | inherits the chosen index      | Any Tier-1 member + a parallel value/handle column so it maps integer keys to payloads (the ordered-int-map use case), not just membership. A composition, shipped once the index members exist. |
+| SegmentedU       | 53-bit / split-word keys              | O(log log U) with a 2-level split | The honest answer to "JS bitwise is 32-bit": split a wider key into a high word (a Tier-1 structure) and low words, or use BigInt on a cold path. A labeled variant, not the default. |
+| EliasFano        | successor / predecessor / select / access | successor O(log(U/n)); select O(1) | The SUCCINCT monotone-sequence member: store a sorted set of n keys from [0, U) in ~`n(2 + log2(U/n))` bits -- near the information-theoretic minimum -- with `select(k)` (the k-th key) in O(1) via a rank/select bitvector and `successor` in O(log(U/n)). Old but gold (Elias 1974 / Fano). The space HERO of the family: where vEB is O(U) and y-fast is O(n) pointers, Elias-Fano is compressed n-proportional bits. STATIC (build-once from a sorted array). The niche: huge sparse sorted-integer sets, inverted-index postings, compressed successor. |
+| RoaringSet       | add / delete / has / successor / rank / iterate | O(1) has (amortized); O(log) successor | The PRACTICAL space-adaptive integer set: partition the 32-bit universe into 2^16 chunks, each stored as whichever container is smallest -- a sorted `Uint16` array (sparse), a bitset (dense), or a run-length list (clustered). The real-world workhorse (Lucene / Druid / Spark all ship Roaring). Not asymptotically exotic, but the honest "what you actually reach for when the density varies across the universe" member, with predecessor/successor and rank/select over the containers. The adaptivity is the teaching beat: no single representation wins every density. |
+
+### Tier 3 -- adjacent / substrate (evaluate; may fold in or cross-reference)
+
+| Structure        | Role                                   | Note |
+|------------------|----------------------------------------|------|
+| LevelTable       | open-addressing `Uint32Array` integer->slot table | The pointer-free hash substrate the x-fast / y-fast tries need. Shares DNA with [[lite-o1]]'s SparseSet and [[lite-logn]]'s NodePool -- reconcile, cross-link, do NOT fork (section 6). Substrate, not a headline member. |
+| clz/ctz helpers  | `Math.clz32`-based word primitives     | The O(1) word-RAM ops (highest/lowest set bit, next-set-bit-in-word). Possibly a tiny shared internal; if it grows, it belongs in [[lite-fastbit32]], not reimplemented here. |
+| RankSelectBits   | rank(i) / select(k) over a bitvector   | O(1) rank/select with an o(U) index | The succinct PRIMITIVE under EliasFano, RoaringSet, and any wavelet member: `rank(i)` = set bits <= i, `select(k)` = position of the k-th set bit, both O(1) via a two-level (superblock + block) `Uint32` index costing o(U) extra bits (rank9 / poppy layout). Substrate, not a headline member -- but the reusable engine three Tier-1/2 members lean on. Shares DNA with StratifiedBitset's summary pyramid; reconcile, do NOT fork. |
+
+### Tier 4 -- exotic but a golden niche (research track; each a dedicated future member with an honest "when it pays" note)
+
+The far corners of the bounded-integer / succinct-predecessor literature. Each owns a niche no Tier 1-2
+member covers; each is "old but gold" in its subfield; each ships ONLY with the witness AND the honest
+caveat (expected-not-worst-case, a distribution assumption, or a within-a-word constant). Build any of
+these only after the core roster and only when a real use case names it.
+
+| Structure            | Headline op(s)                        | Bound (flavor)                        | The golden niche it owns |
+|----------------------|---------------------------------------|---------------------------------------|--------------------------|
+| ExponentialSearchTree | successor / predecessor / add / delete | O(log log n) or O((log log n)^2) DETERMINISTIC dynamic | The deterministic dynamic predecessor structure (Andersson-Thorup): O(log log U) WITHOUT the randomized hashing y-fast leans on. The "I need the double-log AND worst-case determinism" member. Subtle (a tree of exponentially-growing degree over sketched keys); the honest "here is the price of dropping the coin flip" teaching case. |
+| InterpolationSearchTree | successor / predecessor / member    | O(log log n) EXPECTED (smooth key distribution) | The distribution-aware member: for keys drawn from a smooth/near-uniform distribution, interpolation search hits O(log log n) EXPECTED -- and degrades to O(log n) / O(n) on adversarial keys, which the witness must show. Old but gold (Willard, Mehlhorn-Tsakalidis). The honest "measure YOUR key distribution" specialist, the loglogn cousin of lite-filter's "measure your own keys". |
+| WaveletMatrix        | rank / select / quantile / rangeCount  | O(log sigma) per op                    | Rank/select/quantile over a sequence from an integer alphabet -- the succinct range member. Overlaps [[lite-logn]]'s WaveletTree candidate; the boundary call is which package owns it (lean: the succinct/bit-packed WaveletMatrix form lives HERE, on the RankSelectBits substrate; the pointer form is lite-logn's). Cross-linked, not duplicated. |
+| DynamicFusionNode    | predecessor within one node            | O(1) predecessor over ~w^{1/2} keys    | The modern building block (Patrascu-Thorup): pack ~sqrt(w) keys into a single machine word and answer predecessor in O(1) by word-parallel comparison -- the deterministic dynamic replacement for a fusion-tree node. Deeply exotic, w=32-capped in JS; a research-track note on "how O(1)-within-a-word predecessor is even possible", not an early ship. |
+| VebLayoutSearch      | static predecessor over a sorted array | O(log n) but CACHE-OBLIVIOUS (van Emde Boas memory layout) | Not a new bound but a new LAYOUT: store a static search tree in van-Emde-Boas memory order so binary search is cache-oblivious (O(log_B n) block transfers with no knowledge of B). The bridge between the vEB NAME (recursion) and the vEB LAYOUT (memory); a beautiful teaching cross-link to lite-o1's cache-proxy benchmark dimension. Static. |
+
+### The boundary -- explicitly NOT in lite-loglogn (out of scope, and why)
+
+Naming the boundary is the honesty discipline (as lite-lru kept LIRS out of v1, lite-o1 keeps heaps out,
+and lite-logn keeps vEB out -- pointing HERE). These are fine structures, but they do not belong here:
+
+- **O(1) integer structures** -- sparse set, ring deque, union-find, bucket queue, hash map. That is
+  [[lite-o1]]. A bounded-integer priority queue by bucket is O(1) (Dial); lite-loglogn's members answer
+  ORDER (predecessor/successor), which a bucket queue cannot in O(1).
+- **O(log n) comparator structures** -- binary heap, skip list, Fenwick, segment tree, balanced BST. That
+  is [[lite-logn]]. lite-loglogn beats O(log n) ONLY by requiring bounded INTEGER keys; the moment keys
+  are general comparables or the universe is unbounded, the correct tool is a lite-logn member. The README
+  must say this in the first screen.
+- **General comparator keys / strings / floats-as-keys** -- the word-RAM trick needs integer keys in a
+  known universe. Float or string keys must be order-preservingly encoded into integers by the CALLER (a
+  documented recipe), or they belong in lite-logn.
+- **Unbounded / 64-bit-plus universes on the hot path** -- JS bitwise ops are 32-bit. A > 32-bit universe
+  is a labeled `SegmentedU` variant (Tier 2) or out of scope; never a silent BigInt hot path.
+- **Approximate membership / sketches** -- Bloom/quotient/cuckoo/HLL are [[lite-filter]]. lite-loglogn is
+  EXACT.
+
+If a use case wants "sub-logarithmic but the keys are not bounded integers," the honest answer is: there
+is no such deterministic structure -- use [[lite-logn]]. lite-loglogn holds the line at the
+double-logarithm precisely because it holds the line at the bounded integer universe.
+
+---
+
+## 5. The Honesty Hooks (bound-in-U, the flavor, and the SPACE price)
+
+This family carries THREE honesty hooks, one more than its siblings, because the double-logarithm comes
+with strings the reader must see:
+
+**(a) The bound is in U, not n.** O(log log U) is stated with U, always. For 32-bit keys `log log U <= 5`,
+so on a FIXED universe these are effectively small-constant-time structures whose win over O(log n) is a
+real but BOUNDED factor that only materializes as `n` grows past the crossover (section 2's n-sweep). The
+witness reports the crossover `n` as a fact; the README never implies "log log U beats log n" without "for
+n above K on a w-bit universe." Conflating log log U with log log n is the dishonesty this family refuses.
+
+**(b) The time flavor.** Like lite-logn:
+- **Worst-case O(log log U)** -- vEB, StratifiedBitset (as O(log_w U)). Every single op is bounded. The
+  strongest promise; preferred for the core.
+- **Expected / amortized O(log log U)** -- y-fast trie (bucket splits/merges amortize; the representative
+  BSTs are expected). Ship deterministic seeding where RNG is involved, document the tail, let the witness
+  report the ACTUAL distribution. This is lite-loglogn's "measure your own workload."
+The witness reports MAX single-op time so an amortized spike or a rehash shows as a tall bar.
+
+**(c) The SPACE price -- the defining caveat (this family's BlockedBloom-FPR-floor).** Speed is only half
+an honest claim here; the other half is footprint, and it is stated on every member with the SAME
+prominence as the time bound:
+- **vEB: O(U).** A 2^24 universe is ~megabytes of summary/cluster arrays even for a handful of keys; 2^32
+  is infeasible. vEB is for MODEST universes; the card and README say so and point to y-fast for large U.
+- **x-fast: O(n*w).** Fast query, but w level-entries per key.
+- **y-fast: O(n).** The space fix -- the practical member for large universes.
+- **StratifiedBitset: O(U/w).** One bit per universe slot plus the summary pyramid (~1/31 overhead);
+  excellent when the universe is modest OR dense, independent of a per-key node cost.
+The benchmark's dimension 4 (memory) is a co-headline, not an afterthought, precisely because of this.
+
+Fixed-capacity / fixed-universe members that fail closed (rather than silently growing a level table and
+paying an amortized rehash) are PREFERRED, matching the suite's "fail closed on every unverified state"
+law. Where growth is offered (the level tables), its amortized cost and its rehash tail are labeled.
+
+---
+
+## 6. Boundaries with sibling packages (no duplication)
+
+The suite ships one clear niche per package. lite-loglogn must not re-implement what a sibling owns:
+
+- **[[lite-logn]]** (the O(log n) family) is the closest sibling and the intended pair: lite-logn holds
+  the logarithm with GENERAL comparator keys; lite-loglogn beats it to the double-logarithm by REQUIRING
+  bounded integer keys. Cross-link heavily; the O(log n) foil in every lite-loglogn witness IS a lite-logn
+  member (or an equivalent), and the "when do I use which" table lives in both GUIDEs. Keep the witness
+  harnesses recognizably kin (flat / straight-log / straight-loglog lines, same fit machinery).
+- **[[lite-o1]]** (the O(1) family) -- a bounded-integer O(1) membership/priority need goes there
+  (SparseSet, Dial). lite-loglogn is chosen only when ORDER (predecessor/successor) is required.
+- **NodePool / LevelTable / lite-o1 `SlotPool` / lite-arena** -- ONE free-list / open-addressing integer
+  substrate across the suite. The x-fast/y-fast level tables and lite-o1's SparseSet and lite-logn's
+  NodePool are the same DNA; reconcile ownership before the first level-table member. Do NOT fork. (The
+  single most important cross-package call, shared with lite-logn.)
+- **[[lite-fastbit32]]** (branchless 32-bit flag manager) -- the `clz32`/`ctz`/next-set-bit word
+  primitives the stratified bitset needs are its territory; use it as a policy-local dev dependency or
+  cross-link the recipe, never a reimplementation that drifts.
+- **[[lite-filter]]** owns approximate membership; lite-loglogn is EXACT. No overlap.
+
+---
+
+## 7. Reference Implementation: StratifiedBitset (the headline member)
+
+The cleanest demonstration of "recurse on the universe" with real, correct, allocation-free code:
+array-embedded, no nodes, no level tables. A pyramid of `Uint32` bitsets, each higher level a summary of
+the level below (one bit per 32 words), so `successor` climbs to find the next nonzero summary and
+descends picking the lowest set bit -- O(log_w U) levels, each a single `clz32`-class word op.
+
+```js
+/**
+ * StratifiedBitset -- a zero-GC sub-logarithmic integer set over a bounded universe [0, U).
+ *
+ * Bits live in a pyramid of Uint32Array levels: level 0 is the raw bitset (U bits), and
+ * each higher level has one bit per 32-bit WORD of the level below (set iff that word is
+ * nonzero). add/delete/has are O(levels); successor/predecessor climb to the next nonzero
+ * summary then descend by lowest/highest set bit. levels = ceil(log32(U)) -- 7 for U=2^32.
+ * That is O(log_w U): a handful of `clz32` word ops, no allocation per op, no nodes. `null`
+ * is not zero: an absent successor returns undefined, never key 0.
+ *
+ * Space is O(U/w) (~1.03 bits per universe slot) -- footprint scales with the UNIVERSE, the
+ * family's defining trade (section 5). Best for modest or dense universes.
+ */
+export class StratifiedBitset {
+    constructor(universe) {
+        if (!Number.isInteger(universe) || universe < 1 || universe > 2 ** 32)
+            throw new RangeError("[lite-loglogn] universe must be an integer in [1, 2^32]: " + String(universe));
+        this._u = universe;
+        this._levels = [];
+        let words = Math.ceil(universe / 32);
+        for (;;) {                                   // build the summary pyramid bottom-up
+            this._levels.push(new Uint32Array(words));
+            if (words <= 1) break;
+            words = Math.ceil(words / 32);
+        }
+        this._size = 0;
+    }
+
+    get size() { return this._size; }
+    get universe() { return this._u; }
+
+    /** Membership. O(1). A bad key is ABSENT, never a throw (null is not key 0). */
+    has(x) {
+        if (typeof x !== "number" || (x >>> 0) !== x || x >= this._u) return false;
+        return (this._levels[0][x >>> 5] & (1 << (x & 31))) !== 0;
+    }
+
+    /** Insert x. O(levels): set the bit at every level. Fail closed on a bad key. */
+    add(x) {
+        if (typeof x !== "number" || (x >>> 0) !== x || x >= this._u)
+            throw new RangeError("[lite-loglogn] key out of universe [0, " + this._u + "): " + String(x));
+        if (this.has(x)) return this;                // idempotent; size counts distinct keys
+        let idx = x;
+        for (let L = 0; L < this._levels.length; L++) {
+            this._levels[L][idx >>> 5] |= (1 << (idx & 31));
+            idx >>>= 5;                              // one summary bit per 32 words below
+        }
+        this._size++;
+        return this;
+    }
+
+    /** Remove x. O(levels): clear upward while a word empties. true iff present. Never throws. */
+    delete(x) {
+        if (!this.has(x)) return false;
+        let idx = x;
+        for (let L = 0; L < this._levels.length; L++) {
+            const word = idx >>> 5, bit = 1 << (idx & 31);
+            this._levels[L][word] &= ~bit;
+            if (this._levels[L][word] !== 0) break;  // stop climbing once the word is still nonzero
+            idx = word;                              // the emptied word clears its summary bit above
+        }
+        this._size--;
+        return true;
+    }
+
+    /** Smallest present key >= x, or undefined. O(levels): climb to a nonzero summary, descend. */
+    successor(x) {
+        if (typeof x !== "number" || (x >>> 0) !== x) return undefined;
+        if (x >= this._u) return undefined;
+        let idx = x, L = 0;
+        // Climb: at each level, mask the current word for bits at/above idx; if none, go up.
+        for (; L < this._levels.length; L++) {
+            const word = idx >>> 5;
+            const masked = this._levels[L][word] & (0xFFFFFFFF << (idx & 31)); // bits >= idx in this word
+            if (masked !== 0) { idx = (word << 5) + ctz32(masked); break; }    // found in this word
+            idx = (word >>> 5) + 1;                  // advance to the next word's summary position
+            if ((idx << (5 * L)) >= this._u && L + 1 >= this._levels.length) return undefined;
+        }
+        if (L >= this._levels.length) return undefined;
+        // Descend: from the summary bit just found, pick the lowest set bit at each lower level.
+        for (; L > 0; L--) {
+            L--;                                     // paired step handled by the loop body below
+            const child = this._levels[L][idx];
+            idx = (idx << 5) + ctz32(child);
+            L++;
+        }
+        return idx < this._u ? idx : undefined;
+    }
+
+    /** The minimum present key, or undefined. O(levels): descend from the top summary. */
+    min() {
+        const top = this._levels[this._levels.length - 1];
+        if (top[0] === 0 && this._size === 0) return undefined;
+        let idx = 0;
+        for (let L = this._levels.length - 1; L >= 0; L--) {
+            const child = this._levels[L][idx];
+            if (child === 0) return undefined;
+            idx = (idx << 5) + ctz32(child);
+        }
+        return idx < this._u ? idx : undefined;
+    }
+
+    /** Empty in O(total words): zero every level. Not a hot-path op. */
+    clear() { for (let L = 0; L < this._levels.length; L++) this._levels[L].fill(0); this._size = 0; }
+}
+
+/** Count trailing zeros of a nonzero 32-bit word, via clz32 -- the O(1) word-RAM primitive. */
+function ctz32(v) { return 31 - Math.clz32(v & -v); }
+```
+
+The teaching beat: `add`/`delete`/`successor` each touch one word per level, and there are
+`ceil(log32(U))` levels (7 for a full 32-bit universe), so the cost is a small constant number of `clz32`
+word ops -- the witness's near-flat line, made of bitwise ops and zero allocation. The foil (a lite-logn
+skip list, or a single flat bitset scanned linearly for the successor) climbs off that line as the data
+grows or the gaps widen. (The `successor` descend loop above is written to show the climb/descend
+structure; the coder session will tighten its index bookkeeping and prove it against a brute-force oracle
+-- see section 11's threshold note.)
+
+Why it is the headline (the BinaryHeap-equivalent, per lite-logn): it is the ONE member that is fully
+array-embedded, provably zero-GC with no substrate to settle first, correct in a page of code, and gives
+the cleanest witness -- so it brings up the `logLogWitness` harness and the standing torture/perf gates in
+session 1, before the harder recursive/level-table members.
+
+---
+
+## 8. Experimental Direction: the x-fast trie (the trick worth teaching)
+
+The member whose Big-O is most delightfully non-obvious and most in need of the witness: `successor` in
+O(log log U) by BINARY-SEARCHING the `w` levels of a bit-prefix trie. "How is finding the next integer a
+binary search over the KEY'S BITS rather than over the data?" is exactly the claim a reader should demand
+proof of.
+
+The idea (substrate to be finalized in its session, hence "direction," as lite-logn treated SkipList):
+
+- A key `x` of `w` bits has `w+1` prefixes (the empty prefix, the top bit, the top two bits, ...). Level
+  `k` holds the set of length-`k` prefixes that are prefixes of some present key -- stored as an
+  open-addressing `Uint32Array` LevelTable (prefix -> slot), NOT a hash of node objects.
+- A present prefix at level `k` records, on a leaf-threaded doubly-linked list of the actual keys, the
+  MIN and MAX key under it. The leaves (level `w`) are the keys themselves, threaded in sorted order by
+  `succ`/`pred` index columns (pointer-free).
+- **`successor(x)`**: binary-search the `w` levels for the LONGEST present prefix of `x` (present at level
+  `mid` => search longer; absent => search shorter). That longest present prefix's stored min/max leaf,
+  plus one hop on the threaded leaf list, is the successor. The binary search is `O(log w) = O(log log U)`
+  level probes, each an O(1) LevelTable lookup.
+- **`add`/`delete`**: touch all `w` levels (insert/remove each prefix) and splice the leaf thread --
+  O(w) = O(log U), and O(n*w) space. THIS is the honest caveat, and it is the whole motivation for the
+  y-fast trie (section 4): put only O(n/w) REPRESENTATIVES in the x-fast trie and hang balanced buckets of
+  O(w) keys off each, dropping space to O(n) and update to O(log log U) amortized.
+
+```js
+// Sketch of the successor binary-search over levels (the log log U heart):
+//   lo = 0, hi = w;  // search the prefix LENGTH
+//   while (lo < hi) {
+//       const mid = (lo + hi + 1) >> 1;
+//       if (levelTable[mid].has(x >>> (w - mid))) lo = mid;   // this prefix is present -> go longer
+//       else hi = mid - 1;                                    // absent -> go shorter
+//   }
+//   // levelTable[lo] holds the longest present prefix p of x; its stored min/max leaf +
+//   // one threaded-leaf hop gives successor(x). Each `has` is an O(1) Uint32 LevelTable probe;
+//   // the loop runs O(log w) = O(log log U) times. Zero allocation per query.
+```
+
+Why it is the "experimental direction" slot (the Fenwick / UnionFind counterpart in the siblings): the
+binary-search-over-bit-lengths is the trick that BUYS the double-log, it is invisible until you see it, and
+the witness turns "trust me, successor is O(log log U)" into a measured near-flat line across the U-sweep.
+The full zero-GC x-fast trie (LevelTable substrate + threaded pointer-free leaves) and its y-fast wrapper
+are their own sessions once the LevelTable ownership (section 6) is settled.
+
+---
+
+## 9. The Demo (in the style of lite-lru / lite-o1 / lite-logn)
+
+A repo-only dev artifact, never shipped in the tarball, modeled beat-for-beat on the siblings' demos:
+
+- **One shared op-stream fed to all members side by side.** The "trace" is a seeded stream of integer ops
+  (adds/deletes/successor/predecessor queries) over a chosen universe U and size n. Each panel is drawn
+  STRICTLY from that member's live `dump()`/`inspect()` snapshot -- no shadow state.
+- **The headline stat is the O(log log U) witness -- shown as TWO dials.** A ns/op reading with the
+  double-log fit, AND, crucially for this family, a bytes/element (or bytes/universe-slot) reading beside
+  it: the demo never shows speed without space. As you crank U up by orders of magnitude, the member's
+  latency point barely moves (the double-log) while its MEMORY dial climbs for vEB and holds for y-fast --
+  the trade-off made visible. A second lane runs the O(log n) [[lite-logn]] foil, whose latency climbs and
+  crosses above as n grows: the "when the double-log wins" moment, live.
+- **Each panel draws the STRUCTURE, from its snapshot.** StratifiedBitset: the summary pyramid, the
+  climb/descend path lighting up on each successor. vEB: the summary + clusters recursion, the O(log log U)
+  descent highlighted. x-fast/y-fast: the level tables and the binary-search-over-levels probing, the
+  threaded leaf list.
+- **Architecture mirrors the five-file demo.** `Visualize.mjs` (headless engine, imports only the package
+  main, Node-main prints a per-member ns/op + fit + bytes table), `renderers.mjs` (pure, one renderer per
+  member, each declares its snapshot `fields` + a `model(snap)` the test deep-equals against `dump()`),
+  `serve.mjs` (zero-dep http, computes the seeded op-stream + the foil timings, serves statics),
+  `visuals.html` (dark terminal-green, one canvas panel per member, controls: structure / workload / seed
+  / **U** / **n** / play / step / speed), `Demo.test.mjs` (model==dump, renderer teeth, determinism,
+  zero-alloc engine step, leak-free build/run/reset, fail-closed serve + fetch matrix).
+- **The honesty caveats rendered:** the max single-op bar for the amortized y-fast trie; the SPACE dial
+  always beside the speed dial; and a "universe" readout so the viewer never forgets the bound is in U.
+
+The demo and any build/insertion animations are their own later sessions, as with the siblings; the first
+demo shows steady-state ops + the doubly-logarithmic-growth witness + the space dial.
+
+---
+
+## 10. Recommended Path
+
+1. Settle the model + substrate FIRST (a short pre-member-1 discussion, section 11): the word-RAM /
+   bounded-universe framing and the EXACT identity wording (O(log log U), bound-in-U, space co-headline);
+   the LevelTable/NodePool ownership against [[lite-o1]]'s SlotPool / [[lite-logn]]'s NodePool /
+   lite-arena (so the x-fast/y-fast members do not fork an allocator); and the `clz32` word-primitive
+   boundary vs [[lite-fastbit32]].
+2. Ship **StratifiedBitset** as the headline member (array-embedded, provably zero-GC with no substrate to
+   settle first, the cleanest witness) + the `logLogWitness` harness (section 2, both sweeps) as a core
+   feature from day one, alongside the standing zero-alloc perf gate (@zakkster/lite-perf-gate).
+3. Add **XFastTrie** (the trick worth teaching -- binary search over levels; introduces the LevelTable
+   substrate) once LevelTable ownership is settled, then **YFastTrie** (the O(n)-space fix, the practical
+   member), then **vEBTree** (the worst-case recursive showpiece, flattened for zero-GC, O(U) space stated
+   up front).
+4. Ship the demo (section 9) once 3-4 members exist, so the witness comparison and the space dial have
+   range.
+5. **ADOPT the completed benchmark suite (section 3):** the eight-dimension framework is DONE in lite-o1
+   (Bench v2 -- `Template.mjs` + `METHODOLOGY.md` written for the siblings to copy). Port it verbatim,
+   then add the U-sweep double-log fit (dimension 1), the O(log n) foil + crossover, and the loglogn-
+   specific MEMORY kernel (footprint vs U AND n) promoted to co-headline. A copy-and-wire session (plus
+   the one new kernel), not a design-from-scratch one; do it once 3-4 members exist.
+6. Move into Tier 2: EliasFano (the succinct space hero, on a RankSelectBits substrate), RoaringSet (the
+   practical space-adaptive set), FusionTree (research-track, honest "when it pays" note), IntUniverseMap
+   (value column), SegmentedU (wider keys) -- one concept per release.
+7. **Tier 4 (exotic but a golden niche)** -- ExponentialSearchTree (deterministic dynamic log log n),
+   InterpolationSearchTree (expected log log n for smooth keys), WaveletMatrix (succinct range, boundary
+   with lite-logn), DynamicFusionNode (O(1)-within-a-word predecessor), VebLayoutSearch (the cache-
+   oblivious vEB LAYOUT) -- each a dedicated future member built ONLY when a real use case names it, each
+   shipped with the witness AND its honest caveat (expected-not-worst, a distribution assumption, or a
+   within-a-word constant). The "old but gold / exotic" reserve, not the near-term queue.
+8. Every member proven by `node --expose-gc test/torture.mjs` (0 B/op) AND the witness gate (the
+   double-log fit stays within its `R^2` floor and slope band across the U-sweep, and beats the O(log n)
+   foil past the reported crossover on the n-sweep) AND the perf gate AND a stated SPACE number. No gate
+   output is a FAIL.
+
+Cadence (per the user, mirroring lite-o1 / lite-logn): ONE member per session, DISCUSSION-DRIVEN -- the
+planner produces the spec, it comes back to the user to study and refine BEFORE any code, then
+coder -> reviewer -> qa + the torture, witness, and perf gates. A+ bar per member.
+
+---
+
+## 11. Open Questions
+
+- **The package name.** RECOMMENDED: `@zakkster/lite-loglogn` -- folder `LiteLogLogN` (already created),
+  single PascalCase main file `LogLogN.js`, error tags `[lite-loglogn]`; the exact parallel of
+  `lite-logn` / `LogN.js`. Rejected leans (confirm with the user): `lite-loglog` (drops the `n`, reads as
+  "log of a log" with no structure connotation) and `lite-log-log-n` (npm hyphen-token discoverability
+  problem, the same reason `lite-logn` beat `lite-log-n`). DECIDE before scaffolding.
+- **The identity wording -- the load-bearing call.** Is the package "strictly O(log log U)
+  (vEB/x-fast/y-fast), with StratifiedBitset as an O(log_w U) practical cousin," or "sub-logarithmic
+  bounded-integer predecessor/successor, spanning O(log_w U) to O(log log U)"? This decides the headline
+  member (StratifiedBitset vs vEB), the witness's primary axis, and every card. Lean: the latter, honest
+  framing with StratifiedBitset first -- but it is the user's call and shapes everything.
+- **The witness's fit thresholds.** What `R^2` floor and slope band make a fair, non-flaky gate across a
+  SHORT bit-width sweep (only ~5 points: w = 16..32) and CI noise? The short axis is the real risk -- fewer
+  points than lite-logn's n-sweep. Settle empirically in the StratifiedBitset session; expect the same
+  steady-window / median-of-9 / do-not-widen-the-floor discipline as lite-o1's flatness gate
+  (ADR-0004 amendment), and record it in an ADR. The n-sweep crossover vs the O(log n) foil may be the
+  more robust gate than the U-sweep fit -- decide which is the hard gate and which is reported.
+- **LevelTable / NodePool ownership.** Re-export lite-o1's `SlotPool`, depend on lite-arena, share
+  lite-logn's NodePool, or ship a separate open-addressing integer table? The single most consequential
+  cross-package call (section 6). Blocks x-fast/y-fast; StratifiedBitset and vEB (flattened) do not need
+  it, so it can wait until the XFastTrie session -- but decide the DIRECTION before member 1.
+- **The 32-bit ceiling.** JS bitwise ops are 32-bit, so the natural universe is <= 2^32. Is a 53-bit
+  (double-safe-integer) or 64-bit `SegmentedU` variant in scope, and is it a split-word Tier-1 concern or
+  a Tier-2 labeled variant? Lean: 32-bit default, `SegmentedU` as Tier 2.
+- **vEB flattening strategy.** Recursive-object vEB is the textbook form but allocates; the zero-GC form
+  flattens the summary+clusters recursion into typed arrays (a vEB-layout array, or an iterative
+  high/low-word split). Which flattening keeps the worst-case O(log log U) AND 0 B/op AND stays readable
+  enough to teach? Settle in the vEBTree session.
+- **Benchmark framework -- RESOLVED (user, 2026-09-16): ADOPT, do not fork or reinvent.** lite-o1's
+  Bench v2 is complete and shipped a `Template.mjs` + `METHODOLOGY.md` expressly for the siblings to copy.
+  lite-loglogn ports that harness verbatim (a dev-only shared blueprint, zero RUNTIME deps preserved) and
+  adds only the U-sweep double-log fit, the O(log n) crossover foil, and the loglogn-specific MEMORY
+  kernel (footprint vs U) as the co-headline dimension. The only open sub-questions are calibrating the
+  witness thresholds over the short bit-width sweep (the item above), not the harness.
+- **What does further user research add or reorder?** (This roster folds in the user's candidate list --
+  vEB, x-fast, y-fast, fusion -- plus the StratifiedBitset entry point; treat any additional notes as
+  authoritative input at planning time.)
+
+---
+
+*This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
+candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference
+implementations, and the demo direction for the lite-loglogn project. It is an internal research
+reference, modeled on lite-logn/RESEARCH.md and lite-o1/RESEARCH.md, and is a PLAN, not a go: no building
+until the user greenlights it, and every member's load-bearing design is settled with the user first.*

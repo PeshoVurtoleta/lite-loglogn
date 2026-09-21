@@ -1,0 +1,93 @@
+{
+  "name": "@zakkster/lite-loglogn",
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "version": "0.1.0",
+  "description": "Zero-dependency, zero-GC family of sub-logarithmic bounded-integer predecessor/successor data structures spanning O(log_w U) to O(log log U): StratifiedBitset (array-embedded O(log_w U) successor/predecessor over a hierarchical bit tree), XFastTrie (O(log log U) query over pointer-free LevelTables), YFastTrie (the O(n)-space fix over x-fast representatives), and vEBTree (flattened van Emde Boas) -- planned -- with a witness harness that fits nsPerOp = intercept + slope*log2(w) against the universe BIT-WIDTH and reports the n-sweep crossover over an O(log n) foil, plus SPACE as a co-headline. Tree-shakeable named exports.",
+  "type": "module",
+  "main": "./LogLogN.js",
+  "module": "./LogLogN.js",
+  "types": "./LogLogN.d.ts",
+  "exports": {
+    ".": {
+      "types": "./LogLogN.d.ts",
+      "node": "./LogLogN.js",
+      "import": "./LogLogN.js",
+      "default": "./LogLogN.js"
+    }
+  },
+  "files": [
+    "LogLogN.js",
+    "LogLogN.d.ts",
+    "llms.txt",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js test/Bench.test.mjs",
+    "test:types": "tsc -p test/types/tsconfig.json",
+    "torture": "node --expose-gc test/torture.mjs",
+    "witness": "node test/witness.mjs",
+    "test:perf": "node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs",
+    "bench": "node benchmark/Bench.mjs",
+    "bench:report": "node benchmark/Bench.mjs && node benchmark/Report.mjs",
+    "verify": "npm test && npm run test:types && npm run torture && npm run witness && npm run test:perf"
+  },
+  "keywords": [
+    "van-emde-boas",
+    "veb",
+    "x-fast-trie",
+    "y-fast-trie",
+    "stratified-bitset",
+    "predecessor",
+    "successor",
+    "predecessor-search",
+    "bounded-integer",
+    "word-ram",
+    "integer-set",
+    "ordered-set",
+    "log-log-n",
+    "log-log-u",
+    "sub-logarithmic",
+    "clz32",
+    "bitset",
+    "data-structures",
+    "zero-gc",
+    "gc",
+    "typed-array",
+    "soa",
+    "tree-shakeable",
+    "witness",
+    "performance",
+    "lightweight",
+    "zero-dependency"
+  ],
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@zakkster/lite-gc-profiler": "^1.16.0",
+    "@zakkster/lite-leak": "^1.10.0",
+    "@zakkster/lite-perf-gate": "^1.4.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "homepage": "https://github.com/PeshoVurtoleta/lite-loglogn#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-loglogn.git"
+  },
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-loglogn/issues",
+    "email": "shinikchiev@yahoo.com"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/PeshoVurtoleta"
+  },
+  "sideEffects": false
+}

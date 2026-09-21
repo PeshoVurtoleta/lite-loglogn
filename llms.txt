@@ -1,0 +1,81 @@
+# @zakkster/lite-loglogn
+
+Version: 0.1.0
+License: MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
+Runtime dependencies: none. ESM only. ASCII-only source. sideEffects: false.
+Node: >= 18.
+
+## What it is
+
+A tree-shakeable, zero-GC family of sub-logarithmic bounded-integer
+predecessor/successor data structures that PROVES its bound instead of asserting
+it. The identity is the SPANNING framing: the family spans O(log_w U) to
+O(log log U) over a bounded integer universe -- not a strict "O(log log U) only"
+package. Every hot op is O(log log U) worst-case (or O(log_w U) / expected /
+amortized where stated) and allocates zero bytes after construction, and a
+shipped witness harness fits `nsPerOp = intercept + slope * log2(w)` against the
+universe BIT-WIDTH w (NEVER a copied log2(n)) and reports the n-sweep crossover
+against a built-in O(log n) foil.
+
+It is the O(log log U) sibling of @zakkster/lite-o1 (the constant, a FLAT ops/ms
+line) and @zakkster/lite-logn (the logarithm, a straight line vs log2(n)):
+lite-loglogn holds the double-logarithm -- a straight, nearly-flat line vs
+log2(w), one constant additive step per doubling of the universe bit-width.
+
+Keys are w-bit integers in [0, U), U = 2^w, with w <= 32 in JS (bitwise ops are
+32-bit); wider keys are a labeled SegmentedU variant, never a silent BigInt hot
+path. The SPACE price is a co-headline on every member, stated with the same
+prominence as the time bound -- this family's defining honesty hook.
+
+v0.1.0 is the SCAFFOLD release. It ships only the `VERSION` const -- no member
+yet. The planned roster (one member per session, each landing append-only):
+
+- StratifiedBitset (v0.1.0) -- the headline / teachable entry point: array-embedded
+  O(log_w U) successor / predecessor over a hierarchical bit tree; O(1) min / max;
+  O(U/w) SPACE; nothing allocated per op. The cleanest witness in the family and
+  the one that calibrates the shared R^2 floor + slope band gate on the log2(w)
+  axis (decision D-04).
+- XFastTrie (v0.2.0) -- O(log log U) predecessor / successor query via binary
+  search over w levels of pointer-free open-addressing LevelTables; O(n*w) SPACE.
+  Binds the shared LevelTable substrate direction (D-03).
+- YFastTrie (v0.3.0) -- the O(n)-space fix: an x-fast trie over ~n/w
+  representatives with balanced buckets between them; expected / amortized
+  O(log log U); MAX single-op reported (bucket splits / merges amortize).
+- vEBTree (v0.4.0) -- a flattened van Emde Boas (vEB-layout typed array or
+  iterative high/low split) keeping worst-case O(log log U) AND 0 B/op; O(U) SPACE.
+
+## Exports (from the single main file LogLogN.js)
+
+- `VERSION` -- string. The package version; one of the three version sites
+  (package.json / LogLogN.js VERSION const / this file's `Version:` header).
+
+Member exports (one tree-shakeable class each) are appended here as each member
+ships. At v0.1.0 there are none.
+
+## Design bounds
+
+- Zero runtime deps; node:test only; ASCII-only source.
+- Single PascalCase main file LogLogN.js; sideEffects: false; tree-shakeable
+  named exports, no barrel.
+- Bounded integer universe, word-RAM model: keys are w-bit integers in [0, U),
+  w <= 32. Fixed, preallocated capacity. Fail closed on every unverified state;
+  `null` is not zero; an out-of-universe key fails closed.
+- typeof-guard FIRST, before any coercion, at the door of every mutating op (the
+  recurring Symbol / BigInt / {valueOf} / boxed-Number footgun).
+- Zero allocation on every steady-state hot path (0 B/op), proven by
+  `node --expose-gc test/torture.mjs`, including the arrayBuffers-no-growth tier.
+- SPACE is a co-headline: every member states and asserts its footprint bound
+  (bytes vs U and vs n) alongside its time bound.
+
+## Cross-package boundaries
+
+- @zakkster/lite-o1 -- the O(1) sibling. Any BOUNDED-INTEGER priority queue is
+  O(1) and belongs there (Dial's bucket queue); lite-loglogn owns ORDERED
+  predecessor / successor over a bounded universe.
+- @zakkster/lite-logn -- the O(log n) sibling. A general comparator ordered map is
+  O(log n) and belongs there; lite-loglogn beats it only for n above the reported
+  crossover on a bounded (w-bit) universe.
+- @zakkster/lite-filter -- owns approximate / probabilistic membership;
+  lite-loglogn owns exact ordered integer structures. No overlap.
+- @zakkster/lite-fastbit32 -- owns the clz32 / word-bit primitives; lite-loglogn
+  cross-links its recipe, never a drifting reimplementation (decision D-05).

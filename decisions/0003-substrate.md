@@ -1,7 +1,7 @@
 # 0003 -- LevelTable / NodePool direction (L-03)
 
 - Status: ACCEPTED (direction only; concrete table deferred to XFastTrie;
-  PENDING USER RATIFICATION)
+  RATIFIED by the maintainer 2026-10-22)
 - Severity: S1 (outlives many members; the single most consequential
   cross-package call, shared with lite-logn)
 - Date: 2026-09-18

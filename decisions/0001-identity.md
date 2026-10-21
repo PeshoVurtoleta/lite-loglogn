@@ -1,6 +1,6 @@
 # 0001 -- Package identity + headline framing (L-01)
 
-- Status: ACCEPTED (recommended resolution TAKEN; PENDING USER RATIFICATION)
+- Status: ACCEPTED (recommended resolution TAKEN; RATIFIED by the maintainer 2026-10-22)
 - Severity: S1 (the single most load-bearing decision; outlives every member)
 - Date: 2026-09-18
 - Session: S0 (scaffold)

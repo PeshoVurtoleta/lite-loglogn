@@ -1,7 +1,7 @@
 # 0004 -- Witness fit plan + which sweep is the HARD gate (L-04)
 
-- Status: ACCEPTED (the PLAN, not the numbers; thresholds deferred to
-  StratifiedBitset; PENDING USER RATIFICATION)
+- Status: AMENDED 2026-10-22 (maintainer) -- see "Amendment 1" at the end;
+  the timing-fit plan below is superseded where Amendment 1 says so
 - Severity: S1 (the family anchor; every member inherits the gate it calibrates)
 - Date: 2026-09-18
 - Session: S0 (scaffold)
@@ -79,3 +79,40 @@ YFastTrie / vEBTree) inherits the floor + band + the log2(w)-fit-wins assertion.
 - **Make the U-sweep fit the sole HARD gate.** Rejected as the DEFAULT: the short
   U-axis is noisy; the crossover is the more robust gate. The U-fit is reported
   and its fit-wins assertion is still enforced.
+
+## Amendment 1 (maintainer, 2026-10-22) -- counts are the hard gate
+
+Two facts found while planning the StratifiedBitset session break the timing
+plan above:
+
+1. **The two axes cannot be told apart by timing.** Over w = 16, 20, 24, 28, 32
+   the correlation between `w` and `log2(w)` is 0.9948 (computed 2026-10-22). A
+   timing R^2 comparison "log2(w) fit beats w fit" over five noisy points is a
+   coin flip, so it cannot be a gate.
+2. **StratifiedBitset is linear in w, not in log2(w).** Its pyramid has
+   ceil(log32(U)) levels: 4, 4, 5, 6, 7 for w = 16, 20, 24, 28, 32 (about w/5).
+   It honestly fits the `w` axis and would FAIL "log2(w) must win". That matches
+   its O(log_w U) label (RESEARCH.md section 2: "the member declares which axis
+   it fits").
+
+Ruling (supersedes Decision items 1-3 above where they conflict):
+
+- **HARD gate = deterministic COUNTS, in `npm test`.** Each member declares its
+  axis and its exact per-op cost model (for StratifiedBitset: words touched per
+  op as a function of levels(U)); a counting test over the SHIPPED code asserts
+  the count, never a twin of it. Counts are the DETERMINISTIC tier: a flake is a
+  test bug, never "re-run it".
+- **Timing is REPORTED / STATISTICAL.** The U-sweep fit (both axes) and the
+  n-sweep crossover vs the O(log n) foil run once per release, under
+  `quiet-lock.mjs`, interleaved, K rounds, with a must-fail control, and a HOST
+  verdict that exits 2 when inconclusive. They leave `npm run verify`'s fixed
+  thresholds. The crossover n is published as a measurement with provenance.
+- **"log2(w) must win" moves to the strict O(log log U) members** (XFastTrie
+  successor, YFastTrie, vEBTree) and is proven there by COUNTS (probes per op vs
+  log2(w)), not by timing R^2.
+- **U-sweep range:** w = 16, 20, 24, 28 by default; w = 32 (about 554 MB for a
+  StratifiedBitset) only behind an opt-in env flag in the release-time run.
+  Constructing a 2^32 universe stays legal and documented.
+
+The StratifiedBitset session records the concrete counting method, the script
+names, and the statistical-run protocol in its own ADR (0006).

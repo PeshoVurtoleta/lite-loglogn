@@ -1,7 +1,7 @@
 # 0005 -- 32-bit ceiling / wider-key policy + clz32 boundary (L-05 / L-07)
 
 - Status: ACCEPTED (policy + direction; builds deferred to SegmentedU /
-  StratifiedBitset; PENDING USER RATIFICATION)
+  StratifiedBitset; RATIFIED by the maintainer 2026-10-22)
 - Severity: S2 (shapes the universe contract on every member) + S3 (the word
   primitive boundary)
 - Date: 2026-09-18

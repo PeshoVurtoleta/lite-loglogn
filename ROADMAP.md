@@ -868,14 +868,17 @@ Each is a full BRIEF at planning time, same frontmatter budget and gate set as a
 (torture 0 B/op + witness both-sweeps + perf + SPACE co-headline), prior members
 byte-identical. Order and space bound stated up front on each:
 
-- **EliasFano** (v0.5.0) -- the succinct SPACE HERO: a sorted set of n keys from [0, U)
-  in ~`n(2 + log2(U/n))` bits (near the information-theoretic minimum), `select(k)` O(1),
-  `successor` O(log(U/n)). STATIC (build-once from a sorted array). Needs a RankSelectBits
-  substrate (Tier 3). Space is the whole pitch -- compressed n-proportional bits vs vEB's O(U).
+- ~~**EliasFano** (v0.5.0)~~ -- **SHIPPED ELSEWHERE (amended 2026-10-20):** lite-o1 shipped
+  `EliasFano` in 1.9.0 (ADR 0025: a STATIC codec lives in lite-o1, not here). Since lite-o1
+  1.11.2, its `access` is O(1) typical / worst-case O(log n) and `nextGEQ` is O(1) typical /
+  O(log n) worst. Do NOT rebuild it here. Re-adopt it (design parity, or cite it as the
+  succinct comparison point) and use the v0.5.0 slot for the next Tier 2 member.
 - **RoaringSet** (v0.6.0) -- the PRACTICAL space-adaptive set: partition the 32-bit universe
   into 2^16 chunks, each stored as whichever container is smallest (sorted Uint16 / bitset /
-  run-length). The real-world workhorse; the adaptivity is the teaching beat. `has` O(1)
-  amortized, `successor` O(log).
+  run-length). The real-world workhorse; the adaptivity is the teaching beat. `has` is
+  bounded O(log), not O(1): array containers are binary-searched, at most 12 probes over
+  4,096 entries (amended 2026-10-20). `successor` is O(log); with the summary pyramid of
+  section 10 it is a bounded walk. Design notes: section 10 here and RESEARCH.md section 12.
 - **FusionTree** (v0.7.0) -- RESEARCH-TRACK: word-level parallelism packs `w` keys into one
   word; O(log_w n) static predecessor. Notoriously subtle (sketch compression, msb-differing-bit)
   and w=32-capped in JS -- ship with the honest "why this is hard and when word-parallelism pays"
@@ -892,9 +895,11 @@ byte-identical. Order and space bound stated up front on each:
 - **LevelTable** -- the pointer-free open-addressing `Uint32Array` integer->slot table the
   x-fast/y-fast tries need; FINALIZED in the XFastTrie session (L-03). Shares DNA with lite-o1
   SparseSet / lite-logn NodePool -- reconcile, do NOT fork.
-- **RankSelectBits** -- O(1) rank/select over a bitvector with an o(U) index (rank9/poppy); the
-  succinct primitive under EliasFano and RoaringSet. Shares DNA with StratifiedBitset's summary
-  pyramid; reconcile, do NOT fork.
+- ~~**RankSelectBits**~~ -- **SHIPPED ELSEWHERE (amended 2026-10-20):** lite-o1 shipped
+  `RankSelect` in 1.8.0 (ADR 0024: lite-loglogn RE-ADOPTS it as substrate, never forks). As
+  of lite-o1 1.11.2, rank / access are worst-case O(1) and select is worst-case
+  O(log(nbits/2048)), bounded but NOT O(1). RoaringSet does not need it: its rank is a
+  prefix sum of container cardinalities plus a rank inside one container.
 - **clz/ctz helpers** -- the `Math.clz32`-based word primitives (L-07); a tiny shared internal
   here, or a cross-link to lite-fastbit32, never a drifting reimplementation.
 
@@ -984,5 +989,67 @@ secretly O(log U) does not get to wear the O(log log U) banner. And when the rev
 subagent reads a test, the question is not "does this test the feature" -- it is
 **"would this test fail if the member were broken."** A test that names a hazard and then
 does not touch the code path where the hazard lives is a green light over a hole.
+
+---
+
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED, not scheduled]
+
+**Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
+section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
+measured. The suite-wide order is `../Research/SUMMARY.md` (items #22 and #23). Nothing starts
+before the members ahead of RoaringSet in section 6 have shipped.
+
+**What changes from the Tier 2 line:** standard Roaring plus a summary pyramid at BOTH levels.
+That turns `successor` into a bounded walk over the full 32-bit universe, independent of n,
+which fits this family's bounded-in-U theme (section 2).
+
+| id | milestone | content | size |
+| --- | --- | --- | --- |
+| **R1** | core set | top-level chunk index + array / bitmap / run containers from a slab pool; `add` / `delete` / `has` / `successor` / `predecessor` / `size` / iterate; conversions at the 4,096 crossover | large |
+| **R2** | set algebra | `union` / `intersect` / `difference` / `xor` container by container (galloping intersection for array x array); `rank` / `select` from a prefix-cardinality column | medium |
+| **R3** | interop | read / write the portable RoaringFormatSpec; deserialize into pooled containers; fail closed on a malformed stream | medium |
+| R4 *(candidate, 2026-10-21)* | zero-copy view | a read-only `RoaringView` over an `ArrayBuffer` in the portable format: `has` / `successor` jump to one container through the offset header, with no per-container allocation. Reads go through `DataView` (cookie-12347 streams can put containers at odd offsets) | medium |
+
+**Amendments (2026-10-21, from RESEARCH.md 12.6-12.8):**
+- **Prior art checked.** `bitrun` (pure TS, 0.1.3) exists but allocates a fresh result per set
+  operation. The other JS options are native (`roaring`) or WASM. No pure-JS, zero-GC Roaring was
+  found, so R1-R3 fill a real gap, but test 1 (a consumer) is still open. lite-search is the only
+  lead.
+- **R2 API.** Set algebra writes into a caller-supplied target or works in place, never returning
+  a fresh set on a hot path. Add `intersectionSize` / `intersects` / `unionSize`, which
+  materialize nothing.
+- **R3 reader.** Read through `DataView` (alignment), check byte order once, and run the five
+  fail-closed validations in RESEARCH.md 12.7, each with a must-fail stream.
+- **Hold:** a bit-sliced index (BSI) for numeric ranges and threshold counts (RESEARCH.md 12.8
+  row K). It becomes the R2 follow-up only if lite-search becomes a consumer.
+- **Sequencing (maintainer, 2026-10-18):** the lite-signal 1.6.0 release comes first, suite-wide.
+
+**Settle before R1 (maintainer):**
+- **D-R1 top-level index.** (a) A sorted key array with binary search, at most 16 probes (the
+  standard). (b) A 2^16-bit presence bitmap (8 KB) with summary levels, giving a bounded
+  next-non-empty-chunk lookup, plus a key -> container map. That map is either a direct table
+  (128-256 KB, O(1)) or a rank over the presence bits (bounded, small). (b) is the
+  differentiator; (a) is smaller for tiny sets.
+- **D-R2 summary inside bitmap containers.** A FastBit1024-style two-level summary (2,048 words
+  -> 64 -> 2), about 3% per container, versus no summary (the standard: scan up to 2,048 words).
+- **D-R3 pool sizing.** Capacity classes for array and run containers, and how the pool grows.
+  Growth is a cold, disclosed allocation, never on a hot op. Peer: lite-arena, by design parity.
+- **D-R4 scope.** `run` containers in R1, or a later `runOptimize()` milestone.
+
+**Gates (in addition to section 5):**
+- torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane
+  (array <-> bitmap <-> run, back and forth across 4,096) must also run at 0 B/op once warm.
+- must-fail controls: a summary left stale after a bulk op; a `has()` that ignores the type
+  code; an allocating conversion.
+- a differential fuzz against `Set<number>` + a sorted array over the full 32-bit range,
+  including 0, 2^16 - 1, 2^16, 2^32 - 1 and every crossover cardinality.
+- witness: successor probe COUNTS (deterministic) on gappy inputs, never timing alone. This is
+  the lite-o1 1.11.2 lesson: a sampled scan is not O(1).
+- `add` / `delete` on an array container shift up to 4,096 entries, so they print a
+  max-single-op line. They are bounded but spiky, and never labelled O(1).
+
+**Not this:** 64-bit Roaring (an ART over the high 48 bits) is out of scope until SegmentedU
+settles the 32-bit ceiling. A lite-o1 member: the roster is closed. A dependency on lite-o1 or
+lite-fastbit32: design parity only.
 
 MIT (c) Zahary Shinikchiev

@@ -292,8 +292,8 @@ stratified bitset as the practical array-embedded entry point.**
 | FusionTree       | predecessor / successor                | O(log_w n) worst-case (static) | Word-level parallelism packs `w` keys into one machine word and compares in O(1); beats a BST only for large `w` and is notoriously subtle (sketch compression, most-significant-differing-bit). Likely a RESEARCH-track member with an honest "why this is hard and when it pays" note, not an early ship. In JS w=32 caps the win; label it. |
 | IntUniverseMap   | successor + a VALUE column (handle)    | inherits the chosen index      | Any Tier-1 member + a parallel value/handle column so it maps integer keys to payloads (the ordered-int-map use case), not just membership. A composition, shipped once the index members exist. |
 | SegmentedU       | 53-bit / split-word keys              | O(log log U) with a 2-level split | The honest answer to "JS bitwise is 32-bit": split a wider key into a high word (a Tier-1 structure) and low words, or use BigInt on a cold path. A labeled variant, not the default. |
-| EliasFano        | successor / predecessor / select / access | successor O(log(U/n)); select O(1) | The SUCCINCT monotone-sequence member: store a sorted set of n keys from [0, U) in ~`n(2 + log2(U/n))` bits -- near the information-theoretic minimum -- with `select(k)` (the k-th key) in O(1) via a rank/select bitvector and `successor` in O(log(U/n)). Old but gold (Elias 1974 / Fano). The space HERO of the family: where vEB is O(U) and y-fast is O(n) pointers, Elias-Fano is compressed n-proportional bits. STATIC (build-once from a sorted array). The niche: huge sparse sorted-integer sets, inverted-index postings, compressed successor. |
-| RoaringSet       | add / delete / has / successor / rank / iterate | O(1) has (amortized); O(log) successor | The PRACTICAL space-adaptive integer set: partition the 32-bit universe into 2^16 chunks, each stored as whichever container is smallest -- a sorted `Uint16` array (sparse), a bitset (dense), or a run-length list (clustered). The real-world workhorse (Lucene / Druid / Spark all ship Roaring). Not asymptotically exotic, but the honest "what you actually reach for when the density varies across the universe" member, with predecessor/successor and rank/select over the containers. The adaptivity is the teaching beat: no single representation wins every density. |
+| EliasFano        | successor / predecessor / select / access | successor O(log(U/n)); select O(1) | **SHIPPED IN lite-o1 1.9.0 (amended 2026-10-20; ADR 0025 there): re-adopt, do not rebuild. Since lite-o1 1.11.2, access is O(1) typical / worst-case O(log n).** The SUCCINCT monotone-sequence member: store a sorted set of n keys from [0, U) in ~`n(2 + log2(U/n))` bits -- near the information-theoretic minimum -- with `select(k)` (the k-th key) in O(1) via a rank/select bitvector and `successor` in O(log(U/n)). Old but gold (Elias 1974 / Fano). The space HERO of the family: where vEB is O(U) and y-fast is O(n) pointers, Elias-Fano is compressed n-proportional bits. STATIC (build-once from a sorted array). The niche: huge sparse sorted-integer sets, inverted-index postings, compressed successor. |
+| RoaringSet       | add / delete / has / successor / rank / iterate | bounded O(log) has (amended 2026-10-20: array containers are binary-searched); O(log) successor, or a bounded walk with the section 12 summaries | The PRACTICAL space-adaptive integer set: partition the 32-bit universe into 2^16 chunks, each stored as whichever container is smallest -- a sorted `Uint16` array (sparse), a bitset (dense), or a run-length list (clustered). The real-world workhorse (Lucene / Druid / Spark all ship Roaring). Not asymptotically exotic, but the honest "what you actually reach for when the density varies across the universe" member, with predecessor/successor and rank/select over the containers. The adaptivity is the teaching beat: no single representation wins every density. |
 
 ### Tier 3 -- adjacent / substrate (evaluate; may fold in or cross-reference)
 
@@ -301,7 +301,7 @@ stratified bitset as the practical array-embedded entry point.**
 |------------------|----------------------------------------|------|
 | LevelTable       | open-addressing `Uint32Array` integer->slot table | The pointer-free hash substrate the x-fast / y-fast tries need. Shares DNA with [[lite-o1]]'s SparseSet and [[lite-logn]]'s NodePool -- reconcile, cross-link, do NOT fork (section 6). Substrate, not a headline member. |
 | clz/ctz helpers  | `Math.clz32`-based word primitives     | The O(1) word-RAM ops (highest/lowest set bit, next-set-bit-in-word). Possibly a tiny shared internal; if it grows, it belongs in [[lite-fastbit32]], not reimplemented here. |
-| RankSelectBits   | rank(i) / select(k) over a bitvector   | O(1) rank/select with an o(U) index | The succinct PRIMITIVE under EliasFano, RoaringSet, and any wavelet member: `rank(i)` = set bits <= i, `select(k)` = position of the k-th set bit, both O(1) via a two-level (superblock + block) `Uint32` index costing o(U) extra bits (rank9 / poppy layout). Substrate, not a headline member -- but the reusable engine three Tier-1/2 members lean on. Shares DNA with StratifiedBitset's summary pyramid; reconcile, do NOT fork. |
+| RankSelectBits   | rank(i) / select(k) over a bitvector   | O(1) rank/select with an o(U) index | **SHIPPED IN lite-o1 1.8.0 as RankSelect (amended 2026-10-20; ADR 0024 there): re-adopt as substrate, never fork. As of lite-o1 1.11.2, select is worst-case O(log(nbits/2048)), bounded but not O(1).** The succinct PRIMITIVE under EliasFano, RoaringSet, and any wavelet member: `rank(i)` = set bits <= i, `select(k)` = position of the k-th set bit, both O(1) via a two-level (superblock + block) `Uint32` index costing o(U) extra bits (rank9 / poppy layout). Substrate, not a headline member -- but the reusable engine three Tier-1/2 members lean on. Shares DNA with StratifiedBitset's summary pyramid; reconcile, do NOT fork. |
 
 ### Tier 4 -- exotic but a golden niche (research track; each a dedicated future member with an honest "when it pays" note)
 
@@ -633,7 +633,7 @@ demo shows steady-state ops + the doubly-logarithmic-growth witness + the space 
    then add the U-sweep double-log fit (dimension 1), the O(log n) foil + crossover, and the loglogn-
    specific MEMORY kernel (footprint vs U AND n) promoted to co-headline. A copy-and-wire session (plus
    the one new kernel), not a design-from-scratch one; do it once 3-4 members exist.
-6. Move into Tier 2: EliasFano (the succinct space hero, on a RankSelectBits substrate), RoaringSet (the
+6. Move into Tier 2: EliasFano (amended 2026-10-20: shipped in lite-o1 1.9.0; re-adopt, do not rebuild), RoaringSet (the
    practical space-adaptive set), FusionTree (research-track, honest "when it pays" note), IntUniverseMap
    (value column), SegmentedU (wider keys) -- one concept per release.
 7. **Tier 4 (exotic but a golden niche)** -- ExponentialSearchTree (deterministic dynamic log log n),
@@ -691,6 +691,215 @@ coder -> reviewer -> qa + the torture, witness, and perf gates. A+ bar per membe
 - **What does further user research add or reorder?** (This roster folds in the user's candidate list --
   vEB, x-fast, y-fast, fusion -- plus the StratifiedBitset entry point; treat any additional notes as
   authoritative input at planning time.)
+
+---
+
+## 12. RoaringSet -- design notes (addendum 2026-10-20)
+
+Sources: a maintainer Q&A in the lite-o1 session of 2026-10-20; the papers (Chambi, Lemire,
+Kaser, Godin 2016; Lemire et al. 2016 for run containers); `../Research/BITWISE_RESEARCH.md`
+section 10 (the five tests, the summary-generalization rule, the bitset size ladder). Nothing
+here is measured. Brief: `ROADMAP.md` section 10 (R1-R3, D-R1 to D-R4).
+
+### 12.1 Standard Roaring, as the starting point
+
+- **Two-level split.** For a 32-bit value v, the high 16 bits (`v >>> 16`) pick the chunk, and
+  the low 16 bits (`v & 0xFFFF`) are stored in that chunk's container. Only non-empty chunks
+  exist. The top level is a sorted array of keys with parallel container and type-code columns.
+- **Three containers:**
+
+| Container | Used when | Space | `has` | Notes |
+| --- | --- | --- | --- | --- |
+| array | cardinality <= 4,096 | 2 B per value (sorted `Uint16`) | binary search, <= 12 probes | insertion shifts up to 4,096 entries |
+| bitmap | cardinality > 4,096 | 8 KB fixed (2,048 `Uint32` words in JS) | one bit test, O(1) | bulk AND / OR word by word |
+| run | `runOptimize` finds runs smaller | 2 + 4 x runs bytes, as (start, length - 1) pairs | binary search over runs, <= 11 probes (<= 2,048 runs) | for clustered / sorted data |
+
+- **Why 4,096:** 2 B x 4,096 = 8,192 B = one bitmap container, so the representations cost the
+  same there. Below it the array is smaller; above it the bitmap is.
+- **Set algebra** aligns the two key arrays, then combines containers by type pair (bitmap x
+  bitmap is word-wise; array x array uses galloping intersection). A container present in only
+  one operand is copied or dropped, depending on the operation.
+- **Portable format** (RoaringFormatSpec): a cookie, a header with (key, cardinality - 1) per
+  container, an optional offset table, then the containers. Java / C / Go / Rust bitmaps are
+  interchangeable through it.
+
+### 12.2 The proposed change: a summary pyramid at both levels
+
+Standard Roaring finds the next non-empty chunk by binary search over the keys, and finds the
+next set bit inside a bitmap container by scanning up to 2,048 words. Both can be replaced by
+lite-o1 BitSet's existential summary (BITWISE 10.1 explains why this is exact for "non-empty"):
+
+- **Between chunks:** a 2^16-bit presence bitmap over the keys, with summary levels, so the next
+  non-empty chunk is a bounded walk.
+- **Inside bitmap containers:** a FastBit1024-style two-level summary (2,048 words -> 64 -> 2).
+  It costs about 3% per container, and the next set bit becomes a bounded walk. Copied by design
+  parity from lite-fastbit32; no dependency.
+- **Result:** `successor` over the full 32-bit universe touches about 30 directory words in the
+  worst case, independent of n. That number is NOMINAL and unmeasured; the witness must count
+  probes, not time them.
+- **Risk:** every bulk op (union / intersect / clear / conversion) must leave both summaries
+  coherent. A stale summary bit silently corrupts `successor`. This is the same trap
+  `../LiteO1/ROADMAP.md` records for BitSet's bulk ops.
+
+### 12.3 Honest bounds (state them in the README from the first draft)
+
+| Op | Bound | Why |
+| --- | --- | --- |
+| `has` | bounded O(log): <= 16 key probes (or O(1) with a direct key table) + <= 12 inside an array container | never "O(1)" for the set as a whole |
+| `successor` / `predecessor` | bounded walk (nominal ~30 words) with 12.2; O(log) without it | independent of n either way |
+| `add` / `delete` | bounded, but up to a 4,096-entry shift in an array container, plus conversions | prints a max-single-op line |
+| `union` / `intersect` | O(containers + their sizes) | bulk, disclosed |
+| space | adaptive; never above about 8 KB per non-empty chunk + the top level | the SPACE co-headline (section 5) |
+
+### 12.4 Zero-GC in JS
+
+- Container growth and conversion allocate unless they come from a pool. Use fixed 8 KB slabs for
+  bitmaps, and capacity classes for array and run containers; a conversion moves a container
+  between pools.
+- Pool growth is a cold, disclosed allocation, never on a hot op. Peer: lite-arena, by design
+  parity.
+- There is no SIMD and no 64-bit popcount in JS: use `Uint32` words and the SWAR popcount from
+  lite-fastbit32's field guide. Never BigInt (BITWISE section 7: 30x slower, and it allocates).
+
+### 12.5 Open questions
+
+1. Is there a real consumer? lite-search keeps `Map<gram, Set<id>>` (`../LiteSearch/Search.js:189`),
+   but it scores overlap counts rather than intersecting sets. Find one before positioning this
+   as a product rather than a teaching member.
+2. Prior art in JS: native and WASM ports exist. Is any of them pure JS and zero-GC? Verify
+   before claiming the gap. **Answered 2026-10-21 (12.6): one pure-TS port exists (`bitrun`), and
+   it allocates per operation. No pure-JS, zero-GC Roaring was found.**
+3. D-R1 to D-R4 in `ROADMAP.md` section 10.
+
+### 12.6 JS prior art (addendum 2026-10-21; registry and GitHub pages fetched that day)
+
+**Source:** a maintainer note on Roaring in JS and what it combines with, fact-checked against
+registry.npmjs.org and GitHub on 2026-10-21. Download counts are one week (2026-10-12 to 10-18).
+The npm search for "roaring bitmap" returns over 1,000 hits, so "none found" below is a lead,
+not proof.
+
+| Package | Kind | Facts (2026-10-21) | Zero-GC? |
+| --- | --- | --- | --- |
+| `roaring` (Salvatore Previti, `SalvatorePreviti/roaring-node`) | native Node addon over CRoaring 4.5.0 | 2.7.0 (2025-12-19); prebuilt binaries via node-pre-gyp, source-build fallback; AVX2 / SSE4.2; portable format; Node only (no browser); Apache-2.0; ~10.7k/week | not applicable: the memory is native and is not visible to the JS heap |
+| `roaring-wasm` (same author) | CRoaring compiled to WASM (Emscripten) | 1.1.0 (2024-10-08); Node, browser, Deno (browsers call `roaringLibraryInitialize()` first); portable format; Apache-2.0; ~2.8k/week | the WASM heap is outside the JS GC |
+| `@jeange/roaring-wasm` (Jean Ge) | Rust -> WASM (wasm-pack) | 0.1.4 (2026-08-10, first published 2026-08-04); no repo link in its metadata; MIT; ~8/week; portable format UNVERIFIED | unknown |
+| `bitrun` (David Estevez, `destbreso/bitrun`) | **pure TypeScript**, zero dependencies | 0.1.3 (2026-08-13); array / bitmap / run containers on typed arrays; claims portable-format byte compatibility (tests against `roaring`, not checked); MIT; ~8/week, 0 stars | **no**: set algebra returns a fresh result per operation, `deserialize` copies into fresh containers, and its README gives ~300 B of typed-array wrapper overhead per non-empty block |
+| `fastbitset`, `typedfastbitset` (Daniel Lemire) | pure JS, **plain** (uncompressed) bitsets | 0.5.2 / 0.8.0 (2026-02-26); `typedfastbitset` has in-place ops and a `SparseTypedFastBitSet` | not Roaring; the comparison point for dense sets, like lite-o1 BitSet |
+
+- The RoaringBitmap GitHub org has 22 repositories and none of them is JS, TS or WASM. The Node
+  and WASM ports are third-party, though `roaring` calls itself the "official port".
+- Not Roaring implementations: `@cloudbitmaps/roaring` (object-storage plumbing over native
+  `roaring`), plus several WASM forks and templates (`roaring-wasm-papandreou`,
+  `smart-roaring-bitmap-wasm`), and `roaringbun` (Bun FFI to CRoaring).
+- **The gap, stated precisely:** native and WASM ports are fast but cannot run where native
+  addons are banned (`roaring`), or keep memory outside the GC that must be freed by hand
+  (WASM). The only pure-TS port allocates on every set operation. A pure-JS Roaring with POOLED
+  containers, in-place / out-param set algebra and 0 B/op hot paths does not exist on npm as far
+  as this search found. That is a real niche, **but test 1 (a consumer) is still open (12.8)**.
+- Consequences for the API (they go into R2 / R3, see `ROADMAP.md` section 10):
+  - set algebra writes into a caller-supplied target (`a.and(b, out)`) or works in place
+    (`a.andInPlace(b)`); it never returns a fresh set on a hot path;
+  - add counting forms that materialize nothing: `intersectionSize(a, b)`, `intersects(a, b)`,
+    `unionSize(a, b)`. CRoaring has the same idea (`and_cardinality`);
+  - deserialization fills pooled containers, so it allocates only on pool growth.
+
+### 12.7 Reading the portable format in JS: traps (from the spec; not yet prototyped)
+
+Spec: `github.com/RoaringBitmap/RoaringFormatSpec` (checked 2026-10-21). Cookie 12346 =
+`SERIAL_COOKIE_NO_RUNCONTAINER`, 12347 = `SERIAL_COOKIE`, and the offset header is present for
+12346, or for 12347 when there are at least `NO_OFFSET_THRESHOLD` = 4 containers.
+
+- **Alignment.** With cookie 12347, the run-container bitset is ceil(n / 8) bytes, so every field
+  after it can start at an ODD byte offset. `new Uint16Array(buf, off)` throws a `RangeError` on an
+  odd offset, and a `Uint32Array` view over a bitmap container needs a multiple of 4. A reader
+  must use `DataView` reads, or copy each container into an aligned pooled slab. Never assume
+  aligned views over a foreign stream.
+- **Endianness.** The format is little-endian. Typed arrays use the host's byte order. Every
+  practical JS host is little-endian, but the reader checks once at load (a `Uint16Array` /
+  `Uint8Array` probe) and fails closed on a big-endian host, or reads through `DataView` with
+  `littleEndian = true`.
+- **Validation (fail closed, each with a must-fail stream):**
+  - keys strictly increasing;
+  - each container's type matches its cardinality (cardinality - 1 <= 4,095 is an array unless
+    the run bit is set);
+  - run pairs neither overlap nor pass 65,535;
+  - offsets and lengths stay inside the buffer;
+  - the stream does not end early.
+
+  A malformed stream must throw, never yield a partial set.
+- **A zero-copy read-only view** (a candidate, not yet in R1-R3): with the offset header, `has`
+  and `successor` can binary-search the keys and jump straight to one container without parsing
+  the rest. That gives a `RoaringView` over an `ArrayBuffer` with no per-container allocation,
+  which suits sets shipped to a browser or a worker. It inherits the alignment trap above, so it
+  reads through `DataView`, or it requires the caller to pass a stream that is aligned and was
+  validated once.
+- CRoaring's "frozen" serialization is a different, aligned format and is not portable across
+  implementations. Do not confuse the two (UNVERIFIED detail: check the CRoaring docs before
+  citing it).
+
+### 12.8 What Roaring combines with, scored against this suite (addendum 2026-10-21)
+
+The maintainer note lists the standard combinations (A-J). Roaring is a 32-bit integer-set
+primitive inside an outer index. Each combination is scored here against a real consumer in this
+suite. Consumers were found by sweeping every package's main source for "key -> set of numeric
+ids" on 2026-10-21.
+
+| # | Combination | Suite consumer (file:line) | Verdict |
+| --- | --- | --- | --- |
+| A | inverted index (term -> ids) | **lite-search** `gramIndex: Map<gram, Set<id>>` (`../LiteSearch/Search.js:175`, `:189`). Ids come from `++autoId` for objects (`:168`), but `Search.d.ts:36` allows `string \| number`, so string ids need interning first | **the only real lead.** The query scores n-gram OVERLAP with a counting `Map` (`:181`), which is the T-occurrence problem (ScanCount / MergeOpt; Li, Lu, Lu, ICDE 2008), not a plain AND. Roaring helps memory and candidate iteration. A threshold count needs counters or a bit-sliced sum (row K). Measure memory against `Set` first |
+| B | map of bitmaps (tag -> ids) | `../LiteAudioManager/AudioManager.js:23-24` (sound name -> active play ids), `../LiteAudio/Compat.js:110`, `../LiteMedia/Media.js:217` (root -> rule ids) | no: these sets hold a handful of ids, and `Set` wins below thousands |
+| C | ordered map whose values are bitmaps | none; lite-logn C1 `BPlusTree` is awaiting a decision, and section 7's `IntUniverseMap` is the composition point | later, as a recipe once both exist |
+| D | per-value bitmap index for low-cardinality columns | lite-table T2 (`../LiteDataTable/ROADMAP.md`) is a bitmap index inside a bounded row universe | no: rows <= 2^25 fit lite-o1 BitSet or a rank directory. Roaring only above 2^25 rows or for very sparse columns |
+| E | graph adjacency | the suite's graphs (lite-di-graph, lite-canvas-graph) are small | no consumer |
+| F | hierarchical index over Roaring | this IS RoaringSet's D-R1 (b) + D-R2 design (12.2) | already planned |
+| G | ECS live-slot set | lite-ecs E1 (`../LiteEcs/ROADMAP.md`) | no: slot ids are dense, so SparseSet / BitSet beat Roaring. E1 uses query sets |
+| H | event / version sets | lite-journal keeps per-reader cursors over a ring; a "changed since T" bitmap cannot serve several readers | no |
+| I | ACL / feature flags | none in the suite | no consumer |
+| J | dense BitSet for the hot window + Roaring for the cold tail | none | hold. Note BITWISE 10.1: an AND across the two tiers cannot use the summaries |
+| **K** | **bit-sliced index (BSI)**: one bitmap per bit of a numeric column, so `value >= x`, `between` and `sum over a set` become bitmap arithmetic (O'Neil and Quass, SIGMOD 1997; RoaringBitmap Java ships a `bsi` package, UNVERIFIED here) | lite-table numeric column filters (none today); lite-search threshold counts (A) | hold: not in the note, and the natural R2 follow-up if A becomes a consumer |
+| **L** | Roaring next to EliasFano (lite-o1 1.9.0) | boundary docs | a boundary line, not a feature: EliasFano is smaller for STATIC sorted lists with uniform gaps; Roaring is dynamic, with fast set algebra |
+| **M** | Roaring next to HyperLogLog (lite-sketch) | boundary docs | Roaring gives EXACT union and intersection sizes; HLL gives approximate ones across thousands of sets in kilobytes. A boundary line |
+
+- **The pattern the note names is right:** an outer index (hash / B-tree / sorted array) -> a
+  Roaring set of 32-bit ids -> an optional per-id payload. In this suite: interning (strings ->
+  dense ints) -> RoaringSet -> `IntUniverseMap` for payloads.
+- **The note's practical advice ("prefer the native `roaring` on Node") holds for applications.**
+  It cannot apply inside this suite, because of the zero-runtime-deps law. It also hides two
+  costs worth stating:
+  - every single-element call into a native addon crosses the N-API boundary, so per-element
+    `add` / `has` loops lose to batch APIs (EXPECTED, not measured);
+  - WASM memory is outside the GC. Sets must be freed by hand, and a `memory.grow` detaches
+    every typed-array view over the old buffer.
+- **Corrections to the note:**
+  - `roaring` is a native addon with prebuilt binaries, and has no browser support;
+  - `roaring-wasm` and `@jeange/roaring-wasm` are different packages by different authors, and
+    the second is six weeks old;
+  - `bitrun` exists but is weeks old and lightly used (about 8 downloads a week, 0 stars), with
+    self-reported benchmarks only (1.3-14x slower than native);
+  - Lemire's JS packages are plain bitsets, not Roaring;
+  - "Redis modules" should read "Redis". The project's own adopter list (`roaringbitmap.org`)
+    includes Lucene, Elasticsearch, Druid, Pinot, ClickHouse, Spark, Bleve, Redis, InfluxDB and
+    Netflix Atlas;
+  - Pilosa / FeatureBase is not on that list (UNVERIFIED).
+- **Papers (confirmed via `roaringbitmap.org/publications/`):**
+  - Chambi, Lemire, Kaser, Godin, SPE 46(5):709-719, 2016, arXiv 1402.6407;
+  - Lemire, Ssi-Yan-Kai, Kaser, SPE 46(11):1547-1569, 2016, arXiv 1603.06549 (run containers);
+  - Lemire, Kaser, Kurz, Deri, O'Hara, Saint-Jacques, Ssi-Yan-Kai, SPE 48(4), 2018,
+    arXiv 1709.07821 (the CRoaring implementation paper).
+
+### 12.9 "RoaringSet" vs "Roaring bitmap"
+
+The two names are the same structure. "Roaring bitmap" is the published design. **RoaringSet**
+is this package's name for its own member: an integer SET (has / successor / iterate), not a
+bitmap of fixed width. It keeps the 2^16 chunking, the array / bitmap
+/ run containers, the 4,096 crossover and the portable format (R3), so it reads and writes the
+same bytes. It adds three things standard Roaring does not have:
+- a summary pyramid at BOTH levels (D-R1 (b), D-R2), so `successor` is a bounded walk;
+- pooled containers with 0 B/op hot paths;
+- out-param / in-place set algebra.
+
+Without those three it would be a plain port, and there would be no reason to build it next to
+`bitrun`.
 
 ---
 

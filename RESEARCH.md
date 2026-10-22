@@ -924,6 +924,98 @@ general pyramid is approved, with the general form as its parity oracle
 
 ---
 
+## 13. Research intake (2026-10-22) -- inverse Ackermann, compositions, exotic candidates
+
+Source: a maintainer Q&A in the StratifiedBitset B1c session, 2026-10-22, added at the maintainer's
+request. Every citation was web-checked on 2026-10-22 (venues, bounds and models corrected inline;
+the remaining gaps are named where they sit). Nothing here is measured or scheduled. Verdicts: 13.4.
+
+### 13.1 Inverse Ackermann alpha(n): where it applies, and where it cannot
+
+- General dynamic predecessor cannot reach alpha(n). The optimum is a min over regimes (fusion-like
+  log_w n, vEB-like log log U), and nothing near alpha is possible with polynomial space (Patrascu and
+  Thorup, STOC 2006, pp. 232-240, "Time-space trade-offs for predecessor search"; a STATIC
+  cell-probe result whose optimum is a min of four terms; vEB is optimal when w = Theta(log n)
+  and space is n polylog n).
+- alpha appears only in RESTRICTED problems:
+  - **Decremental successor** ("next free slot", delete-only): union-find gives alpha(n) amortized.
+    Gabow and Tarjan (JCSS 30(2):209-221, 1985; STOC 1983) give O(m + n) TOTAL time when the
+    union tree is known in advance (interval union-find qualifies, general union-find does not),
+    on a RAM, with table look-up on small sets plus the general algorithm over blocks. That is StratifiedBitset's level 0 plus union-find over
+    its summary.
+  - **Interval union-split-find** (both operations): Theta(log log n), the Mehlhorn, Naher and Alt
+    lower bound (SIAM J. Comput. 17(6):1093-1102, 1988; ICALP 1987) in the POINTER-MACHINE model, so
+    it does not bind word-RAM structures. It is the package's own bound turning up as a lower bound, which makes it a
+    good teaching beat.
+- Verdict: implementable zero-GC (Int32Array parents, path halving), but at U <= 2^32
+  StratifiedBitset's worst successor is 2Lc-1 = 13 word reads at about 1 bit per universe slot, while
+  union-find costs 4+ bytes per key and is amortized. A note and maybe a demo comparison, NOT a
+  member. Section 4's boundary already puts union-find in lite-o1; a "NextFree" member would need its
+  own scope ruling.
+
+### 13.2 Compositions keep the double-log (and JS flattens the ranking)
+
+- Most classic bounds ARE compositions: y-fast = x-fast over representatives + buckets of size
+  log U (indirection), log log U time with O(n) space; exponential search trees (Andersson and
+  Thorup, JACM 54(3), 2007) make a static polynomial-space structure dynamic in linear space,
+  deterministic O(sqrt(log n / log log n)); Beame and Fich (STOC 1999; JCSS 65(1):38-72, 2002) give
+  static Theta(min(log log U / log log log U, sqrt(log n / log log n))).
+- Rule: stacked layers ADD their costs; a dispatch by regime gets the MIN of the bounds. That is the
+  theory behind the Hybrid tiered member (ROADMAP section 7, Tier 2) and RoaringSet's two summaries.
+- **Ranking frame for every candidate (proposed):** with w = 32, log log 2^32 = 5 and
+  log_32 2^32 = 6.4, so the asymptotic gaps collapse into small constants. Rank candidates by WORDS and
+  cache lines touched per op (the count model StratifiedBitset gates as A2 / A9), not by big-O. The
+  B1c finding that no tier saves a word (plan ADDENDUM 19) is the first instance.
+
+### 13.3 Exotic candidates not yet in the roster
+
+| Candidate | Bound | Note |
+| --- | --- | --- |
+| **Z-fast trie** (Belazzougui, Boldi, Vigna, "Dynamic z-fast tries", SPIRE 2010, LNCS 6393; static roots SODA 2009 with Pagh) | predecessor O(log max(abs(x), abs(x+), abs(x-))) = O(log w) = O(log log U) for w-bit keys; updates in EXPECTATION (hashing); 12n pointers + n integers beyond the keys (CHECKED, from the abstract) | the practical successor of x-/y-fast ("fat binary search"), no bucket juggling. Strongest pick; needs the zero-GC LevelTable (L-03). |
+| **PGM-index** (Ferragina, Vinciguerra, PVLDB 13(8):1162-1175, 2020) | worst-case bounded predecessor / range / update, optimal for static predecessor; space grows with the number of linear segments, set by the error eps (CHECKED). The intake's "~O(log log n) on smooth data" is NOT supported by any source found; dropped | the modern InterpolationSearchTree: a "measure your key distribution" member. Exact query formula UNVERIFIED (paper section 3). |
+| **Decremental successor / interval union-find** (Gabow-Tarjan) | O(1) amortized | see 13.1; niche, teaching value |
+| **Monotone integer priority queues**: radix heap (Ahuja, Mehlhorn, Orlin, Tarjan, JACM 37(2), 1990); Thorup (STOC 2003 / JCSS 2004: monotone PQ, O(1) insert + decrease-key; JACM 54(6), 2007: PQ = sorting, deterministic O(log log n) per op via Han's sort) | radix heap O(log C) per element over a monotone drain (the per-op split depends on the potential) | a successor structure used as a Dijkstra queue; overlap with lite-o1 BucketQueue checked in 13.4 |
+| **Tango / multi-splay trees** (Demaine, Harmon, Iacono, Patrascu, FOCS 2004 / SICOMP 2007; Wang, Derryberry, Sleator, SODA 2006) | O(log log n)-COMPETITIVE | log log n as a competitive ratio, not a time bound: a docs aside, never code |
+
+### 13.4 Verdicts, and the Timsort-style combinations (evaluated 2026-10-22)
+
+How this was checked (2026-10-22): every citation in 13.1-13.3 web-checked; a prior-art sweep of npm
+and GitHub (registry search, exact-name probes, `gh api`); a sweep of every suite main file for a
+consumer of an ordered integer set. "None found" below is a lead, not proof.
+
+**Shared result, test 1 (a real consumer): NONE.** No suite main file consumes an ordered integer
+set today; the only hits are lite-fastbit32's own word scans and two lowest-set-bit channel picks in
+LiteAudio (`Audio.js:2782`, `:2878`). This holds for StratifiedBitset too: every member below is a
+TEACHING member until a consumer turns up, and the README says so.
+
+**Shared result, test 3 (JS prior art): the gap is real.** The only JS vEB trees (`van-emde-boas`
+1.0.1, `vebt` 1.0.1) are object-based, at about 2 and 6 downloads a week. No JS x-, y- or z-fast
+trie, PGM-index, radix heap or fusion tree was found (the npm names `radix-heap`, `xfast`,
+`pgm-index`, `vebtree` are unclaimed). The popular bitsets (`fastbitset`, `typedfastbitset`,
+`bitset`, `mnemonist`) are flat, with no successor / predecessor; `hibitset-js` (4 Uint32Array
+layers) has no next / prev query and allocates iterators.
+
+Ranked by the 13.2 frame (words touched per op at w = 32), best first:
+
+| # | Candidate | Verdict | Why |
+| --- | --- | --- | --- |
+| 1 | **Stree, the 32-bit stratified tree** (Dementiev, Kettner, Mehnert, Sanders, ALENEX 2004, pp. 142-151; read from the KIT PDF) | **ADOPT as a design: the strongest combination found** | It IS the FastBit32 + BitSet + level-table combination, published and measured. A NON-recursive 3-level tree: a 2^16-entry root array (key bits 16-31), then open-addressing hash tables on 8-bit chunks (sizes 4..256, a 256-table is perfect), a singleton stored as a direct pointer, min / max per node, and 32-ary OR-summary bit pyramids on every level (root t1[65536] / t2[4096] / t3[64]; lower levels t1[256] / t2[8]) over a sorted doubly linked list. Measured fastest for locate against STL map, LEDA (2,16)-trees and two plain vEB codes (up to 4.1x for small n, 2.9x at the largest; insert / delete comparable; 2 GHz Xeon, 2004). Uses: the reference for vEBTree's flattening (L-06), for RoaringSet D-R1 (b) (the same 2^16 root with a summary), and a likely shape for the Hybrid tiered member. Zero-GC needs pooled hash tables and an index-threaded list. |
+| 2 | **Z-fast trie** (13.3) | **Tier 4 candidate; decide against YFastTrie at its planning** | O(log w) predecessor, O(n) space, no bucket juggling, but updates are EXPECTED (hashing) and it needs the LevelTable (L-03). No JS port anywhere (one Rust repo). Make "y-fast or z-fast" a D-call of the YFastTrie session. |
+| 3 | **PGM-index** (13.3) | **Tier 4 candidate; it takes the InterpolationSearchTree slot** | Worst-case bounded, distribution-adaptive space; no JS or WASM port (C++, Rust, Go only). Static at heart, so it sits next to lite-o1 EliasFano as a comparison point (the "measure your key distribution" member). |
+| 4 | **Small-n front, then promote** (Timsort's minimum run) | **A POLICY, not a member** | A sorted inline Uint32Array scanned linearly until n > K, then promotion. It already exists as RoaringSet's array container (<= 4,096) and as y-fast's buckets. Record K as a calibrated constant inside those members and the Hybrid member. |
+| 5 | **BucketQueue + a summary pyramid over its buckets** | **Cross-package suggestion for lite-o1, not a member here** | lite-o1 BucketQueue (O1.js:1573-1587) is amortized O(1) over a monotone drain, but one extractMin is O(gap) and its buckets cost O(ceiling) memory (ceiling <= 2^31 - 1). A StratifiedBitset-style "bucket non-empty" pyramid bounds a single extractMin to O(log_32 ceiling) words with the amortized O(1) kept. Record it for lite-o1's own roadmap session (one package at a time). |
+| 6 | **Radix heap** (+ a FastBit32 mask over its log C buckets, so the min bucket is one ctz) | **Note; not this package** | It is the low-memory answer for a large key range (O(n + log C) memory against BucketQueue's O(ceiling)), but its bound is O(log C) = O(log U) per element, not sub-logarithmic. Boundary: a lite-logn candidate, or a lite-o1 note beside BucketQueue. No JS prior art at all. |
+| 7 | **Decremental successor / interval union-find** (13.1) | **Note only** | O(m + n) total only with a known union tree; amortized; 4+ bytes per key. The zero-GC, worst-case answer to "lowest free slot above 1,024" is a second "not full" summary pyramid (`../Research/BITWISE_RESEARCH.md` 10.2 G), which also has no consumer yet. |
+| 8 | **Elias-Fano + a pyramid over its upper bits** | **Drop** | The known worst-case nextGEQ is already O(1 + log(U/n)) via select0 plus a binary search in one bucket (Pibiri and Venturini, ACM Computing Surveys 2021); Vigna's skip pointers (WSDM 2013) are expected-constant only. A pyramid over the upper bits does not replace select0, so it adds space for no bound. Partitioned EF (Ottaviano and Venturini, SIGIR 2014) is the real two-level form; it is lite-o1's to weigh. |
+| 9 | **Bentley-Saxe / LSM run merging** (Timsort's merge stack; J. Algorithms 1(4), 1980) | **Drop** | The logarithmic method multiplies the query by O(log n) and has no deletions in its basic form, so it gives back the bound this package exists for. |
+| 10 | **Tango / multi-splay** (13.3) | **Docs aside** | a competitive ratio, not a time bound |
+
+Test 5 (a must-fail control) is available for every adopted row: a stale summary bit (rows 1, 5), a
+wrong-level hash probe (rows 1, 2), a model error past eps (row 3), and a promotion at the wrong K
+(row 4).
+
+---
+
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
 candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference
 implementations, and the demo direction for the lite-loglogn project. It is an internal research

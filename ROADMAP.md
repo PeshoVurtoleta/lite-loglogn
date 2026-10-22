@@ -217,7 +217,7 @@ most load-bearing decision in the document.
 | **L-03** | **S1** | **LevelTable / NodePool ownership.** Re-export lite-o1's `SlotPool`, depend on lite-arena, share lite-logn's `NodePool`, or ship a separate open-addressing integer table? The single most consequential cross-package call (shared with lite-logn). Reconcile, do NOT fork. | **Decide the DIRECTION in S0**; it BLOCKS XFastTrie and YFastTrie. StratifiedBitset and (flattened) vEB do NOT need it, so the concrete substrate can be finalized by the XFastTrie session at the latest -- but the direction is set before member 1 so the trie members do not fork an allocator. | **S0** (direction) / **XFastTrie** (concrete) |
 | **L-04** | **S1** | **The witness fit thresholds + which sweep is the HARD gate.** What `R^2` floor + slope band make a fair, non-flaky gate over a SHORT ~5-point bit-width sweep (w = 16..32)? Is the U-sweep double-log fit the hard gate, or the n-sweep crossover vs the O(log n) foil? The short axis is noisier than lite-logn's n-sweep -- the real risk. | Settle empirically in StratifiedBitset (the cleanest witness); expect the siblings' steady-window / median-of-9 / do-not-widen-the-floor discipline (lite-o1 ADR-0004 amendment). **Lean: the n-sweep crossover is the more robust HARD gate, the U-sweep fit reported.** Record in an ADR; it becomes the FAMILY gate. | **StratifiedBitset** (using S0 direction) |
 | **L-05** | **S2** | **The 32-bit ceiling / wider-key policy.** JS bitwise ops are 32-bit, so the natural universe is <= 2^32. Is a 53-bit / 64-bit `SegmentedU` variant a Tier-1 split-word concern or a Tier-2 labeled variant? | **Lean: 32-bit default, `SegmentedU` as Tier 2** (a labeled high-word + low-word split, or a cold BigInt path -- never a silent BigInt hot path). | **S0** (policy) / **SegmentedU** (build) |
-| **L-06** | **S2** | **vEB flattening strategy.** The textbook recursive-object vEB allocates per level. Which flattening -- a vEB-layout typed array, or an iterative high/low-word split -- keeps worst-case O(log log U) AND 0 B/op AND stays readable enough to teach? | Settle in the vEBTree session; prove the chosen flattening against the recursive reference for correctness and against the torture gate for 0 B/op. | **vEBTree** |
+| **L-06** | **S2** | **vEB flattening strategy.** The textbook recursive-object vEB allocates per level. Which flattening -- a vEB-layout typed array, or an iterative high/low-word split -- keeps worst-case O(log log U) AND 0 B/op AND stays readable enough to teach? | Settle in the vEBTree session; prove the chosen flattening against the recursive reference for correctness and against the torture gate for 0 B/op. Design reference (added 2026-10-22): the Dementiev et al. ALENEX 2004 Stree, a non-recursive 3-level 32-bit tree with summary pyramids (RESEARCH.md 13.4 row 1). | **vEBTree** |
 | **L-07** | **S3** | **The `clz32` word-primitive boundary vs lite-fastbit32.** The `clz32` / `ctz` / next-set-bit ops the stratified bitset (and every member) leans on are lite-fastbit32's territory. | A tiny shared internal here, a dev-only cross-check dependency on lite-fastbit32, or a cross-linked recipe -- never a drifting reimplementation. Decide the direction in S0; keep it a few lines if internal. | **S0** |
 | **L-08** | **S3** | **Scaffolding hygiene.** `git init`; the six-file `files[]`; `npm pack --dry-run` excludes test/benchmark/decisions/demo; three-place VERSION sync from the first release; the standing gate stack wired. | Stand it all up in S0 / the StratifiedBitset session per section 3; assert the pack check in `/release`. | **S0** / **StratifiedBitset** |
 
@@ -886,7 +886,9 @@ byte-identical. Order and space bound stated up front on each:
   LogLogN.js. StratifiedBitset 0.2.0 uses lite-o1 + lite-logn as fuzz oracles and REPORTED
   witness foils, lite-sketch DDSketch for latency quantiles, and lite-adaptive DriftDetector to
   flag a drifting host (plan ADDENDUM 28-33).
-- **Hybrid tiered bitset** (PROPOSED, maintainer 2026-10-22; name and version slot open) -- one
+- **Hybrid tiered bitset** (PROPOSED, maintainer 2026-10-22; name and version slot open; its likely
+  shape is the Dementiev et al. 2004 Stree -- a 2^16 root array, hashed 8-bit levels, a summary
+  pyramid on every level -- RESEARCH.md 13.4 row 1) -- one
   ordered integer set that picks the best tier for its universe and workload, Timsort-style:
   a one-word tier, a 32-word + summary tier, a fixed-depth tier (O(1) to 2^25), and the
   log_32 U pyramid above that, plus bulk and / or / xor / popcount written in place. Every tier
@@ -935,6 +937,18 @@ witness AND its honest caveat. Not a near-term queue -- a reserve:
   the pointer form is lite-logn's). Cross-linked, not duplicated.
 - **DynamicFusionNode** -- O(1) predecessor over ~sqrt(w) keys packed in one word (Patrascu-Thorup);
   deeply exotic, w=32-capped; a research note on "how O(1)-within-a-word predecessor is possible."
+- **ZFastTrie** *(candidate, 2026-10-22; RESEARCH.md 13.3-13.4)* -- O(log log U) predecessor with
+  O(n) space and expected-time updates, the practical successor of x-/y-fast. Needs the LevelTable
+  (L-03). "y-fast or z-fast" becomes a D-call of the YFastTrie session.
+- **PGMIndex** *(candidate, 2026-10-22; RESEARCH.md 13.3-13.4)* -- a learned index with worst-case
+  bounds; it TAKES the InterpolationSearchTree slot (the "measure your key distribution" member).
+- **Notes, not members (RESEARCH.md 13.1-13.3):** decremental successor / interval union-find
+  (O(m + n) total only with a known union tree), radix heap (O(log C), so a lite-logn / lite-o1
+  note, not here), Tango trees (a competitive ratio, docs only). Dropped: Elias-Fano + a pyramid
+  over its upper bits, Bentley-Saxe run merging (RESEARCH.md 13.4 rows 8-9). Cross-package, for
+  lite-o1's own session: a summary pyramid over BucketQueue's buckets bounds one extractMin to
+  O(log_32 ceiling) words (13.4 row 5). Ranking frame for every Tier 4
+  candidate: words touched per op at w = 32, not big-O (RESEARCH.md 13.2).
 - **VebLayoutSearch** -- not a new bound but a cache-OBLIVIOUS memory LAYOUT for a static search
   tree (van-Emde-Boas order); the bridge between the vEB NAME (recursion) and the vEB LAYOUT.
 

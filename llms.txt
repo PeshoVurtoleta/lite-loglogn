@@ -8,49 +8,113 @@ Node: >= 18.
 ## What it is
 
 A tree-shakeable, zero-GC family of sub-logarithmic bounded-integer
-predecessor/successor data structures that PROVES its bound instead of asserting
-it. The identity is the SPANNING framing: the family spans O(log_w U) to
-O(log log U) over a bounded integer universe -- not a strict "O(log log U) only"
-package. Every hot op is O(log log U) worst-case (or O(log_w U) / expected /
-amortized where stated) and allocates zero bytes after construction, and a
-shipped witness harness fits `nsPerOp = intercept + slope * log2(w)` against the
-universe BIT-WIDTH w (NEVER a copied log2(n)) and reports the n-sweep crossover
-against a built-in O(log n) foil.
+predecessor/successor data structures whose bound is proven by exact COUNTS. The
+identity is the SPANNING framing: the family spans O(log_w U) to O(log log U)
+over a bounded integer universe -- not a strict "O(log log U) only" package.
+The FAMILY bound is O(log log U), in the universe size U (never the element
+count n); StratifiedBitset itself is O(log_32 U). Every hot op allocates zero
+bytes after construction.
 
-It is the O(log log U) sibling of @zakkster/lite-o1 (the constant, a FLAT ops/ms
-line) and @zakkster/lite-logn (the logarithm, a straight line vs log2(n)):
-lite-loglogn holds the double-logarithm -- a straight, nearly-flat line vs
-log2(w), one constant additive step per doubling of the universe bit-width.
+It is the O(log log U) sibling of @zakkster/lite-o1 (the constant) and
+@zakkster/lite-logn (the logarithm in n): lite-loglogn holds the double
+logarithm in U. StratifiedBitset does NOT claim a log2(w) line; "log2(w) must
+win" belongs to the strict O(log log U) members (planned), proven there by counts.
 
-Keys are w-bit integers in [0, U), U = 2^w, with w <= 32 in JS (bitwise ops are
-32-bit); wider keys are a labeled SegmentedU variant, never a silent BigInt hot
-path. The SPACE price is a co-headline on every member, stated with the same
-prominence as the time bound -- this family's defining honesty hook.
+Keys are w-bit integers in [0, U), U <= 2^32 (bitwise ops are 32-bit); wider keys
+are a labeled SegmentedU variant, never a silent BigInt hot path. The SPACE price
+is a co-headline on every member, stated with the same prominence as the time bound.
 
-v0.1.0 is the SCAFFOLD release. It ships only the `VERSION` const -- no member
-yet. The planned roster (one member per session, each landing append-only):
+Roster (one member per release, append-only). StratifiedBitset ships in 0.2.0
+(unreleased until the release step); everything after it is PLANNED:
 
-- StratifiedBitset (v0.1.0) -- the headline / teachable entry point: array-embedded
-  O(log_w U) successor / predecessor over a hierarchical bit tree; O(1) min / max;
-  O(U/w) SPACE; nothing allocated per op. The cleanest witness in the family and
-  the one that calibrates the shared R^2 floor + slope band gate on the log2(w)
-  axis (decision D-04).
-- XFastTrie (v0.2.0) -- O(log log U) predecessor / successor query via binary
-  search over w levels of pointer-free open-addressing LevelTables; O(n*w) SPACE.
-  Binds the shared LevelTable substrate direction (D-03).
-- YFastTrie (v0.3.0) -- the O(n)-space fix: an x-fast trie over ~n/w
-  representatives with balanced buckets between them; expected / amortized
-  O(log log U); MAX single-op reported (bucket splits / merges amortize).
-- vEBTree (v0.4.0) -- a flattened van Emde Boas (vEB-layout typed array or
-  iterative high/low split) keeping worst-case O(log log U) AND 0 B/op; O(U) SPACE.
+- StratifiedBitset (0.2.0) -- array-embedded 32-ary bit pyramid. O(log_32 U)
+  successor / predecessor; min / max read Lc words (Lc = levels <= 7);
+  O(U/w) SPACE; 0 B/op on every hot method.
+- XFastTrie (0.3.0, planned) -- O(log log U) query via binary search over w
+  pointer-free LevelTables; O(n*w) SPACE.
+- YFastTrie (0.4.0, planned) -- the O(n)-space fix over x-fast representatives;
+  expected / amortized O(log log U).
+- vEBTree (0.5.0, planned) -- flattened van Emde Boas; worst-case O(log log U); O(U) SPACE.
 
 ## Exports (from the single main file LogLogN.js)
 
 - `VERSION` -- string. The package version; one of the three version sites
   (package.json / LogLogN.js VERSION const / this file's `Version:` header).
+- `StratifiedBitset` -- class. An integer set over the fixed universe [0, U).
 
-Member exports (one tree-shakeable class each) are appended here as each member
-ships. At v0.1.0 there are none.
+### StratifiedBitset
+
+    import { StratifiedBitset } from '@zakkster/lite-loglogn';
+    const s = new StratifiedBitset(1 << 20);
+    s.add(5).add(70);                 // chainable, idempotent
+    s.has(70);                        // true
+    s.successor(5);                   // 70   (smallest key > 5)
+    s.predecessor(70);                // 5    (largest key < 70)
+    s.successor(70);                  // undefined (absent is undefined, never -1/null)
+    for (let k = s.min(); k !== undefined; k = s.successor(k)) { /* walk */ }
+
+Constructor: `new StratifiedBitset(universe)` -- universe an integer in
+[1, 2^32] else RangeError `[lite-loglogn] universe must be an integer in
+[1, 2^32]; got ...`. Fixed universe, no resize. Allocates one Uint32Array.
+
+Getters (cold): `size`, `universe`, `levels` (= max(1, ceil(log2(U)/5)); 4 at
+U = 2^16 and 2^20, 5 at 2^24, 6 at 2^28, 7 at 2^32), `byteLength` (4 x total
+words of the one `_bits` Uint32Array).
+
+Hot methods (0 B allocated):
+- `has(x)` -> boolean
+- `add(x)` -> this. Idempotent. Bad key -> RangeError `[lite-loglogn] key must be
+  an integer in [0, U); got ...`, no state touched.
+- `delete(x)` -> boolean (true if x was present)
+- `successor(x)` -> number | undefined. STRICT: smallest key > x.
+- `predecessor(x)` -> number | undefined. STRICT: largest key < x.
+- `min()`, `max()` -> number | undefined (undefined when empty)
+
+Cold: `clear()`; `dump()` -> { universe, size, words: Uint32Array[] } (ALLOCATES;
+words[L] is a copy of level L, level 0 = key bits). No forEach, no iterator:
+iterate with the successor walk.
+
+Return conventions: absent = undefined (null is not zero, and not -1). -0 aliases
+key 0. A bad key (not a number, non-integer, NaN, negative, >= U, null, string,
+Symbol, BigInt, boxed Number) touches no word: has / delete -> false,
+successor / predecessor -> undefined, add -> RangeError. For "at or after x" use
+`s.has(x) ? x : s.successor(x)`.
+
+Cost model (DETERMINISTIC; exact `_bits` word reads R / writes Wr, Lc = levels;
+gated by test/Count.test.js through a counting Proxy over the shipped instance):
+- has: R = 1
+- add / delete when the key changes: R = Wr <= Lc (1 + the levels whose word
+  changed emptiness); otherwise R = 1, Wr = 0
+- successor / predecessor: R <= 2*Lc - 1 (a level-0 peel returns from the level-0
+  word that holds x+1 / x-1 without touching level 1)
+- min / max: R = Lc (R = 1 if empty)
+
+Space (O(U/w); pinned in test/Space.test.js): U = 2^16 -> 8,460 B; 2^20 ->
+135,300 B; 2^24 -> 2,164,804 B; 2^28 -> 34,636,836 B; 2^32 -> 554,189,332 B
+(about 554 MB; the last two are formula values, never constructed in tests).
+
+Boxing: hot methods allocate 0 bytes; a returned key >= 2^31 (>= 2^30 on a
+pointer-compressed engine) may box as a HeapNumber when the call is not inlined.
+
+## Gates and measurements (tiered)
+
+- DETERMINISTIC (npm test = 151 tests, 0 fail, 2026-10-22, Node v26.8.2; also
+  npm run verify = test + test:types + torture + test:perf): exact counts, seeded
+  oracle fuzz, sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat +
+  SortedArray; 0 divergences), space pins, tier parity, bytecode-size gate.
+  `npm run torture`: 2,000,000 ops at U = 2^20 -> 0 B/op, gc major 0 / minor 0.
+  `npm run test:perf`: 7 zero-alloc scenarios + 2 must-fail teeth = 10/10.
+- STATISTICAL (release-time, NOT in verify, 1 run each, exit 0 pass / 1 fail /
+  2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node
+  26.8.2, load1 3.66): member successor vs a local Uint32Array binary search at
+  w = 28 won 15/0 at all nine n from 1e3 to 1e7 (member 11.74-17.84 ns/op;
+  binary search 32.22 -> 197.78 ns/op). `node test/witness.mjs --tier` (the
+  level-0 peel A/B; 2026-10-22T02:27:20Z, same host / Node, load1 4.79) returned EXIT 2 (inconclusive: a 1% A/A difference on identical
+  code); the peel ships by maintainer waiver (dense-succ 11.5% and dense-pred
+  16.5% faster, no scenario lost).
+- REPORTED (docs only; same A8 run: 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run): the U-sweep fits better vs w (R^2 0.7293) than vs log2(w)
+  (R^2 0.6589); no R^2 floor or slope band is gated. lite-o1 BitSet is faster where
+  it applies (4.28-4.82 vs 4.87-7.61 ns/op at n = 4096, w = 16..24).
 
 ## Design bounds
 
@@ -60,22 +124,23 @@ ships. At v0.1.0 there are none.
 - Bounded integer universe, word-RAM model: keys are w-bit integers in [0, U),
   w <= 32. Fixed, preallocated capacity. Fail closed on every unverified state;
   `null` is not zero; an out-of-universe key fails closed.
-- typeof-guard FIRST, before any coercion, at the door of every mutating op (the
-  recurring Symbol / BigInt / {valueOf} / boxed-Number footgun).
+- typeof-guard FIRST, before any coercion, at the door of every op (the recurring
+  Symbol / BigInt / {valueOf} / boxed-Number footgun).
 - Zero allocation on every steady-state hot path (0 B/op), proven by
-  `node --expose-gc test/torture.mjs`, including the arrayBuffers-no-growth tier.
-- SPACE is a co-headline: every member states and asserts its footprint bound
-  (bytes vs U and vs n) alongside its time bound.
+  `node --expose-gc test/torture.mjs`.
+- SPACE is a co-headline: every member states its footprint bound alongside its
+  time bound.
 
 ## Cross-package boundaries
 
 - @zakkster/lite-o1 -- the O(1) sibling. Any BOUNDED-INTEGER priority queue is
-  O(1) and belongs there (Dial's bucket queue); lite-loglogn owns ORDERED
-  predecessor / successor over a bounded universe.
+  O(1) and belongs there (Dial's bucket queue). Its BitSet: for U <= 2^25 and
+  successor-only use lite-o1 BitSet (fixed 3 levels, O(1) in U); StratifiedBitset
+  owns predecessor / max, U up to 2^32, labelled O(log_32 U), and returns undefined
+  for absent (lite-o1 BitSet returns -1).
 - @zakkster/lite-logn -- the O(log n) sibling. A general comparator ordered map is
-  O(log n) and belongs there; lite-loglogn beats it only for n above the reported
-  crossover on a bounded (w-bit) universe.
+  O(log n) and belongs there.
 - @zakkster/lite-filter -- owns approximate / probabilistic membership;
-  lite-loglogn owns exact ordered integer structures. No overlap.
+  lite-loglogn owns exact ordered integer structures. No overlap; no 0.2.0 use.
 - @zakkster/lite-fastbit32 -- owns the clz32 / word-bit primitives; lite-loglogn
   cross-links its recipe, never a drifting reimplementation (decision D-05).

@@ -27,6 +27,8 @@
  *       retained array (size > 0). Any control passing is exit 1.
  * Exit 0 only if every tier passes and every control flips. Never widen a
  * budget to make this pass -- a budget that moves is not a gate.
+ * KNOWN GAP: neither T0 nor X0 has a must-fail control for the gc major /
+ * maxPauseMs lane (every window reads gcMinor 0); adding one is a NEXT.md filler.
  *
  * ENTRY CONTRACT: --expose-gc is mandatory (the GC gate is meaningless without
  * it); the devDeps are imported AFTER the guard so a fresh clone that skipped
@@ -414,6 +416,522 @@ async function main() {
     if (!c3Flip) fails.push('control growing PASSED its check (abGrowth ' + ab3.growthBytes + '): T1 is blind');
     if (!c4Flip) fails.push('control retained PASSED its check (size ' + live4 + '): T2 is blind');
 
+    // ==== X-tiers: XFastTrie (PLAN-xfasttrie G4 / G5, tasks G0b + G7) ========
+    // Run after T0-T3 so the StratifiedBitset tiers keep their own feedback; the
+    // X-tiers drive XFastTrie through their OWN step closures (makeStepX,
+    // makeReseedStep) -- makeStep's call sites never see an XFastTrie.
+    //   X0  2,000,000 mixed ops (add / delete / has / successor x2 / predecessor /
+    //       min / max) at U = 2^20 AND at U = 2^30, capacity XC: retained 0 B/op
+    //       (null = FAIL), transient excess < NS_MAX_EXCESS per NS_K-op window,
+    //       gc major 0, maxPauseMs <= 4. Coverage floor: every op kind ran, and
+    //       has / delete / successor / predecessor each saw hits AND misses.
+    //   X1  U = 2^32 (keys up to 2^32 - 1 in the ring and in the set), stabilize
+    //       'deep': arrayBuffers growth 0, settled.
+    //   X2  reseed lane, the G0b stream below: retained 0 B/op and abGrowth 0 over
+    //       (a) natural collide() cycles, the abGrowth window holding EXACTLY
+    //       10,000 kicks, and (b) a `_fill`-stubbed instance (3 forced failed
+    //       tries per stall), the abGrowth window holding EXACTLY 100 rebuilds
+    //       (reseed tries, `_q[3]`). Every `_q` delta must equal the census model
+    //       x calls; a reseedOps delta of 0 is a FAIL (vacuous lane).
+    //       (c) a transient lane on both steps: XNS_K cycles per new-space window
+    //       (~10 ops each, so a window holds >= NS_K ops), excess over an
+    //       empty-fn baseline of the SAME window size < NS_MAX_EXCESS bytes;
+    //       null (too few unscavenged windows) is a FAIL; every window must run
+    //       exactly XNS_K cycles and advance reseedOps by exactly XNS_K.
+    //   X3  4,096 construct / fill (the collide stream: one reseed each) / clear /
+    //       drop cycles: tracker.size() 0 after the drain and one gc later.
+    //   X4  controls that MUST flip: retaining loop (X0 alloc > 0), transient box
+    //       (X0 window excess >= limit), ReallocReseed (X2 abGrowth > 0),
+    //       DropReseed (M-reseedAlloc: a Uint32Array per reseed, dropped -- X2's
+    //       transient excess >= limit, on a measured window, not on null),
+    //       retained array (X3 size > 0).
+    //
+    // G0b CENSUS (2026-10-22, B1 engine): collide(2^16, 16, 9) = keys
+    // 0,2,16,17,19,24,47,61,73 (level-16 prefixes share h1 AND h2 under the
+    // default seeds). One cycle = add the 9 keys in order, then clear(). The 9th
+    // add stalls the level-16 kick chain (B = 4: 8 x bitlen(floor(0.9 x 32)) =
+    // 8 x 5 = 40 evictions) and reseeds once; the first try places every group.
+    // Per cycle: kicks +40, reseedOps +1, tries +1; clear() adds +0 / +0 / +0.
+    // Identical over 10,000 consecutive cycles (clear() restores the default
+    // seeds, so every cycle replays the same stall; 2.07 us / cycle, Node 26,
+    // PRELIMINARY host). With `_fill` stubbed to fail the first n tries of each
+    // stall: kicks +40, reseedOps +1, tries +(n + 1) (n = 1, 2, 5, 31 over 200
+    // cycles each; n = 3 over 10,000 cycles).
+    const { XFastTrie } = await import('../LogLogN.js');
+    const { collide } = await import('./helpers/xftStream.mjs');
+
+    const XU0 = 1 << 20;        // X0 universe, w = 20
+    const XU1 = 1 << 30;        // X0 universe, w = 30
+    const XU2 = 4294967296;     // X1 universe, w = 32
+    // Capacity: an add only ever uses ring positions = 0 mod 8, so at most
+    // KEYS / 8 = 8,192 distinct keys are present at once -- no full-add throw.
+    const XC = KEYS >>> 3;
+    const XRU = 1 << 16;        // X2 / X3 reseed geometry (U, C)
+    const XRC = 16;
+    const X_KICKS = 40;         // census: per collide cycle
+    const X_RESEEDS = 1;
+    const X_TRIES = 1;
+    const X_FORCED = 3;         // forced failed tries per stall (stub lane)
+    const X_KICK_CYCLES = 250;  // 250 x 40 = 10,000 forced kicks
+    const X_REBUILD_CYCLES = 25; // 25 x (3 + 1) = 100 forced rebuilds
+    const X_ITERS = 10000;      // X2 measureAllocs iterations per batch
+
+    // Op-kind / hit-miss tally slots of makeStepX (one Int32Array per closure).
+    const XN_SH = 8;            // successor hit
+    const XN_SM = 9;            // successor miss
+    const XN_PH = 10;           // predecessor hit
+    const XN_PM = 11;           // predecessor miss
+    const XN_HH = 12;           // has hit
+    const XN_HM = 13;           // has miss
+    const XN_DH = 14;           // delete hit
+    const XN_DM = 15;           // delete miss
+
+    // The X0 / X1 mixed step: makeStep's op mix on an XFastTrie (has also
+    // probes a present key every other group), plus a tally
+    // in a caller-owned Int32Array (the coverage floor). Built cold; const
+    // bindings only, integer sink in a typed-array slot.
+    function makeStepX(set, k, cnt) {
+        return function stepX(i) {
+            const x = k[i & KMASK];
+            const op = i & 7;
+            let r = 0;
+            switch (op) {
+                case 0: set.add(x); break;
+                case 1:
+                    r = set.delete(k[(i - 1 + HALF) & KMASK]) ? 1 : 0;
+                    cnt[r === 1 ? XN_DH : XN_DM]++;
+                    break;
+                case 2:
+                    // every other group probes the key op 0 of this group added
+                    // (a hit), else a ring key (mostly a miss): both are floored
+                    r = set.has(k[(i - ((i & 8) >>> 2)) & KMASK]) ? 1 : 0;
+                    cnt[r === 1 ? XN_HH : XN_HM]++;
+                    break;
+                case 3:
+                case 4:
+                    r = set.successor(x);
+                    cnt[r === undefined ? XN_SM : XN_SH]++;
+                    break;
+                case 5:
+                    r = set.predecessor(x);
+                    cnt[r === undefined ? XN_PM : XN_PH]++;
+                    break;
+                case 6: r = set.min(); break;
+                default: r = set.max();
+            }
+            cnt[op]++;
+            SINK[0] = (SINK[0] + (r === undefined ? 7 : r)) | 0;
+        };
+    }
+
+    // populate()'s keys, through an XFastTrie-only call site. Cold.
+    function populateX(set, k) {
+        for (let j = 0; j < HALF; j += 8) set.add(k[j]);
+        return set;
+    }
+
+    // Coverage floor: the first slot of cnt[0..15] that is 0, or -1. Cold.
+    function zeroSlot(cnt) {
+        for (let j = 0; j < 16; j++) if (!(cnt[j] > 0)) return j;
+        return -1;
+    }
+
+    // X0 for one universe. Returns the step (the X4 controls wrap the 2^20 one).
+    async function xTier0(tag, u, seed) {
+        const k = keyRing(u, seed);
+        const cnt = new Int32Array(16);
+        const set = populateX(new XFastTrie(u, XC), k);
+        const step = makeStepX(set, k, cnt);
+        const al = measureAllocs(step, { iterations: 250000, batches: 8 });
+        const b = al.bytesPerCall;
+        const aOk = b !== null && al.settled === true && Math.round(b) === 0;
+        if (!aOk) {
+            fails.push(tag + ' alloc bytesPerCall=' + b + ' settled=' + al.settled +
+                ' (null or unsettled is a FAIL, not 0)');
+        }
+        const ns = nsExcess(step);
+        const nOk = ns !== null && ns.excess < NS_MAX_EXCESS;
+        const t = ns === null ? null : Math.max(0, ns.excess) / NS_K;
+        if (!nOk) {
+            fails.push(tag + ' transient ' + (ns === null ? 'not measured (null)' :
+                fmt(t, 3) + ' B/op, excess ' + ns.excess + ' B per ' + NS_K +
+                ' ops >= ' + NS_MAX_EXCESS));
+        }
+        globalThis.gc();
+        await settle(50);
+        const g = new GcProfiler().start();
+        for (let i = 0; i < HOT; i++) {
+            step(i);
+            if ((i & 8191) === 0) {
+                g.sampleHeap(performance.now(), process.memoryUsage().heapUsed);
+            }
+        }
+        await settle(50);
+        const s = g.summary();
+        const rep = checkNoGc(s, { maxMajor: 0, maxPauseMs: 4 });
+        g.stop();
+        if (!rep.ok) {
+            for (const v of rep.violations) {
+                fails.push(tag + ' gc ' + v.metric + ' limit=' + v.limit + ' actual=' + v.actual);
+            }
+            if (rep.violations.length === 0) fails.push(tag + ' gc verdict=' + rep.verdict);
+        }
+        const z = zeroSlot(cnt);
+        if (z >= 0) fails.push(tag + ' coverage: tally slot ' + z + ' is 0 (an op kind or hit/miss never ran)');
+        const ok = aOk && nOk && rep.ok && z < 0;
+        console.log(tag + ' ops=' + HOT + ' U=' + u + ' C=' + XC +
+            ' alloc=' + (b === null ? 'null' : Math.round(b)) + ' B/op' +
+            ' allocRaw=' + fmt(b, 4) +
+            ' transient=' + fmt(t, 3) + ' B/op' +
+            ' (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
+            ' nsExcess=' + (ns === null ? 'null' : ns.excess) +
+            ' nsWin0=' + (ns === null ? 'null' : ns.first) +
+            ' gcMajor=' + s.gc.major + ' gcMinor=' + s.gc.minor +
+            ' maxPauseMs=' + s.gc.maxMs.toFixed(2) +
+            ' succ=' + cnt[XN_SH] + '/' + cnt[XN_SM] +
+            ' pred=' + cnt[XN_PH] + '/' + cnt[XN_PM] +
+            ' has=' + cnt[XN_HH] + '/' + cnt[XN_HM] +
+            ' del=' + cnt[XN_DH] + '/' + cnt[XN_DM] + ' (hit/miss)' +
+            ' size=' + set.size +
+            ' | ' + (ok ? 'ok' : 'FAIL'));
+        return { step, b, t, major: s.gc.major, minor: s.gc.minor, maxMs: s.gc.maxMs };
+    }
+
+    // ---- X0: 2,000,000 mixed ops at U = 2^20 and U = 2^30 --------------------
+    const x0a = await xTier0('X0a', XU0, 0x9e3779b9);
+    const x0b = await xTier0('X0b', XU1, 0x85ebca6b);
+
+    // ---- X1: arrayBuffers growth at U = 2^32 ---------------------------------
+    // 64 ring slots carry 2^32 - 1 - (j >>> 3), spread over every op kind (slot
+    // mod 8 = j & 7): populate adds 2^32 - 1 (slot 0), so max() must read
+    // 2^32 - 1, and slot 3 asks successor(2^32 - 1) -- always a miss.
+    const kx1 = keyRing(XU2, 0x1b873593);
+    for (let j = 0; j < 64; j++) kx1[j * 1024 + (j & 7)] = 4294967295 - (j >>> 3);
+    const cnt1 = new Int32Array(16);
+    const setX1 = populateX(new XFastTrie(XU2, XC), kx1);
+    const top1 = setX1.max();
+    const stepX1 = makeStepX(setX1, kx1, cnt1);
+    const rx1 = measureOps(stepX1, { ops: 200000, warmup: 50000, stabilize: 'deep' });
+    const abx1 = rx1.summary.arrayBuffers;
+    const repx1 = checkNoGc(rx1.summary, { maxArrayBuffersGrowth: 0 });
+    const z1 = zeroSlot(cnt1);
+    const x1Ok = repx1.verdict === 'pass' && abx1.settled === true && abx1.growthBytes === 0 &&
+        top1 === 4294967295 && z1 < 0;
+    if (!x1Ok) {
+        fails.push('X1 abGrowth=' + abx1.growthBytes + ' settled=' + abx1.settled +
+            ' verdict=' + repx1.verdict + ' max=' + top1 + ' (want 4294967295)' +
+            ' zeroSlot=' + z1);
+    }
+    console.log('X1 ops=200000 U=' + XU2 + ' C=' + XC + ' byteLength=' + setX1.byteLength +
+        ' max=' + top1 + ' abGrowth=' + abx1.growthBytes + ' settled=' + abx1.settled +
+        ' succ=' + cnt1[XN_SH] + '/' + cnt1[XN_SM] + ' pred=' + cnt1[XN_PH] + '/' + cnt1[XN_PM] +
+        ' | ' + (x1Ok ? 'ok' : 'FAIL'));
+
+    // ---- X2: reseed lane (the G0b stream) ------------------------------------
+    const xcol = collide(XRU, XRC, 9);
+    if (xcol === null || xcol.length !== 9) throw new Error('X2: collide(2^16, 16, 9) found no stall group');
+    const xKeys = Uint32Array.from(xcol);
+    const NXK = xKeys.length;
+
+    // One reseed cycle: arm the stub's failure budget (a dummy slot on an
+    // unstubbed instance), add the collide keys (the last one stalls), clear().
+    function makeReseedStep(set, calls, fails, nFail) {
+        return function reseedStep(i) {
+            fails[0] = nFail;
+            for (let j = 0; j < NXK; j++) set.add(xKeys[j]);
+            SINK[0] = (SINK[0] + set.size + (i & 1)) | 0;
+            set.clear();
+            calls[0]++;
+        };
+    }
+    // `_q[j]`, or -1 once poisoned (`_q === null`). Cold.
+    function qx(set, j) {
+        return set._q === null ? -1 : set._q[j];
+    }
+
+    // Retained lane over X_ITERS x 5 calls, then the exact abGrowth window of
+    // `cycles` calls. Every `_q` delta must equal the model x calls.
+    function xReseedLane(tag, set, step, calls, kicks, tries, cycles) {
+        const errs = [];
+        const c0 = calls[0];
+        const a1 = qx(set, 1), a2 = qx(set, 2), a3 = qx(set, 3);
+        const al = measureAllocs(step, { iterations: X_ITERS, batches: 4 });
+        const n = calls[0] - c0;
+        const b = al.bytesPerCall;
+        const d1 = qx(set, 1) - a1, d2 = qx(set, 2) - a2, d3 = qx(set, 3) - a3;
+        if (!(b !== null && al.settled === true && Math.round(b) === 0)) {
+            errs.push(tag + ' alloc bytesPerCall=' + b + ' settled=' + al.settled);
+        }
+        if (n !== X_ITERS * 5 || d1 !== kicks * n || d2 !== X_RESEEDS * n || d3 !== tries * n) {
+            errs.push(tag + ' alloc-lane counters calls=' + n + ' kicks+' + d1 + ' reseedOps+' + d2 +
+                ' tries+' + d3 + ' (model per call ' + kicks + '/' + X_RESEEDS + '/' + tries + ')');
+        }
+        const c1 = calls[0];
+        const e1 = qx(set, 1), e2 = qx(set, 2), e3 = qx(set, 3);
+        const r = measureOps(step, { ops: cycles, warmup: 0, stabilize: 'deep' });
+        const m = calls[0] - c1;
+        const f1 = qx(set, 1) - e1, f2 = qx(set, 2) - e2, f3 = qx(set, 3) - e3;
+        const ab = r.summary.arrayBuffers;
+        const rep = checkNoGc(r.summary, { maxArrayBuffersGrowth: 0 });
+        if (!(rep.verdict === 'pass' && ab.settled === true && ab.growthBytes === 0)) {
+            errs.push(tag + ' abGrowth=' + ab.growthBytes + ' settled=' + ab.settled + ' verdict=' + rep.verdict);
+        }
+        if (!(f2 >= 1)) errs.push(tag + ' reseedOps delta ' + f2 + ' < 1: the reseed lane is vacuous');
+        if (m !== cycles || f1 !== kicks * m || f2 !== X_RESEEDS * m || f3 !== tries * m) {
+            errs.push(tag + ' window counters calls=' + m + ' kicks+' + f1 + ' reseedOps+' + f2 +
+                ' tries+' + f3 + ' (want ' + kicks * cycles + '/' + X_RESEEDS * cycles + '/' +
+                tries * cycles + ')');
+        }
+        for (const e of errs) fails.push(e);
+        return { b, n, d1, d2, d3, ab: ab.growthBytes, m, f1, f2, f3, ok: errs.length === 0 };
+    }
+
+    const xr = new XFastTrie(XRU, XRC);
+    const xrCalls = new Int32Array(1);
+    const xrDummy = new Int32Array(1);
+    const stepR = makeReseedStep(xr, xrCalls, xrDummy, 0);
+    const x2a = xReseedLane('X2a', xr, stepR, xrCalls, X_KICKS, X_TRIES, X_KICK_CYCLES);
+
+    // Forced rebuilds: an instance-own `_fill` that fails the first X_FORCED
+    // tries of every stall, then delegates (each failed try = one rebuild).
+    const xf = new XFastTrie(XRU, XRC);
+    const xfFails = new Int32Array(1);
+    const realFill = XFastTrie.prototype._fill;
+    xf._fill = function forcedFill(L) {
+        if (xfFails[0] > 0) {
+            xfFails[0]--;
+            return false;
+        }
+        return realFill.call(this, L);
+    };
+    const xfCalls = new Int32Array(1);
+    const stepF = makeReseedStep(xf, xfCalls, xfFails, X_FORCED);
+    const x2b = xReseedLane('X2b', xf, stepF, xfCalls, X_KICKS, X_FORCED + 1, X_REBUILD_CYCLES);
+
+    // X2c transient lane. nsLane's shape (gc before each window, scavenged
+    // window discarded, min over windows 1..NS_W-1, window 0 printed only) at
+    // XNS_K reseed cycles per window: a dropped per-reseed typed array (~150 B
+    // / cycle) then fills ~2.4 MB of new space, flipping on excess instead of
+    // scavenging every window into a null. The limit stays NS_MAX_EXCESS bytes
+    // per window (a window holds 2.5 x NS_K ops, so per op it is stricter).
+    // `set` null = baseline (no counter checks). bad = windows whose cycle
+    // count or reseedOps delta missed the model.
+    const XNS_K = 16384;
+    function nsLaneX(fn, set, calls) {
+        for (let i = 0; i < XNS_K * 2; i++) fn(i);
+        let min = -1;
+        let first = -1;
+        let valid = 0;
+        let bad = 0;
+        for (let w = 0; w < NS_W; w++) {
+            const c0 = calls === null ? 0 : calls[0];
+            const r0 = set === null ? 0 : qx(set, 2);
+            globalThis.gc();
+            const a = newSpaceUsed();
+            for (let i = 0; i < XNS_K; i++) fn(i);
+            const z = newSpaceUsed();
+            if (set !== null && (calls[0] - c0 !== XNS_K || qx(set, 2) - r0 !== X_RESEEDS * XNS_K)) bad++;
+            if (a < 0 || z < 0 || z < a) continue;
+            const d = z - a;
+            if (w === 0) { first = d; continue; }
+            valid++;
+            if (min < 0 || d < min) min = d;
+        }
+        return { min: valid >= (NS_W >>> 1) ? min : null, first, valid, bad };
+    }
+    const nsBaseX = nsLaneX(emptyFn, null, null);
+    // Excess bytes per XNS_K-cycle window over the baseline; excess null = not
+    // measured.
+    function nsExcessX(fn, set, calls) {
+        const r = nsLaneX(fn, set, calls);
+        const ex = r.min === null || nsBaseX.min === null ? null : r.min - nsBaseX.min;
+        return { excess: ex, first: r.first - nsBaseX.min, valid: r.valid, bad: r.bad };
+    }
+    function x2Transient(tag, fn, set, calls) {
+        const r = nsExcessX(fn, set, calls);
+        const ok = r.excess !== null && r.excess < NS_MAX_EXCESS && r.bad === 0;
+        if (!ok) {
+            fails.push(tag + ' transient ' + (r.excess === null ? 'not measured (null)' :
+                'excess ' + r.excess + ' B per ' + XNS_K + ' cycles (limit ' + NS_MAX_EXCESS + ')') +
+                ' valid=' + r.valid + ' badWindows=' + r.bad);
+        }
+        r.ok = ok;
+        return r;
+    }
+    const x2c = x2Transient('X2c natural', stepR, xr, xrCalls);
+    const x2d = x2Transient('X2c forced', stepF, xf, xfCalls);
+    console.log('X2 U=' + XRU + ' C=' + XRC + ' keys=' + NXK +
+        ' natural: alloc=' + (x2a.b === null ? 'null' : Math.round(x2a.b)) + ' B/op over ' + x2a.n +
+        ' cycles (kicks+' + x2a.d1 + ' reseedOps+' + x2a.d2 + ' tries+' + x2a.d3 + ')' +
+        ' window ' + x2a.m + ' cycles kicks+' + x2a.f1 + ' reseedOps+' + x2a.f2 + ' tries+' + x2a.f3 +
+        ' abGrowth=' + x2a.ab +
+        ' | forced: alloc=' + (x2b.b === null ? 'null' : Math.round(x2b.b)) + ' B/op over ' + x2b.n +
+        ' cycles (kicks+' + x2b.d1 + ' reseedOps+' + x2b.d2 + ' rebuilds+' + x2b.d3 + ')' +
+        ' window ' + x2b.m + ' cycles kicks+' + x2b.f1 + ' reseedOps+' + x2b.f2 + ' rebuilds+' + x2b.f3 +
+        ' abGrowth=' + x2b.ab +
+        ' | transient (limit ' + NS_MAX_EXCESS + ' B / ' + XNS_K + ' cycles):' +
+        ' natural nsExcess=' + x2c.excess + ' nsWin0=' + x2c.first + ' valid=' + x2c.valid +
+        ' badWindows=' + x2c.bad +
+        ' forced nsExcess=' + x2d.excess + ' nsWin0=' + x2d.first + ' valid=' + x2d.valid +
+        ' badWindows=' + x2d.bad +
+        ' (each window ' + XNS_K + ' cycles, reseedOps+' + X_RESEEDS * XNS_K + ')' +
+        ' | ' + (x2a.ok && x2b.ok && x2c.ok && x2d.ok ? 'ok' : 'FAIL'));
+
+    // ---- X3: retention churn (construct / fill / clear / drop) ---------------
+    // Same contract as T2 (noop cleanup, string tag, own frame). Every cycle's
+    // fill is the collide stream, so each instance reseeds once (counted).
+    function churnX(tracker, held, reseeds) {
+        let tracked = 0;
+        for (let i = 0; i < CYCLES; i++) {
+            const s = new XFastTrie(XRU, XRC);
+            for (let j = 0; j < NXK; j++) s.add(xKeys[j]);
+            s.has(xKeys[0]);
+            s.successor(xKeys[0]);
+            s.predecessor(xKeys[NXK - 1]);
+            s.min();
+            s.max();
+            s.delete(xKeys[4]);
+            reseeds[0] += s._q[2];
+            s.clear();
+            s.add(i & (XRU - 1));
+            tracker.track(s, noop, 'xfasttrie', { audit: true });
+            tracked++;
+            if (held !== null) held.push(s);
+        }
+        return tracked;
+    }
+    const boxX3 = { collected: 0, leaks: [], warns: [] };
+    const trackerX3 = makeTracker('lite-loglogn-xft', boxX3);
+    const reseedX3 = new Int32Array(1);
+    const trackedX3 = churnX(trackerX3, null, reseedX3);
+    const liveX3 = await drain(trackerX3);
+    const findingsX3 = trackerX3.audit();
+    globalThis.gc();
+    await settle(25);
+    const afterX3 = trackerX3.size();
+    const x3Ok = trackedX3 === CYCLES && liveX3 === 0 && afterX3 === 0 &&
+        boxX3.collected === CYCLES && findingsX3.length === 0 && boxX3.leaks.length === 0 &&
+        reseedX3[0] === CYCLES * X_RESEEDS;
+    if (!x3Ok) {
+        fails.push('X3 tracked=' + trackedX3 + ' size=' + liveX3 + ' after=' + afterX3 +
+            ' collected=' + boxX3.collected + ' findings=' + findingsX3.length +
+            ' leaks=' + boxX3.leaks.length + ' reseeds=' + reseedX3[0] + ' (want ' + CYCLES + ')');
+        for (const f of findingsX3) fails.push('X3 finding ' + f.kind + ':' + f.reason);
+        for (const l of boxX3.leaks) fails.push('X3 leak ' + l);
+    }
+    console.log('X3 cycles=' + CYCLES + ' U=' + XRU + ' C=' + XRC + ' size=' + liveX3 + '/0' +
+        ' after=' + afterX3 + ' collected=' + boxX3.collected + '/' + trackedX3 +
+        ' reseeds=' + reseedX3[0] +
+        ' findings=' + findingsX3.length + ' warnings=' + boxX3.warns.length +
+        ' leaks=' + boxX3.leaks.length +
+        ' | ' + (x3Ok ? 'ok' : 'FAIL'));
+
+    // ---- X4: controls (each MUST flip its X-tier's check) --------------------
+    // CX1 retaining loop on the X0 (2^20) step: measureAllocs MUST read > 0.
+    const xHold = [];
+    const xStepA = x0a.step;
+    const xRetainFn = function xRetain(i) { xStepA(i); xHold.push([i]); };
+    const cx1 = measureAllocs(xRetainFn, { iterations: 20000, batches: 4 });
+    const cx1Bpc = cx1.bytesPerCall;
+    const cx1Flip = cx1Bpc !== null && Math.round(cx1Bpc) > 0;
+    xHold.length = 0;
+
+    // CX2 transient box on the X0 (2^20) step: one array per op into a 64-slot
+    // ring (as C2). The new-space lane MUST read over its threshold.
+    const xRing = new Array(64).fill(null);
+    const xBoxFn = function xBoxed(i) { xStepA(i); xRing[i & 63] = [i]; };
+    const cx2 = nsExcess(xBoxFn);
+    const cx2Flip = cx2 !== null && cx2.excess >= NS_MAX_EXCESS;
+    const cx2Bpo = cx2 === null ? null : Math.max(0, cx2.excess) / NS_K;
+
+    // CX3 ReallocReseed (M-reseedAlloc): every reseed snapshots the leaf thread
+    // into a NEW Uint32Array appended to a log the instance keeps (the C3
+    // GrowingBitset shape), driven by X2's step and window. abGrowth MUST be
+    // > 0, and the window must actually have reseeded.
+    class ReallocReseed extends XFastTrie {
+        _rebuild(L, f) {
+            const old = this._snap;
+            const next = new Uint32Array(old.length + this._c + 1);
+            next.set(old);
+            let o = old.length;
+            for (let i = this._next[0]; i !== 0; i = this._next[i]) next[o++] = this._key[i];
+            this._snap = next;
+            super._rebuild(L, f);
+        }
+    }
+    const xg = new ReallocReseed(XRU, XRC);
+    xg._snap = new Uint32Array(XRC + 1);
+    const xgCalls = new Int32Array(1);
+    const stepXG = makeReseedStep(xg, xgCalls, xrDummy, 0);
+    const g2 = qx(xg, 2);
+    const rx3 = measureOps(stepXG, { ops: X_KICK_CYCLES, warmup: 0, stabilize: 'deep' });
+    const gRes = qx(xg, 2) - g2;
+    const abx3 = rx3.summary.arrayBuffers;
+    const repx3 = checkNoGc(rx3.summary, { maxArrayBuffersGrowth: 0 });
+    const cx3Flip = repx3.verdict !== 'pass' && abx3.growthBytes > 0 && gRes >= 1;
+
+    // CX5 DropReseed (M-reseedAlloc, the E6 control): ReallocReseed with
+    // `this._snap = next` removed -- every reseed allocates a Uint32Array
+    // snapshot of the leaf thread and drops it. abGrowth and the retained lane
+    // cannot see it; X2's transient lane MUST read excess >= limit on a MEASURED
+    // window (null is not a flip) whose cycles and reseeds matched the model.
+    class DropReseed extends XFastTrie {
+        _rebuild(L, f) {
+            const old = this._snap;
+            const next = new Uint32Array(old.length + this._c + 1);
+            next.set(old);
+            let o = old.length;
+            for (let i = this._next[0]; i !== 0; i = this._next[i]) next[o++] = this._key[i];
+            super._rebuild(L, f);
+        }
+    }
+    const xd = new DropReseed(XRU, XRC);
+    xd._snap = new Uint32Array(XRC + 1);
+    const xdCalls = new Int32Array(1);
+    const stepXD = makeReseedStep(xd, xdCalls, xrDummy, 0);
+    const cx5 = nsExcessX(stepXD, xd, xdCalls);
+    const cx5Flip = cx5.excess !== null && cx5.excess >= NS_MAX_EXCESS && cx5.bad === 0;
+
+    // CX4 retained array: the X3 churn, every instance also held past the
+    // drain. tracker.size() MUST stay > 0.
+    const boxX4 = { collected: 0, leaks: [], warns: [] };
+    const trackerX4 = makeTracker('lite-loglogn-xft-control', boxX4);
+    const xHeld = [];
+    churnX(trackerX4, xHeld, new Int32Array(1));
+    const liveX4 = await drain(trackerX4);
+    const cx4Flip = liveX4 > 0;
+    xHeld.length = 0;
+
+    console.log('X4 controls' +
+        ' retain.alloc=' + (cx1Bpc === null ? 'null' : Math.round(cx1Bpc)) + ' B/op ' +
+        (cx1Flip ? 'flipped' : 'PASSED') +
+        ' box.transient=' + fmt(cx2Bpo, 3) + ' B/op ' + (cx2Flip ? 'flipped' : 'PASSED') +
+        ' reallocReseed.abGrowth=' + abx3.growthBytes + ' (reseedOps+' + gRes + ') ' +
+        (cx3Flip ? 'flipped' : 'PASSED') +
+        ' dropReseed.nsExcess=' + cx5.excess + ' B / ' + XNS_K + ' cycles (' +
+        (cx5.excess === null ? 'null' : fmt(cx5.excess / XNS_K, 1)) + ' B/cycle, valid=' + cx5.valid +
+        ' badWindows=' + cx5.bad + ') ' + (cx5Flip ? 'flipped' : 'PASSED') +
+        ' retained.size=' + liveX4 + ' ' + (cx4Flip ? 'flipped' : 'PASSED') +
+        ' | ' + (cx1Flip && cx2Flip && cx3Flip && cx4Flip && cx5Flip ? 'ok' : 'FAIL'));
+    if (!cx1Flip) fails.push('control xRetain PASSED its check (alloc ' + cx1Bpc + ' B/op): X0 alloc lane is blind');
+    if (!cx2Flip) fails.push('control xBox PASSED its check: X0 transient lane is blind');
+    if (!cx3Flip) {
+        fails.push('control ReallocReseed PASSED its check (abGrowth ' + abx3.growthBytes +
+            ', reseedOps+' + gRes + '): X2 is blind');
+    }
+    if (!cx4Flip) fails.push('control xRetained PASSED its check (size ' + liveX4 + '): X3 is blind');
+    if (!cx5Flip) {
+        fails.push('control DropReseed PASSED its check (nsExcess ' + cx5.excess + ', valid ' +
+            cx5.valid + ', badWindows ' + cx5.bad + '): X2 transient lane is blind');
+    }
+
+    const xAlloc = Math.max(x0a.b === null ? Infinity : Math.round(x0a.b),
+        x0b.b === null ? Infinity : Math.round(x0b.b),
+        x2a.b === null ? Infinity : Math.round(x2a.b),
+        x2b.b === null ? Infinity : Math.round(x2b.b));
+    const xTrans = x0a.t === null || x0b.t === null ? null : Math.max(x0a.t, x0b.t);
+    const xAb = Math.max(abx1.growthBytes, x2a.ab, x2b.ab);
+
     // ---- verdict + GATE line ----------------------------------------------
     const ok = fails.length === 0;
     console.log(
@@ -424,6 +942,16 @@ async function main() {
         ' | alloc=' + (bpc === null ? 'null' : Math.round(bpc)) + ' B/op' +
         ' transient=' + fmt(tBpo, 3) + ' B/op' +
         ' abGrowth=' + ab1.growthBytes +
+        ' | xft leak=size ' + liveX3 + '/0 findings=' + findingsX3.length +
+        ' warnings=' + boxX3.warns.length +
+        ' gc major=' + Math.max(x0a.major, x0b.major) + ' minor=' + (x0a.minor + x0b.minor) +
+        ' maxMs=' + Math.max(x0a.maxMs, x0b.maxMs).toFixed(2) +
+        ' alloc=' + (xAlloc === Infinity ? 'null' : xAlloc) + ' B/op' +
+        ' transient=' + fmt(xTrans, 3) + ' B/op' +
+        ' abGrowth=' + xAb +
+        ' reseedExcess=' + (x2c.excess === null || x2d.excess === null ? 'null' :
+            Math.max(x2c.excess, x2d.excess)) + ' B/' + XNS_K +
+        ' kicks=+' + x2a.f1 + ' rebuilds=+' + x2b.f3 + ' reseedOps=+' + (x2a.f2 + x2b.f2) +
         ' | ' + (ok ? 'ok' : 'FAIL') + ' (sink=' + SINK[0] + ')');
     if (!ok) {
         for (const f of fails) console.error('  ' + f);

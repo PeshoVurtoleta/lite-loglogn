@@ -12,7 +12,10 @@
  *     node test/witness.mjs --xft      the XFastTrie lane ONLY (PLAN-xfasttrie G12):
  *                                      U-sweep, n-sweep, update fit, latency,
  *                                      A/B via abVerdict; combinable with --smoke
- *                                      and --w32 (or LOGLOGN_W32=1); REPORTED
+ *                                      and --w32 (or LOGLOGN_W32=1); REPORTED; its
+ *                                      untimed probe tier-up runs in a GC window
+ *                                      (gc.major 0, arrayBuffers growth 0 B; FAIL
+ *                                      exit 1, also in smoke)
  *
  * Every timed run goes through the shared-host lock:
  *     node ~/.claude/hooks/quiet-lock.mjs run "lite-loglogn witness" -- node test/witness.mjs
@@ -1530,7 +1533,9 @@ const XFT_W_N = 28;
 const XFT_N_U = 4096;      // U-sweep n
 const XFT_N_AA = 4096;     // A/A + drift probe + control config
 const XFT_W_AA = 20;
-const XFT_WARM = 16;       // untimed probe tier-up blocks before round 1
+const XFT_WARM = 16;       // untimed probe tier-up blocks before round 1 (inside the GC window)
+const XFT_GC_SETTLE_MS = 50;      // settle before and after a GC window (gc entries arrive async)
+const XFT_GC_RETAIN = 1 << 20;    // gc-window control: bytes of the retained fresh ArrayBuffer
 
 const X_XS = 0;     // XFastTrie successor block
 const X_SS = 1;     // StratifiedBitset successor block
@@ -1670,9 +1675,10 @@ function xBuild(Cls, keys, U, cap) {
     return s;
 }
 
-// --xft entry: flag check, then the lane's two modules (dynamic: the static import list
-// stays the six that test/WitnessVerdict.test.js V18's data: URL source mutant rewrites,
-// and the default / --w32 / --tier paths load nothing new), then the lane
+// --xft entry: flag check, then the lane's modules -- LogLogN.js, abVerdict.mjs, and for the
+// GC window lite-gc-profiler + node:v8 / node:vm (dynamic: the static import list stays the
+// six that test/WitnessVerdict.test.js V18's data: URL source mutant rewrites, and the
+// default / --w32 / --tier paths load nothing new), then the lane
 async function xftMain(argv, env) {
     const KNOWN = ['--xft', '--smoke', '--w32'];
     for (const a of argv) {
@@ -1682,16 +1688,27 @@ async function xftMain(argv, env) {
             return 1;
         }
     }
-    const [lib, ab] = await Promise.all([import('../LogLogN.js'), import('./helpers/abVerdict.mjs')]);
+    const [lib, ab, gp, v8, vm] = await Promise.all([import('../LogLogN.js'), import('./helpers/abVerdict.mjs'),
+        import('@zakkster/lite-gc-profiler'), import('node:v8'), import('node:vm')]);
     if (typeof lib.XFastTrie !== 'function' || lib.StratifiedBitset !== StratifiedBitset ||
         typeof ab.abVerdict !== 'function' || typeof ab.AB_EFFECT_FLOOR !== 'number') {
         throw new WitnessFail('xft: LogLogN.js must export XFastTrie (and the same StratifiedBitset), ' +
             'abVerdict.mjs must export abVerdict and AB_EFFECT_FLOOR');
     }
-    return xftLane(argv, env, lib.XFastTrie, ab.abVerdict, ab.AB_EFFECT_FLOOR);
+    // a forced full GC, deterministic: the --expose-gc global, else the flag set at run time
+    // and gc read from a fresh context (the flag only installs gc in contexts created after it)
+    let gcFn = globalThis.gc;
+    if (typeof gcFn !== 'function') {
+        v8.setFlagsFromString('--expose-gc');
+        gcFn = vm.runInNewContext('gc');
+    }
+    if (typeof gp.GcProfiler !== 'function' || typeof gcFn !== 'function') {
+        throw new WitnessFail('xft: lite-gc-profiler must export GcProfiler, and a gc() function must be obtainable');
+    }
+    return xftLane(argv, env, lib.XFastTrie, ab.abVerdict, ab.AB_EFFECT_FLOOR, gp.GcProfiler, gcFn);
 }
 
-function xftLane(argv, env, XFastTrie, abVerdict, FLOOR) {
+async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, GcProfiler, gcFn) {
     const SMOKE = argv.includes('--smoke');
     const widthsAll = witnessWidths(argv, env);
     const K = SMOKE ? 3 : WITNESS_K;
@@ -1767,6 +1784,55 @@ function xftLane(argv, env, XFastTrie, abVerdict, FLOOR) {
     say('CONTROL abVerdict self-check: base PASS exit 0 (win); control-not-losing FAIL exit 1;' +
         ' A/A winner above the floor PENDING exit 2 -- ok');
 
+    // GC window (cold, untimed; never inside timeInto / abba / latency): gcFn() + settle, then
+    // fn inside ONE GcProfiler window with process.memoryUsage().arrayBuffers read before fn and
+    // after the closing settle. Tolerance ZERO per metric: gc.major <= 0, arrayBuffers growth
+    // <= 0 B (the window body allocates no ArrayBuffer and writes no stdout; a concurrent free
+    // can only LOWER the reading, never raise it). NaN / unobserved fails closed. The startup
+    // controls and the real window run through this one code path. The opening gc() and the
+    // opening settle are defensive (they push back V8's memory-reducer timer and let pending
+    // frees finish); no test pins them.
+    const settle = (ms) => new Promise((r) => { setTimeout(r, ms); });
+    const gcWindow = async (fn) => {
+        gcFn();
+        await settle(XFT_GC_SETTLE_MS);
+        const g = new GcProfiler().start();
+        const ab0 = process.memoryUsage().arrayBuffers;
+        fn();
+        await settle(XFT_GC_SETTLE_MS);
+        const ab1 = process.memoryUsage().arrayBuffers;
+        const s = g.summary();
+        g.stop();
+        const w = { observed: s.gc.observed === true, major: s.gc.major, minor: s.gc.minor, growth: ab1 - ab0,
+            majorBad: true, abBad: true };
+        w.majorBad = !w.observed || !Number.isInteger(w.major) || !(w.major <= 0);
+        w.abBad = !Number.isFinite(w.growth) || !(w.growth <= 0);
+        return w;
+    };
+    const gcs = (w) => 'major ' + w.major + ' growth ' + w.growth + ' B';
+    // must-fail controls: an empty window is clean; retaining a fresh ArrayBuffer flips ONLY
+    // arrayBuffers; a forced full gc() flips ONLY gc.major. Coverage floor: 3 steps ran.
+    const GKEEP = [];
+    const GCC = new Int32Array(1);
+    const wE = await gcWindow(() => { GCC[0]++; });
+    const wR = await gcWindow(() => { GCC[0]++; GKEEP.push(new ArrayBuffer(XFT_GC_RETAIN)); });
+    const wK = await gcWindow(() => { GCC[0]++; gcFn(); });
+    const keptB = GKEEP.length === 1 ? GKEEP[0].byteLength : -1;
+    GKEEP.length = 0;
+    const gcBad = [];
+    if (GCC[0] !== 3 || keptB !== XFT_GC_RETAIN) gcBad.push('coverage: steps ' + GCC[0] + ' / 3, kept ' + keptB + ' B');
+    if (wE.majorBad || wE.abBad) gcBad.push('empty window not clean (' + gcs(wE) + ')');
+    if (!wR.abBad || !(wR.growth > 0)) gcBad.push('retain did not flip arrayBuffers (' + gcs(wR) + ')');
+    if (wR.majorBad) gcBad.push('retain flipped gc.major (' + gcs(wR) + ')');
+    if (!wK.majorBad || !(wK.observed && wK.major > 0)) gcBad.push('forced gc() did not flip gc.major (' + gcs(wK) + ')');
+    if (wK.abBad) gcBad.push('forced gc() flipped arrayBuffers (' + gcs(wK) + ')');
+    if (gcBad.length > 0) {
+        say('FAIL control gc-window: ' + gcBad.join('; '));
+        return 1;
+    }
+    say('CONTROL gc-window: empty ' + gcs(wE) + ' clean; retained ' + keptB + ' B ArrayBuffer ' + gcs(wR) +
+        ' flips arrayBuffers only; forced gc() ' + gcs(wK) + ' flips gc.major only -- ok');
+
     // per-run state, allocated ONCE before any round
     const nAbba = 2 * NS.length + 2 * WS.length + 3;   // sweeps x 2, 2 A/A, 1 control
     const series = new Float64Array(K * nAbba);
@@ -1840,7 +1906,17 @@ function xftLane(argv, env, XFastTrie, abVerdict, FLOOR) {
     if (xRun(ctrl, qAA, Q) !== ((2 * xRun(xA, qAA, Q)) | 0)) {
         throw new WitnessFail('pre-pass control: the x2 block does not fold to twice the single block (not double work)');
     }
-    for (let i = 0; i < XFT_WARM; i++) SINK[0] ^= xRun(probe, qAA, Q);   // tier the probe up before round 1
+    // tier the probe up before round 1, inside the GC window (untimed; the FULL run takes the
+    // same window here, before its first timed block)
+    const GWN = new Int32Array(1);
+    const wW = await gcWindow(() => {
+        for (let i = 0; i < XFT_WARM; i++) { SINK[0] ^= xRun(probe, qAA, Q); GWN[0]++; }
+    });
+    say('GC window: ' + GWN[0] + ' untimed XFastTrie successor probe blocks of ' + Q + ' queries (the tier-up before' +
+        ' round 1): gc.major ' + wW.major + ' minor ' + wW.minor + ' arrayBuffers growth ' + wW.growth +
+        ' B (tolerance: major 0, growth 0 B) -- ' + (wW.majorBad || wW.abBad ? 'FAIL' : 'ok'));
+    if (wW.majorBad) fails.push('gc window: gc.major ' + wW.major + ' > 0 (observed ' + wW.observed + ')');
+    if (wW.abBad) fails.push('gc window: arrayBuffers growth ' + wW.growth + ' B > 0');
 
     // time one block of runner r: ns/op, written into TM[slot]
     const timeInto = (r, qs, slot) => {
@@ -1882,7 +1958,7 @@ function xftLane(argv, env, XFastTrie, abVerdict, FLOOR) {
         }
         return t;
     };
-    const tl = (t) => t.wins + ' / ' + t.losses + ' / ' + (K - t.wins - t.losses);
+    const tl = (t) => t.wins + ' / ' + t.losses + ' / ' + (t.rounds - t.wins - t.losses);
     const r4 = (x) => (Number.isFinite(x) ? x.toFixed(4) : String(x));
     const ab = (name, t) => ({ name, wins: t.wins, losses: t.losses, ratio: t.ratio });
 
@@ -2042,7 +2118,9 @@ function xftLane(argv, env, XFastTrie, abVerdict, FLOOR) {
     const wantLat = 2 * (NS.length + WS.length);
     say('COVERAGE: n-sweep ' + NS.length + ' points, U-sweep ' + WS.length + ' widths, ABBA runs ' + ST.abba + ' / ' +
         nAbba + ' (K ' + K + ' rounds each), probe rounds ' + ST.pos + ', latency runs ' + ST.lat + ' / ' + wantLat +
-        ', A/B scenarios ' + scenarios.length + ', pre-pass queries ' + CHK[0]);
+        ', A/B scenarios ' + scenarios.length + ', pre-pass queries ' + CHK[0] + ', gc window blocks ' + GWN[0] +
+        ' / ' + XFT_WARM);
+    if (!(GWN[0] > 0) || GWN[0] !== XFT_WARM) fails.push('coverage: gc window blocks ' + GWN[0] + ' != ' + XFT_WARM);
     if (ST.abba !== nAbba) fails.push('coverage: ABBA runs ' + ST.abba + ' != ' + nAbba);
     if (ST.lat !== wantLat) fails.push('coverage: latency runs ' + ST.lat + ' != ' + wantLat);
     if (scenarios.length !== NS.length + WS.length || !(scenarios.length > 0)) {

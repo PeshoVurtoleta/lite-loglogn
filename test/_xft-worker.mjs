@@ -206,9 +206,14 @@ export function runXft(Cls, U, C, nOps, seed) {
 
     const checkpoint = (at) => {
         checkpoints++;
+        // the walks get their own try: a walk throw is a WALK divergence (WK), never a CK one
         try {
             walk(at, true);
             walk(at, false);
+        } catch (e) {
+            check(WK, 'walk-threw', null, at, String(e && e.name), 'no throw');
+        }
+        try {
             cuckooCheck(at);
         } catch (e) {
             check(CK, 'checkpoint-threw', null, at, String(e && e.name), 'no throw');

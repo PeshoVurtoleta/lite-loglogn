@@ -30,6 +30,8 @@ import {
     ROW_NAMES,
 } from './helpers/xftStream.mjs';
 
+/** The five public methods run with every bad key (rows per bad key = BAD_OPS.length). */
+export const BAD_OPS = ['has', 'delete', 'successor', 'predecessor', 'add'];
 export const COLS = ['_lv', '_occ', '_tk', '_tmin', '_tmax', '_key', '_next', '_prev'];
 const NUM = /^(0|[1-9][0-9]*)$/;
 
@@ -58,6 +60,23 @@ function wrap(inst) {
     const R = [0, 0, 0, 0, 0, 0, 0, 0];
     const W = [0, 0, 0, 0, 0, 0, 0, 0];
     const real = COLS.map((c) => inst[c]);
+    // _q (q0 scratch + counters): counted apart from the 8 columns (it is written by EVERY keyed op)
+    const realQ = inst._q;
+    const Q = { r: 0, w: 0 };
+    inst._q = new Proxy(realQ, {
+        get(t, k) {
+            if (typeof k === 'string' && NUM.test(k)) Q.r++;
+            return Reflect.get(t, k);
+        },
+        set(t, k, v) {
+            if (typeof k === 'string' && NUM.test(k)) {
+                Q.w++;
+                t[k] = v;
+                return true;
+            }
+            return Reflect.set(t, k, v);
+        },
+    });
     COLS.forEach((c, i) => {
         inst[c] = new Proxy(real[i], {
             get(t, k) {
@@ -77,15 +96,17 @@ function wrap(inst) {
     return {
         measure(fn) {
             for (let i = 0; i < 8; i++) { R[i] = 0; W[i] = 0; }
-            const q = inst._q;
+            Q.r = 0;
+            Q.w = 0;
+            const q = realQ; // the counters are read raw: the instrument never counts itself
             const k0 = q[1];
             const r0 = q[2];
             let ret;
             let threw = null;
             try { ret = fn(); } catch (e) { threw = e; }
-            return { R: R.slice(), W: W.slice(), ret, threw, dk: q[1] - k0, dr: q[2] - r0 };
+            return { R: R.slice(), W: W.slice(), ret, threw, dk: q[1] - k0, dr: q[2] - r0, qR: Q.r, qW: Q.w };
         },
-        unwrap() { COLS.forEach((c, i) => { inst[c] = real[i]; }); },
+        unwrap() { COLS.forEach((c, i) => { inst[c] = real[i]; }); inst._q = realQ; },
     };
 }
 
@@ -190,6 +211,11 @@ function row(ctx, label, keys, fn, want) {
     if (m.dk !== 0 || m.dr !== 0) bad.push('kicked ' + m.dk + ' / reseeded ' + m.dr + ' (state is not exact-row clean)');
     if (want.occ !== undefined && m.R[1] !== want.occ) bad.push('occ reads ' + m.R[1] + ' != ' + want.occ);
     if (want.noThreadRead === true && d.thrR !== 0) bad.push('thread columns read ' + d.thrR + ' words');
+    // exact thread traffic of an absent query (F12 / review nit): the search itself never reads _key
+    if (want.keyR !== undefined && m.R[5] !== want.keyR) bad.push('key reads ' + m.R[5] + ' != ' + want.keyR);
+    if (want.thrReads !== undefined && d.thrR !== want.thrReads) bad.push('thread reads ' + d.thrR + ' != ' + want.thrReads);
+    // q[0] is written exactly once by a keyed op (touches >= 1) and never by min / max (0 touches)
+    if (m.qW !== (want.t === 0 ? 0 : 1)) bad.push('_q writes ' + m.qW + ' != ' + (want.t === 0 ? 0 : 1));
     if (want.noWrite === true && d.allW !== 0) bad.push('writes ' + d.allW + ' != 0');
     if (want.throws === true) {
         if (!(m.threw instanceof RangeError) || !/^\[lite-loglogn\] /.test(m.threw.message)) {
@@ -233,13 +259,17 @@ function exactPhase(Cls, U) {
     row(ctx, 'succ present', [0], (t) => t.successor(0), { ...ONE, ret: undefined });
     row(ctx, 'pred present', [0], (t) => t.predecessor(0), { ...ONE, ret: undefined });
     {
-        const m = row(ctx, 'succ absent', [0], (t) => t.successor(1), { ...Q, ret: undefined });
+        // thread words read, hand-traced from SPEC (one hop): x = 1 on {0}: w >= 2 ends in
+        // _next[_tmax[hs]] (1 thread word); w = 1 ends in _next[_prev[0]] (2). pred adds _prev[sl]
+        // and the _key of the answer (key 0 is present, so 1 _key read). x = U-1 starts with a
+        // level-1 miss: _next[_prev[0]] (2 thread words).
+        const m = row(ctx, 'succ absent', [0], (t) => t.successor(1), { ...Q, ret: undefined, keyR: 0, thrReads: w === 1 ? 2 : 1 });
         extra.absSucc = m.R[0] / 4;
     }
-    row(ctx, 'pred absent', [0], (t) => t.predecessor(1), { ...Q, ret: 0 });
+    row(ctx, 'pred absent', [0], (t) => t.predecessor(1), { ...Q, ret: 0, keyR: 1, thrReads: w === 1 ? 4 : 3 });
     if (U - 1 > 1) {
-        row(ctx, 'succ absent top', [0], (t) => t.successor(U - 1), { ...Q, ret: undefined });
-        row(ctx, 'pred absent top', [0], (t) => t.predecessor(U - 1), { ...Q, ret: 0 });
+        row(ctx, 'succ absent top', [0], (t) => t.successor(U - 1), { ...Q, ret: undefined, keyR: 0, thrReads: 2 });
+        row(ctx, 'pred absent top', [0], (t) => t.predecessor(U - 1), { ...Q, ret: 0, keyR: 1, thrReads: 4 });
     }
     row(ctx, 'min', [0], (t) => t.min(), { ...ZERO, ret: 0, noWrite: true });
     row(ctx, 'max', [0], (t) => t.max(), { ...ZERO, ret: 0, noWrite: true });
@@ -290,13 +320,15 @@ function badPhase(Cls, U) {
     const h = wrap(inst);
     for (const k of badKeys(U)) {
         const name = 'bad ' + (typeof k === 'bigint' ? k + 'n' : typeof k === 'string' ? '"' + k + '"' : String(k));
-        const ops = [['has', false], ['delete', false], ['successor', undefined], ['predecessor', undefined], ['add', null]];
-        for (const [op, want] of ops) {
+        const WANT = { has: false, delete: false, successor: undefined, predecessor: undefined, add: null };
+        for (const op of BAD_OPS) {
+            const want = WANT[op];
             const m = h.measure(() => inst[op](k));
             const d = derive(m);
             ctx.rows++;
-            if (d.allR !== 0 || d.allW !== 0) {
-                ctx.fails.push('U=' + U + ' ' + name + ' ' + op + ': reads ' + d.allR + ' writes ' + d.allW + ' (want 0 / 0)');
+            if (d.allR !== 0 || d.allW !== 0 || m.qR !== 0 || m.qW !== 0) {
+                ctx.fails.push('U=' + U + ' ' + name + ' ' + op + ': reads ' + d.allR + ' writes ' + d.allW +
+                    ' _q reads ' + m.qR + ' _q writes ' + m.qW + ' (want 0 / 0 / 0 / 0)');
             }
             if (op === 'add') {
                 if (!(m.threw instanceof RangeError) || !/^\[lite-loglogn\] /.test(m.threw.message)) {
@@ -333,6 +365,7 @@ function e4Phase(Cls, U) {
         if (m.R[1] !== 8) bad.push('occ reads ' + m.R[1] + ' != 8');
         if (d.allW !== 0) bad.push('writes ' + d.allW + ' != 0 (W=' + m.W.join(',') + ')');
         if (d.thrR !== 0) bad.push('_key/_next/_prev read ' + d.thrR + ' words (want 0)');
+        if (m.qW !== 1) bad.push('_q writes ' + m.qW + ' != 1 (q0 only)');
         if (snap(inst) !== before) bad.push('dump / byteLength changed');
         ctx.table.push('full reject ' + d.touches + '/' + d.tab + '/' + d.thr);
         if (bad.length > 0) ctx.fails.push('U=' + U + ' e4 full reject: ' + bad.join('; '));
@@ -350,7 +383,7 @@ function e4Phase(Cls, U) {
         ctx.rows++;
         const bad = [];
         if (!(m.threw instanceof RangeError)) bad.push('no RangeError');
-        if (d.allR !== 0 || d.allW !== 0) bad.push('reads ' + d.allR + ' writes ' + d.allW);
+        if (d.allR !== 0 || d.allW !== 0 || m.qR !== 0 || m.qW !== 0) bad.push('reads ' + d.allR + ' writes ' + d.allW + ' _q ' + m.qR + '/' + m.qW);
         if (snap(inst) !== before) bad.push('dump / byteLength changed');
         if (bad.length > 0) ctx.fails.push('U=' + U + ' e4 bad-key reject: ' + bad.join('; '));
     }

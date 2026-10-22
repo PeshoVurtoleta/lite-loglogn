@@ -77,7 +77,7 @@ test('boundary: single key k -- strict neighbours, below, above, absent', () => 
             assert.equal(t.successor(k), undefined, 'U=' + U + ' successor(k=' + k + ')');
             assert.equal(t.predecessor(k), undefined, 'U=' + U + ' predecessor(k=' + k + ')');
             if (k > 0) {
-                assert.equal(t.successor(0), k === 0 ? undefined : k, 'successor(0)');
+                assert.equal(t.successor(0), k, 'successor(0)');
                 assert.equal(t.successor(k - 1), k, 'successor(k-1)');
                 assert.equal(t.predecessor(k), undefined);
                 assert.equal(t.has(k - 1), false);
@@ -224,9 +224,15 @@ function dumpText(t) {
     return JSON.stringify(t.dump(), (k, v) => (ArrayBuffer.isView(v) ? Array.from(v) : v));
 }
 
-test('boundary: add at full throws RangeError [lite-loglogn], dump() deep-equal, byteLength identical', () => {
+/**
+ * The real add-at-full gate. Cls is the shipped class or a mutant; a violation throws an
+ * AssertionError. Returns the coverage: { checked, skipped } (configs with a fresh key / without).
+ */
+function addAtFullGate(Cls) {
+    let checked = 0;
+    let skipped = 0;
     for (const [U, C] of [[2, 1], [2, 2], [33, 1], [33, 5], [65537, 64], [TWO32, 4], [TWO32, 1]]) {
-        const t = new XFastTrie(U, C);
+        const t = new Cls(U, C);
         t.add(U - 1);
         for (let x = 0; t.size < C && x < U; x++) t.add(x);
         assert.equal(t.size, C);
@@ -237,9 +243,11 @@ test('boundary: add at full throws RangeError [lite-loglogn], dump() deep-equal,
         if (fresh < 0) {
             // C === U: every key present, so there is no new key to reject
             assert.equal(C, U);
+            skipped++;
             continue;
         }
         assert.throws(() => t.add(fresh), (e) => e instanceof RangeError && /\[lite-loglogn\]/.test(e.message));
+        assert.equal(t.size, C, 'U=' + U + ' C=' + C + ': a rejected add left size changed');
         assert.deepEqual(t.dump(), before, 'U=' + U + ' C=' + C);
         assert.equal(t.byteLength, bl);
         assert.equal(t.size, C);
@@ -250,7 +258,15 @@ test('boundary: add at full throws RangeError [lite-loglogn], dump() deep-equal,
         assert.equal(t.add(fresh), t);
         assert.equal(t.size, C);
         assert.equal(t.has(fresh), true);
+        checked++;
     }
+    return { checked, skipped };
+}
+
+test('boundary: add at full throws RangeError [lite-loglogn], dump() deep-equal, byteLength identical', () => {
+    const cov = addAtFullGate(XFastTrie);
+    assert.equal(cov.checked, 6, 'six configs have a fresh key');
+    assert.equal(cov.skipped, 1, '[2, 2] is full of every key');
 });
 
 test('boundary: add of an existing key at full returns this (no throw, no change)', () => {
@@ -321,7 +337,7 @@ const CLEAR_SRC = CLEAR_MATCHES === 1 ? SHIPPED.replace(CLEAR_FROM, '/* clearNoO
 const MX5_FROM = 'if (this._size === this._c) throwFull(this._c);';
 const MX5_MATCHES = SHIPPED.split(MX5_FROM).length - 1;
 const MX5_SRC = MX5_MATCHES === 1
-    ? SHIPPED.replace(MX5_FROM, 'this._size++;\n        if (this._size > this._c) throwFull(this._c);') : null;
+    ? SHIPPED.replace(MX5_FROM, 'this._size++;\n        if (this._size > this._c) throwFull(this._c);\n        this._size--;') : null;
 
 const CLEAR_CONFIGS = [
     { U: 2, C: 2, nOps: 6000, seed: 0x11111111 },
@@ -429,36 +445,15 @@ test('boundary: control clearNoOcc (clear() forgets _occ) is caught by the clear
     console.log('# clearNoOcc diverged in ' + bad.length + '/' + runs.length + ' configs; first: ' + bad[0].first);
 });
 
-test('boundary: control MX5 (size bumped before the full check) breaks the full-add no-op', async () => {
+test('boundary: control MX5 (size bumped before the full check, left bumped on the reject) is caught by the real add-at-full gate', async () => {
     assert.ok(MX5_SRC !== null);
     const mod = await import('data:text/javascript;base64,' + Buffer.from(MX5_SRC, 'utf8').toString('base64'));
-    // SPEC: a new key is accepted while size < C, rejected (no state change) at size === C.
-    // The mutant's early bump counts every accepted add twice, so it rejects a new key at
-    // size < C: filling C = 4 with 4 distinct keys must not throw on the shipped build.
-    const fill = (Cls) => {
-        const t = new Cls(33, 4);
-        let accepted = 0;
-        let threw = false;
-        for (const k of [3, 9, 15, 21]) {
-            try {
-                t.add(k);
-                accepted++;
-            } catch (e) {
-                threw = e instanceof RangeError;
-                break;
-            }
-        }
-        return { accepted, threw, size: t.size };
-    };
-    const good = fill(XFastTrie);
-    assert.deepEqual(good, { accepted: 4, threw: false, size: 4 });
-    const bad = fill(mod.XFastTrie);
-    assert.equal(bad.threw, true, 'MX5 rejected a new key below capacity');
-    assert.ok(bad.accepted < 4);
-    // and at full on the shipped build the rejected add is a no-op (size stays C)
-    assert.throws(() => new XFastTrie(33, 1).add(1).add(2), RangeError);
-    const one = new XFastTrie(33, 1);
-    one.add(1);
-    assert.throws(() => one.add(2), RangeError);
-    assert.equal(one.size, 1);
+    // below capacity the mutant is the identity (bump, check, undo): the gate's fill phase passes
+    const ok = new mod.XFastTrie(33, 4);
+    for (const k of [3, 9, 15, 21]) ok.add(k);
+    assert.equal(ok.size, 4, 'the mutant accepts C keys: only the full REJECT differs');
+    // the real gate must fail on it, by an AssertionError (a crash is not a kill)
+    assert.throws(() => addAtFullGate(mod.XFastTrie), { name: 'AssertionError', message: /a rejected add left size changed/ });
+    // and the same gate passes on the shipped class (the control is not vacuous)
+    assert.equal(addAtFullGate(XFastTrie).checked, 6);
 });

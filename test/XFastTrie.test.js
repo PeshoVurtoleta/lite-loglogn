@@ -175,6 +175,8 @@ function e4Probe(X, Hh) {
     let n = 0;
     const CFG = [[256, 8], [1000, 5], [2, 2], [65536, 16], [4294967296, 6], [17, 3]];
     let fullRejects = 0;
+    let tkTotal = 0;
+    let tkPartial = 0;
     try {
         for (const [U, C] of CFG) {
             const tag = 'U=' + U + ' C=' + C + ': ';
@@ -201,6 +203,26 @@ function e4Probe(X, Hh) {
             }
             const d0 = inst.dump();
             const bl0 = inst.byteLength;
+            // expected _tk reads of the full-add level-w miss: _slot reads tk[i] only when
+            // occ[i] !== 0, over the 8 probed slots (2 buckets x 4). Bucket indices come from the
+            // helper geometry (base / mask) and the instance's current seeds; occupancy is read
+            // raw BEFORE the Proxies go in.
+            let expTk = -1;
+            if (fresh >= 0) {
+                const gg = Hh.levelGeometry(U, C);
+                const dw = gg.levels[gg.w];
+                const jw = gg.w << 2;
+                const pw = fresh | 0;
+                const b1 = dw.base + ((Hh.fmix32(pw ^ inst._lv[jw + 2]) & dw.mask) << 2);
+                const b2 = dw.base + ((dw.mask + 1) << 2) + ((Hh.fmix32(pw ^ inst._lv[jw + 3]) & dw.mask) << 2);
+                expTk = 0;
+                for (let t = 0; t < 4; t++) {
+                    if (inst._occ[b1 + t] !== 0) expTk++;
+                    if (inst._occ[b2 + t] !== 0) expTk++;
+                }
+                tkTotal += expTk;
+                if (expTk < 8) tkPartial++;
+            }
             const pc = installCounters(inst);
             const lens = () => COLS.map((nm) => nm + '=' + pc.cnt[nm].r + '/' + pc.cnt[nm].w).join(' ');
             const only = (allowed) => {
@@ -217,8 +239,10 @@ function e4Probe(X, Hh) {
                 try { inst.add(fresh); } catch (e) { err = e; }
                 if (!(err instanceof RangeError) || !/\[lite-loglogn\]/.test(err.message)) {
                     bad = tag + 'full add did not throw the RangeError';
-                } else if (pc.cnt._lv.r !== 4 || pc.cnt._occ.r !== 8 || pc.cnt._tk.r > 8) {
+                } else if (pc.cnt._lv.r !== 4 || pc.cnt._occ.r !== 8) {
                     bad = tag + 'full add probe is not exactly one level-w miss: ' + lens();
+                } else if (pc.cnt._tk.r !== expTk) {
+                    bad = tag + 'full add _tk reads ' + pc.cnt._tk.r + ' !== occupied probed slots ' + expTk + ': ' + lens();
                 } else if (pc.cnt._lv.w !== 0 || pc.cnt._occ.w !== 0 || pc.cnt._tk.w !== 0 || !only(['_lv', '_occ', '_tk'])) {
                     bad = tag + 'full add wrote or read a forbidden column: ' + lens();
                 }
@@ -284,7 +308,46 @@ function e4Probe(X, Hh) {
     } catch (e) {
         return { bad: 'threw ' + (e && e.stack), n };
     }
-    return { bad: null, n, fullRejects };
+    return { bad: null, n, fullRejects, tkTotal, tkPartial };
+}
+
+/** F1: collide() keys advance reseedOps; clear() restores ALL 4(w+1) default seed words, keeps q[1..3]. */
+function e5ClearSeeds(X, Hh) {
+    try {
+        const keys = Hh.collide(65536, 16, 9);
+        if (keys === null || keys.length !== 9) return { bad: 'collide() found no group', n: 0 };
+        const inst = new X(65536, 16);
+        const fresh = new X(65536, 16);
+        for (const k of keys) inst.add(k);
+        const q = inst._q;
+        if (!(q[2] >= 1)) return { bad: 'no reseed happened: q[2] = ' + q[2], n: 0 };
+        const W4 = 4 * 17;
+        if (inst._lv.length !== W4 || fresh._lv.length !== W4) return { bad: '_lv length ' + inst._lv.length, n: 0 };
+        let differ = 0;
+        for (let i = 0; i < W4; i++) if (inst._lv[i] !== fresh._lv[i]) differ++;
+        if (differ === 0) return { bad: 'vacuous: the reseeded _lv equals a fresh one before clear()', n: 0 };
+        const q1 = q[1];
+        const q2 = q[2];
+        const q3 = q[3];
+        inst.clear();
+        // the SPEC default schedule from the helper (independent of the engine)
+        const g = Hh.levelGeometry(65536, 16);
+        let n = 0;
+        for (let i = 0; i < W4; i++) {
+            if (inst._lv[i] !== fresh._lv[i]) return { bad: '_lv[' + i + '] after clear() ' + inst._lv[i] + ' !== fresh ' + fresh._lv[i], n };
+            n++;
+        }
+        for (let L = 1; L <= 16; L++) {
+            const d = g.levels[L];
+            const e = [d.base, d.mask, d.s1, d.s2];
+            for (let t = 0; t < 4; t++) if (inst._lv[4 * L + t] !== e[t]) return { bad: 'level ' + L + ' word ' + t + ' is not the default schedule', n };
+        }
+        if (inst._q[1] !== q1 || inst._q[2] !== q2 || inst._q[3] !== q3) return { bad: 'clear() changed the counters', n };
+        if (inst.size !== 0) return { bad: 'size after clear()', n };
+        return { bad: null, n, differ, q2 };
+    } catch (e) {
+        return { bad: 'threw ' + (e && e.stack), n: 0 };
+    }
 }
 
 /** E5a: collide() keys force one reseed of level 16; seeds = reseedSeeds(s1_start, q[3]). */
@@ -429,7 +492,7 @@ function e5Poison(X, Hh) {
 }
 
 const PROBE_FNS = [sameJson, dumpViolation, e1Probe, installCounters, e4Probe, e5Collide, e5Reseed2,
-    findL12, e5Fail32, e5Fail32L16, e5Fail32L12, e5Poison];
+    findL12, e5Fail32, e5Fail32L16, e5Fail32L12, e5Poison, e5ClearSeeds];
 const WORKER_CODE =
     "const { parentPort, workerData } = require('node:worker_threads');\n" +
     'const COLS = ' + JSON.stringify(COLS) + ';\n' +
@@ -508,7 +571,16 @@ const M_RESEED_RUNNING = [['const t = fmix32((s1 + Math.imul(a, 0x9e3779b1)) | 0
 const M_UNDO_SKIP_LEVEL = [['for (let k = this._w; k > L; k--) {', 'for (let k = this._w; k > L + 1; k--) {']];
 const M_NO_UNDO = [['        this._undo(L, f);\n    }', '    }']];
 
+// clear() restores the pre-clear seeds after _init (the seeds survive clear())
+const M_CLEAR_KEEPS_SEEDS = [['        for (let i = 0; i < ts; i++) occ[i] = 0;\n        this._init();',
+    '        for (let i = 0; i < ts; i++) occ[i] = 0;\n        const keepLv = lv.slice();\n        this._init();\n        lv.set(keepLv);']];
+// non-short-circuit & in the second-bucket scan: same answers, but _tk is read on all 4 slots
+const M_TK_ALWAYS = [['for (; i < e; i++) if (occ[i] !== 0 && tk[i] === p) return i;\n        return -1;',
+    'for (; i < e; i++) if ((occ[i] !== 0) & (tk[i] === p)) return i;\n        return -1;']];
+
 const MUT = {
+    clearKeepsSeeds: [M_CLEAR_KEEPS_SEEDS, 'e5ClearSeeds'],
+    tkAlways: [M_TK_ALWAYS, 'e4Probe'],
     fullLate: [M_FULL_LATE, 'e4Probe'],
     addStopLong: [M_ADD_STOP_LONG, 'e1Probe'],
     fillMaxFirst: [M_FILL_MAX_FIRST, 'e1Probe'],
@@ -557,6 +629,14 @@ test('E4: full-reject = one level-w miss (4 _lv + 8 _occ reads), 0 writes, no th
     assert.equal(r.bad, null, String(r.bad));
     assert.equal(r.fullRejects, 5, 'five configs have a fresh key (U=2, C=2 is full of every key)');
     assert.ok(r.n >= 100, 'checks ' + r.n);
+    // coverage floors of the exact _tk equality: some probed slot is occupied, and some probe has an empty slot
+    assert.ok(r.tkTotal > 0, 'no occupied probed slot was ever compared: ' + r.tkTotal);
+    assert.ok(r.tkPartial > 0, 'every probe had 8 occupied slots: the equality could not tell < 8 from = 8');
+});
+
+test('control M-tkAlways: reading _tk on every slot of the second bucket (same answers) breaks the exact _tk count', OPTS, async () => {
+    const why = await control('tkAlways');
+    assert.match(why, /_tk reads/, 'killed by something other than the _tk equality: ' + why.slice(0, 160));
 });
 
 test('E4: the Proxy probe counts real traffic (the shipped has() absent reads 4 _lv + 8 _occ)', () => {
@@ -638,8 +718,20 @@ test('E5: a failed rollback POISONS (loud Error; TypeError on all 7 hot methods)
     assert.equal(r.n, 8);
 });
 
+test('F1: clear() restores all 4(w+1) default seed words after a reseed; q[1..3] are kept', OPTS, () => {
+    const r = e5ClearSeeds(XFastTrie, H);
+    assert.equal(r.bad, null, String(r.bad));
+    assert.equal(r.n, 68, 'every _lv word compared');
+    assert.ok(r.differ > 0 && r.q2 >= 1, 'the gate is not vacuous: reseeded _lv differed from fresh (' + r.differ + ' words)');
+});
+
+test('control M-clearKeepsSeeds: a clear() that keeps the reseeded _lv is caught by the F1 gate', OPTS, async () => {
+    const why = await control('clearKeepsSeeds');
+    assert.match(why, /after clear\(\)/, 'killed by something other than the seed comparison: ' + why.slice(0, 160));
+});
+
 test('worker runner on the shipped file: every probe passes (instrument control for the mutant jobs)', OPTS, async () => {
-    for (const p of ['e1Probe', 'e4Probe', 'e5Reseed2', 'e5Fail32L12', 'e5Fail32L16', 'e5Poison']) {
+    for (const p of ['e1Probe', 'e4Probe', 'e5Reseed2', 'e5Fail32L12', 'e5Fail32L16', 'e5Poison', 'e5ClearSeeds']) {
         const r = await runProbe(null, p, 'real ' + p);
         assert.equal(r.error, null, String(r.error));
         assert.equal(r.result.bad, null, p + ': ' + String(r.result.bad));

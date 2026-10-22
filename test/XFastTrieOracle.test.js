@@ -42,13 +42,18 @@ import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { KILL_MS } from './_worker-run.mjs';
-import { ORACLES } from './_xft-worker.mjs';
+import { ORACLES, runXft } from './_xft-worker.mjs';
+import { XFastTrie } from '../LogLogN.js';
+import { genStream, badKeys, keyAt } from './helpers/xftStream.mjs';
 
 const T = { timeout: 120000 };
 const WORKER_URL = new URL('./_xft-worker.mjs', import.meta.url);
 const BASE_SEED = (process.env.LOGLOGN_SEED !== undefined
     ? Number(process.env.LOGLOGN_SEED) : 0x7c15a3d9) >>> 0;
-const US = [2, 3, 31, 32, 33, 1025, 65536, 65537, 999983, 1048576, 33554432, 1073741824, 4294967296];
+// 2^31 is w = 31 (the widest universe whose keys all fit in 31 bits); 2^31 + 1 is w = 32
+// with the single key 2^31 above the int32 range (the 31 -> 32 bit boundary, F12 nit i)
+const US = [2, 3, 31, 32, 33, 1025, 65536, 65537, 999983, 1048576, 33554432, 1073741824,
+    2147483648, 2147483649, 4294967296];
 const OPS_SMALL = 300000;
 const OPS_BIG = 200000;
 const MUT_OPS = 40000;
@@ -167,6 +172,27 @@ function sum(runs, pick) {
     for (const r of runs) n += pick(r);
     return n;
 }
+
+test('XFastTrieOracle: the universe set covers w = 31 and w = 32 below 2^32 (nit i)', () => {
+    const bits = (U) => 32 - Math.clz32(U - 1);
+    assert.ok(US.includes(2147483648) && bits(2147483648) === 31);
+    assert.ok(US.includes(2147483649) && bits(2147483649) === 32);
+    assert.equal(new XFastTrie(2147483649, 1).bits, 32);
+    assert.equal(new XFastTrie(2147483648, 1).bits, 31);
+    assert.ok(US.filter((U) => bits(U) === 32).length >= 2, 'w = 32 appears at two different U');
+});
+
+test('XFastTrieOracle: key 2^31 is exercised by the U = 2^31 + 1 streams (add / has / query)', () => {
+    // the same streams the fuzz job replays (configsFor, same seeds); count ops whose key is 2^31
+    let hits = 0;
+    for (const c of configsFor(2147483649, OPS_BIG)) {
+        const st = genStream(c.U, c.C, c.nOps, c.seed);
+        const BAD = badKeys(c.U);
+        for (let i = 0; i < c.nOps; i++) if (keyAt(st, BAD, i) === 2147483648 && st.op[i] < 5) hits++;
+    }
+    assert.ok(hits > 0, 'no op used key 2^31 at U = 2^31 + 1: ' + hits);
+    console.log('# key 2^31 ops at U=2^31+1: ' + hits);
+});
 
 test('XFastTrieOracle: seed', () => {
     console.log('# XFastTrieOracle seed 0x' + BASE_SEED.toString(16));
@@ -299,6 +325,20 @@ test('XFastTrieOracle: control MX4 (delete skips a level) is caught by the Cucko
     assert.ok(ck > 0, 'MX4 not caught by the per-level CuckooMap check');
     console.log('# MX4 U=2^16 cuckoo divergences=' + ck + ' first=' + fmt(runs[0].cuckoo.first) +
         ' oracle divergences: ' + ORACLES.map((o) => o + '=' + divOf(runs, o)).join(' '));
+});
+
+test('XFastTrieOracle: control walk-throw (successor throws during a walk) is counted under walks, not CuckooMap', T, () => {
+    // F12: the walk has its own try. In-process subclass whose successor() throws.
+    class ThrowingWalk extends XFastTrie {
+        successor() { throw new Error('walk boom'); }
+    }
+    const ok = runXft(XFastTrie, 33, 33, 3000, 0x1234567);
+    assert.equal(ok.walks.div + ok.cuckoo.div, 0, 'the shipped class is clean on the same stream');
+    const r = runXft(ThrowingWalk, 33, 33, 3000, 0x1234567);
+    assert.ok(r.checkpoints > 0 && r.walks.cmp > 0 && r.cuckoo.cmp > 0, 'checkpoints ran');
+    assert.ok(r.walks.div > 0, 'a walk throw must be a walks divergence');
+    assert.equal(r.walks.first.op, 'walk-threw');
+    assert.equal(r.cuckoo.div, 0, 'the walk throw must not leak into the CuckooMap bucket');
 });
 
 test('XFastTrieOracle: control MX5 (size bumped before the full check) is caught', T, async () => {

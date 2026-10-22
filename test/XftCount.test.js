@@ -35,7 +35,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
-import { rSquared } from './_xft-count-worker.mjs';
+import { rSquared, BAD_OPS } from './_xft-count-worker.mjs';
+import { XFastTrie } from '../LogLogN.js';
+import { badKeys } from './helpers/xftStream.mjs';
 
 // 11 workers pipe stdout / stderr through the parent: raise the listener cap
 process.stdout.setMaxListeners(64);
@@ -44,8 +46,18 @@ process.stderr.setMaxListeners(64);
 const T = { timeout: 120000 };
 const HANG_MS = 90000;
 const N_OPS = 10000;
+/** Decimal digits only; anything else is an error (never a silent fallback to the default). */
+function parseSeed(v) {
+    if (typeof v !== 'string' || !/^[0-9]+$/.test(v)) {
+        throw new RangeError('LOGLOGN_XFT_COUNT_SEED must match /^[0-9]+$/, got ' + JSON.stringify(v));
+    }
+    if (v.length > 10 || Number(v) > 0xFFFFFFFF) {
+        throw new RangeError('LOGLOGN_XFT_COUNT_SEED must be <= 4294967295, got ' + JSON.stringify(v));
+    }
+    return Number(v);
+}
 const SEED = process.env.LOGLOGN_XFT_COUNT_SEED !== undefined
-    ? (Number(process.env.LOGLOGN_XFT_COUNT_SEED) >>> 0)
+    ? parseSeed(process.env.LOGLOGN_XFT_COUNT_SEED)
     : 0x7c0ffee3;
 console.log('# XftCount.test.js seed=' + SEED);
 
@@ -111,6 +123,12 @@ const MUTANTS = {
     ],
     // the update walk of add runs to level 1 instead of stopping at m
     fullwalk: [['for (let L = w; L > m; L--) {', 'for (let L = w; L > 0; L--) {']],
+    // a bad key reaches the shared scratch: has() writes q[0] before its key check
+    badQ: [["    has(x) {\n        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;\n        this._q[0] = x;",
+        "    has(x) {\n        this._q[0] = 0;\n        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;\n        this._q[0] = x;"]],
+    // the search reads _key (a leaf key during the descent)
+    keyInSearch: [['        const q0 = this._q[0];\n        const w = this._w;\n        let lo = 0;',
+        '        const q0 = this._q[0];\n        void this._key[0];\n        const w = this._w;\n        let lo = 0;']],
     // the capacity check moved after the leaf pop
     fullLate: [
         ['        if (this._size === this._c) throwFull(this._c);\n        const sl = this._near();',
@@ -162,7 +180,14 @@ for (const w of WS) {
     test('E4 bad keys touch nothing (0 reads, 0 writes on all 8 columns), w=' + w, T, async () => {
         const p = await phase(w, 'bad');
         assert.deepEqual(p.fails, []);
-        assert.equal(p.rows, 13 * 5);
+        // rows = bad keys x the public methods the worker actually runs on each (BAD_OPS)
+        assert.equal(p.rows, badKeys(U).length * BAD_OPS.length);
+        // BAD_OPS is every keyed public method of the class (derived, not copied): dropping one fails here
+        const P = XFastTrie.prototype;
+        const KEYED = Object.getOwnPropertyNames(P).filter((n) => n[0] !== '_' && n !== 'constructor' &&
+            typeof Object.getOwnPropertyDescriptor(P, n).value === 'function' && P[n].length === 1);
+        assert.deepEqual([...BAD_OPS].sort(), KEYED.sort());
+        assert.ok(p.rows > 0);
     });
 
     test('E4 full reject: 1 touch, 0 writes, _key/_next/_prev unread, state unchanged, w=' + w, T, async (t) => {
@@ -242,8 +267,32 @@ test('control M-fullLate: the capacity check after the leaf pop fails the E4 ful
     assert.ok(f.some((m) => /e4 full reject/.test(m) && /_key\/_next\/_prev read/.test(m)), f.slice(0, 3).join('\n'));
 });
 
+test('control M-keyInSearch: a _key read during the search fails the succ / pred absent rows (exact key reads)', T, async () => {
+    const f = await ctlFails('keyInSearch');
+    assert.ok(f.some((m) => /succ absent/.test(m) && /key reads/.test(m)), f.slice(0, 3).join('\n'));
+    assert.ok(f.some((m) => /pred absent/.test(m) && /key reads/.test(m)), f.slice(0, 3).join('\n'));
+});
+
+test('control M-badQ: a bad key that touches _q fails the bad-key rows (0 _q reads, 0 _q writes)', T, async () => {
+    const f = await ctlFails('badQ');
+    assert.ok(f.some((m) => /bad .* has/.test(m) && /_q writes 1/.test(m)), f.slice(0, 3).join('\n'));
+});
+
+test('LOGLOGN_XFT_COUNT_SEED: only /^[0-9]+$/ is accepted; anything else is rejected loudly', () => {
+    assert.equal(parseSeed('0'), 0);
+    assert.equal(parseSeed('123'), 123);
+    assert.equal(parseSeed('4294967295'), 4294967295);
+    let rejected = 0;
+    for (const bad of ['', 'abc', '-1', '1.5', '0x10', ' 1', '1 ', '1e3', '+1', '12a', undefined, 5, '4294967296', '9'.repeat(400)]) {
+        assert.throws(() => parseSeed(bad), RangeError, JSON.stringify(bad));
+        rejected++;
+    }
+    assert.equal(rejected, 14);
+    assert.ok(Number.isInteger(SEED) && SEED >= 0, 'the active seed passed through parseSeed');
+});
+
 test('control: every mutant anchor is found exactly once (a missing one throws in mutate)', T, () => {
-    assert.equal(Object.keys(MUTANTS).length, 4);
+    assert.equal(Object.keys(MUTANTS).length, 6);
     assert.throws(() => mutate([['this text is not in LogLogN.js', 'x']]), /not found/);
     assert.throws(() => mutate([['const ', 'let ']]), /more than once/);
 });

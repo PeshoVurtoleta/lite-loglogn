@@ -9,6 +9,10 @@
  *                                      LogLogN.js (B) vs B1a + 3 ` | 0` reads (A),
  *                                      4 walk scenarios; combinable with --smoke;
  *                                      --tier --w32 is exit 1 (not applicable)
+ *     node test/witness.mjs --xft      the XFastTrie lane ONLY (PLAN-xfasttrie G12):
+ *                                      U-sweep, n-sweep, update fit, latency,
+ *                                      A/B via abVerdict; combinable with --smoke
+ *                                      and --w32 (or LOGLOGN_W32=1); REPORTED
  *
  * Every timed run goes through the shared-host lock:
  *     node ~/.claude/hooks/quiet-lock.mjs run "lite-loglogn witness" -- node test/witness.mjs
@@ -1512,6 +1516,567 @@ async function tierMain(argv, env) {
     return main(argv, env, await tierPrepare());
 }
 
+// --- the --xft lane (PLAN-xfasttrie G12, SPEC GATES (5), ADDENDUM A4 / A5; main only) -----
+//
+// STATISTICAL / REPORTED (maintainer ruling D-host: no CI; every number is printed with
+// provenance and the abVerdict exit is REPORTED, never a release gate). Its own blocks,
+// runners and ABBA closure: the default / --w32 / --tier paths (runBlock, abba, main,
+// tierLane) are not touched and never see an XFastTrie. tierVerdict and TIER_SCENARIOS are
+// not used here (A5); the effect floor is AB_EFFECT_FLOOR, read from abVerdict.mjs.
+
+/** XFastTrie n-sweep at w 28, capped at 1e6 (byteLength at 3e6 = 527 MB, at 1e7 = 1.65 GB). */
+const XFT_NS = Object.freeze([1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6]);
+const XFT_W_N = 28;
+const XFT_N_U = 4096;      // U-sweep n
+const XFT_N_AA = 4096;     // A/A + drift probe + control config
+const XFT_W_AA = 20;
+const XFT_WARM = 16;       // untimed probe tier-up blocks before round 1
+
+const X_XS = 0;     // XFastTrie successor block
+const X_SS = 1;     // StratifiedBitset successor block
+const X_U32 = 2;    // u32Successor block
+const X_XU = 3;     // XFastTrie add + delete block (absent keys; the set is restored)
+const X_SU = 4;     // StratifiedBitset add + delete block (absent keys)
+const X_XS2 = 5;    // control: the XFastTrie successor block done TWICE, counted as one block
+const X_WRONG = 6;  // non-strict (>= x) foil: the pre-pass must-fail control only
+
+// one block function per structure and op, so every call site stays monomorphic; each
+// returns an int32 fold (the sink). The add + delete blocks count successful deletes
+// (must equal len: every key is absent, so add inserts and delete removes it).
+function xBlkXftSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function xBlkSbSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function xBlkU32(arr, n, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) acc ^= u32Successor(arr, n, qs[i]);
+    return acc;
+}
+function xBlkXftUpd(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+function xBlkSbUpd(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+
+function xRun(r, qs, len) {
+    switch (r.kind) {
+        case X_XS: return xBlkXftSucc(r.obj, qs, len);
+        case X_SS: return xBlkSbSucc(r.obj, qs, len);
+        case X_U32: return xBlkU32(r.obj, r.n, qs, len);
+        case X_XU: return xBlkXftUpd(r.obj, qs, len);
+        case X_SU: return xBlkSbUpd(r.obj, qs, len);
+        case X_XS2: return (xBlkXftSucc(r.obj, qs, len) + xBlkXftSucc(r.obj, qs, len)) | 0;
+        default: throw new WitnessFail('xft: runner ' + r.name + ' is not timed');
+    }
+}
+
+// one strict-successor answer, normalised (-1 -> undefined); pre-pass only (cold)
+function xAnswer(r, q) {
+    let v;
+    switch (r.kind) {
+        case X_XS: case X_SS: return r.obj.successor(q);
+        case X_U32: v = u32Successor(r.obj, r.n, q); break;
+        case X_WRONG: v = lowerBound(r.obj, r.n, q); break;
+        default: throw new WitnessFail('xft: runner ' + r.name + ' has no answer');
+    }
+    return v === -1 ? undefined : v;
+}
+
+// first disagreement of r with the TRUE definition (u32Successor over the sorted keys),
+// or null; checked[0] += queries compared (the coverage floor)
+function xPrepassFirst(oracle, r, streams, checked) {
+    for (let s = 0; s < streams.length; s++) {
+        const qs = streams[s];
+        for (let i = 0; i < qs.length; i++) {
+            const q = qs[i];
+            const want = xAnswer(oracle, q);
+            const got = xAnswer(r, q);
+            checked[0]++;
+            if (got !== want) return { x: q, got, want };
+        }
+    }
+    return null;
+}
+
+// per-op latency into lat (preallocated); successor, and add of an absent key (the
+// delete that restores the set is outside the timed pair). Returns the sink / the
+// delete count (must equal len).
+function xLatSucc(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const t = performance.now();
+        const r = s.successor(qs[i]);
+        lat[i] = (performance.now() - t) * 1e6;
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function xLatAdd(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+
+// len seeded keys in [0, U), each ABSENT from the sorted key set (cold); fails closed
+// after 64 x len draws
+function xGenAbsent(keys, U, len, seed) {
+    const rnd = mulberry32(seed);
+    const out = new Uint32Array(len);
+    const n = keys.length;
+    let have = 0;
+    for (let tries = 0; have < len; tries++) {
+        if (tries >= 64 * len) throw new WitnessFail('xft: only ' + have + ' of ' + len + ' absent keys in U ' + U);
+        const x = Math.floor(rnd() * U);
+        if (lowerBound(keys, n, x) === x) continue;
+        out[have++] = x;
+    }
+    return out;
+}
+
+function xBuild(Cls, keys, U, cap) {
+    const s = cap === 0 ? new Cls(U) : new Cls(U, cap);
+    for (let i = 0; i < keys.length; i++) s.add(keys[i]);
+    return s;
+}
+
+// --xft entry: flag check, then the lane's two modules (dynamic: the static import list
+// stays the six that test/WitnessVerdict.test.js V18's data: URL source mutant rewrites,
+// and the default / --w32 / --tier paths load nothing new), then the lane
+async function xftMain(argv, env) {
+    const KNOWN = ['--xft', '--smoke', '--w32'];
+    for (const a of argv) {
+        if (!KNOWN.includes(a)) {
+            process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) +
+                ' (known with --xft: --smoke, --w32)\n');
+            return 1;
+        }
+    }
+    const [lib, ab] = await Promise.all([import('../LogLogN.js'), import('./helpers/abVerdict.mjs')]);
+    if (typeof lib.XFastTrie !== 'function' || lib.StratifiedBitset !== StratifiedBitset ||
+        typeof ab.abVerdict !== 'function' || typeof ab.AB_EFFECT_FLOOR !== 'number') {
+        throw new WitnessFail('xft: LogLogN.js must export XFastTrie (and the same StratifiedBitset), ' +
+            'abVerdict.mjs must export abVerdict and AB_EFFECT_FLOOR');
+    }
+    return xftLane(argv, env, lib.XFastTrie, ab.abVerdict, ab.AB_EFFECT_FLOOR);
+}
+
+function xftLane(argv, env, XFastTrie, abVerdict, FLOOR) {
+    const SMOKE = argv.includes('--smoke');
+    const widthsAll = witnessWidths(argv, env);
+    const K = SMOKE ? 3 : WITNESS_K;
+    const NEED = SMOKE ? 2 : WITNESS_NEED;
+    const Q = SMOKE ? 1 << 12 : 1 << 16;
+    const NS = SMOKE ? [XFT_NS[0], XFT_NS[2]] : XFT_NS.slice();
+    const WS = SMOKE ? [widthsAll[0], widthsAll[widthsAll.length - 1]] : widthsAll;
+    const U_N = 2 ** XFT_W_N;
+    const U_AA = 2 ** XFT_W_AA;
+    const say = (s) => { process.stdout.write(s + '\n'); };
+    const fails = [];
+    const t0wall = performance.now();
+    if (!(NS.length > 0) || !(WS.length >= 2) || !(K >= 1) || !(NEED * 2 > K)) {
+        throw new WitnessFail('xft: coverage floor: n-sweep ' + NS.length + ' points, U-sweep ' + WS.length +
+            ' widths (need > 0 and >= 2), K ' + K + ' need ' + NEED);
+    }
+
+    // 1. provenance
+    const cores = os.availableParallelism();
+    const loadStart = os.loadavg();
+    const cpus = os.cpus();
+    const qlHost = env !== null && typeof env === 'object' ? env.QUIET_LOCK_HOST : undefined;
+    const qlWhy = env !== null && typeof env === 'object' ? env.QUIET_LOCK_WHY : undefined;
+    const label = qlHost === 'quiet' ? 'QUIET' : 'PRELIMINARY';
+    const libBuf = readFileSync(fileURLToPath(new URL('../LogLogN.js', import.meta.url)));
+    say('lite-loglogn STATISTICAL witness -- mode XFT ' + (SMOKE ? 'SMOKE' : 'FULL') +
+        ' (REPORTED; D-host: no CI, the abVerdict exit is never a release gate)');
+    say('provenance: date ' + new Date().toISOString() + ' host ' + os.hostname());
+    say('provenance: cpu ' + (cpus.length > 0 ? cpus[0].model : 'unknown') + ' availableParallelism ' + cores);
+    say('provenance: loadavg start ' + loadStart.map((x) => x.toFixed(2)).join(' '));
+    say('provenance: node ' + process.version + ' v8 ' + process.versions.v8 + ' ' +
+        process.platform + '/' + process.arch);
+    say('provenance: quiet-lock ' + (typeof qlHost === 'string' ? qlHost + ' (' + qlWhy + ')' : 'not set (not run under quiet-lock)') +
+        ' -> run label ' + label + (SMOKE ? ' (smoke: wiring only, numbers are not evidence)' : ''));
+    say('provenance: LogLogN.js ' + libBuf.length + ' B sha256 ' + sha256Hex(libBuf));
+    say('provenance: K ' + K + ' need ' + NEED + ' floor ' + FLOOR + ' (AB_EFFECT_FLOOR) queries/block ' + Q +
+        ' | n-sweep ' + NS.length + ' points [' + NS.join(', ') + '] at w ' + XFT_W_N + ' (cap n + 1)' +
+        ' | U-sweep ' + WS.length + ' widths [' + WS.join(', ') + '] at n ' + XFT_N_U +
+        ' | A/A + control + drift probe n ' + XFT_N_AA + ' w ' + XFT_W_AA);
+    say('provenance: flags [' + argv.join(' ') + '] LOGLOGN_W32=' +
+        (env !== null && typeof env === 'object' && env.LOGLOGN_W32 !== undefined ? env.LOGLOGN_W32 : '(unset)'));
+    say('A/B pair (A4): B = XFastTrie (candidate) vs A = StratifiedBitset (foil), successor only -- no engine' +
+        ' hot-body variant ships, so this is the only A/B pair; u32Successor and the update lane are REPORTED');
+
+    // 2. startup controls: the drift detector and abVerdict have teeth (deterministic)
+    const dFlat = hostDrift(driftVector(1));
+    const dStep = hostDrift(driftVector(1.25));
+    const vSp = driftVector(1);
+    vSp[30] = 400;
+    vSp[90] = 400;
+    const dSp = hostDrift(vSp);
+    say('CONTROL drift: FLAT ' + JSON.stringify(dFlat) + ' STEP ' + JSON.stringify(dStep) +
+        ' SPIKES ' + JSON.stringify(dSp));
+    if (dFlat.drift || !dStep.drift || dSp.drift) {
+        say('FAIL control drift: the injected step was missed, or FLAT / SPIKES fired');
+        return 1;
+    }
+    const ab0 = {
+        K: 15, need: 13, floor: FLOOR,
+        scenarios: [{ name: 's', wins: 15, losses: 0, ratio: 0.9 }],
+        aa: [{ name: 'aa', wins: 7, losses: 8, ratio: 1 }],
+        control: { wins: 0, losses: 15, ratio: 2 },
+        drift: false, load1: 1, cores: 12,
+    };
+    const a0 = abVerdict(ab0);
+    const a1 = abVerdict({ ...ab0, control: { wins: 15, losses: 0, ratio: 0.5 } });
+    const a2 = abVerdict({ ...ab0, aa: [{ name: 'aa', wins: 14, losses: 1, ratio: 0.9 }] });
+    if (a0.exit !== 0 || a0.decision !== 'PASS' || a0.verdicts[0].verdict !== 'win' ||
+        a1.exit !== 1 || a1.decision !== 'FAIL' || a2.exit !== 2 || a2.decision !== 'PENDING') {
+        say('FAIL control abVerdict: self-check read ' + a0.decision + ' / ' + a1.decision + ' / ' + a2.decision);
+        return 1;
+    }
+    say('CONTROL abVerdict self-check: base PASS exit 0 (win); control-not-losing FAIL exit 1;' +
+        ' A/A winner above the floor PENDING exit 2 -- ok');
+
+    // per-run state, allocated ONCE before any round
+    const nAbba = 2 * NS.length + 2 * WS.length + 3;   // sweeps x 2, 2 A/A, 1 control
+    const series = new Float64Array(K * nAbba);
+    const ST = { pos: 0, abba: 0, lat: 0 };
+    const TM = new Float64Array(4);
+    const RC = new Float64Array(K);
+    const RF = new Float64Array(K);
+    const SINK = new Int32Array(1);
+    const LAT = new Float64Array(Q);
+    const QQ = Float64Array.of(0.5, 0.99);
+    const QO = new Float64Array(2);
+    const sketch = new DDSketch(0.01);
+    const CG = new Float64Array(3);
+    const CHK = new Float64Array(1);   // pre-pass queries compared (coverage floor)
+
+    // clock granularity, once (a per-op sample of a ~10 ns op is mostly clock)
+    CG[0] = Infinity;
+    CG[1] = 0;
+    for (let i = 0; i < CLOCK_PAIRS; i++) {
+        const t = performance.now();
+        CG[2] = performance.now() - t;
+        if (CG[2] === 0) CG[1]++;
+        else if (CG[2] < CG[0]) CG[0] = CG[2];
+    }
+    say('REPORTED clock: granularity ' + (Number.isFinite(CG[0]) ? fmt(CG[0] * 1e6) + ' ns' : 'n/a (no nonzero delta)') +
+        ' (zero deltas ' + (CG[1] * 100 / CLOCK_PAIRS).toFixed(2) + '% of ' + CLOCK_PAIRS + ' pairs)');
+
+    // the A/A config doubles as the drift probe and the control (XFastTrie, fixed config)
+    const keysAA = genKeys(XFT_N_AA, U_AA, 0xA11A0101);
+    const qAA = genQueries(Q, U_AA, 0xA11A0102);
+    const xAA = genExtras(keysAA, U_AA);
+    const absAA = xGenAbsent(keysAA, U_AA, Q, 0xA11A0103);
+    const oAA = runner(X_U32, 'u32Successor', keysAA, XFT_N_AA);
+    const xA = runner(X_XS, 'XFastTrie', xBuild(XFastTrie, keysAA, U_AA, XFT_N_AA + 1), XFT_N_AA);
+    const xB = runner(X_XS, 'XFastTrie(B)', xBuild(XFastTrie, keysAA, U_AA, XFT_N_AA + 1), XFT_N_AA);
+    const probe = xA;
+
+    // pre-pass must-fail control: a non-strict foil MUST disagree with the true definition
+    const wrongHit = xPrepassFirst(oAA, runner(X_WRONG, 'wrong(>=x)', keysAA, XFT_N_AA), [qAA, xAA], CHK);
+    if (wrongHit === null) {
+        say('FAIL control pre-pass: the non-strict foil was not flagged -- the pre-pass has no teeth');
+        return 1;
+    }
+    say('CONTROL pre-pass: non-strict foil flagged at x=' + wrongHit.x + ' (got ' + wrongHit.got +
+        ', want ' + wrongHit.want + ') -- ok');
+
+    // correctness pre-pass (cold, before any timing of cfg): every candidate answers the
+    // true strict successor; every add + delete block restores the set (size n, count len)
+    const prepass = (cfg, oracle, cands, streams) => {
+        const c0 = CHK[0];
+        for (const r of cands) {
+            const hit = xPrepassFirst(oracle, r, streams, CHK);
+            if (hit !== null) {
+                throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' disagrees with u32Successor at first x=' +
+                    hit.x + ' (got ' + hit.got + ', want ' + hit.want + ')');
+            }
+        }
+        let want = 0; for (const qs of streams) want += qs.length; want *= cands.length;
+        if (!(want > 0) || CHK[0] - c0 !== want) throw new WitnessFail('pre-pass ' + cfg + ': compared ' + (CHK[0] - c0) + ' of ' + want + ' queries (coverage floor)');
+    };
+    const updCheck = (cfg, r, abs, n) => {
+        const got = xRun(r, abs, Q);
+        if (got !== Q || r.obj.size !== n) {
+            throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' add + delete block deleted ' + got + ' of ' + Q +
+                ', size ' + r.obj.size + ' != ' + n);
+        }
+    };
+    prepass('A/A', oAA, [xA, xB], [qAA, xAA]);
+    // the control does exactly double work (deterministic): its fold equals twice the single block's
+    const ctrl = runner(X_XS2, 'XFastTrie x2', xA.obj, XFT_N_AA);
+    if (xRun(ctrl, qAA, Q) !== ((2 * xRun(xA, qAA, Q)) | 0)) {
+        throw new WitnessFail('pre-pass control: the x2 block does not fold to twice the single block (not double work)');
+    }
+    for (let i = 0; i < XFT_WARM; i++) SINK[0] ^= xRun(probe, qAA, Q);   // tier the probe up before round 1
+
+    // time one block of runner r: ns/op, written into TM[slot]
+    const timeInto = (r, qs, slot) => {
+        const t = performance.now();
+        SINK[0] ^= xRun(r, qs, Q);
+        TM[slot] = (performance.now() - t) * 1e6 / Q;
+    };
+
+    // K ABBA rounds of candidate a vs foil b (the B2b protocol, R3a re-warm), one probe
+    // block per round into the drift series
+    const abba = (nm, a, qa, b, qb) => {
+        xRun(a, qa, Q); xRun(b, qb, Q); xRun(probe, qAA, Q);   // warm-up, untimed
+        let wins = 0, losses = 0, rounds = 0;
+        for (let r = 0; r < K; r++) {
+            SINK[0] ^= xRun(a, qa, Q);
+            timeInto(a, qa, 0);
+            timeInto(b, qb, 1);
+            timeInto(b, qb, 2);
+            timeInto(a, qa, 3);
+            const ca = TM[0] + TM[3];
+            const cb = TM[1] + TM[2];
+            if (ca < cb) wins++;
+            else if (cb < ca) losses++;
+            RC[r] = ca / 2;
+            RF[r] = cb / 2;
+            SINK[0] ^= xRun(probe, qAA, Q);
+            timeInto(probe, qAA, 0);
+            series[ST.pos++] = TM[0];
+            rounds++;
+        }
+        ST.abba++;
+        const t = { wins, losses, rounds, candMed: median(RC, K), foilMed: median(RF, K), ratio: NaN };
+        if (rounds !== K) fails.push(nm + ': ' + rounds + ' rounds != K ' + K);
+        if (!(wins + losses <= K)) fails.push(nm + ': wins + losses > K');
+        if (!(t.candMed > 0) || !(t.foilMed > 0) || !Number.isFinite(t.candMed) || !Number.isFinite(t.foilMed)) {
+            fails.push(nm + ': median not finite > 0 (candidate ' + t.candMed + ', foil ' + t.foilMed + ')');
+        } else {
+            t.ratio = t.candMed / t.foilMed;
+        }
+        return t;
+    };
+    const tl = (t) => t.wins + ' / ' + t.losses + ' / ' + (K - t.wins - t.losses);
+    const r4 = (x) => (Number.isFinite(x) ? x.toFixed(4) : String(x));
+    const ab = (name, t) => ({ name, wins: t.wins, losses: t.losses, ratio: t.ratio });
+
+    // LATENCY: per-op successor and add (absent key) latency, DDSketch.addFrom (the
+    // unboxed path) p50 / p99 + the EXACT max (a loop over LAT; it must equal sketch.max).
+    // The add max can be the reseed spike (only when reseeds > 0): the kick / reseed counter deltas (_q[1], _q[2]) of
+    // the run are printed beside it. REPORTED, never gated.
+    const latency = (cfg, op, s, qs) => {
+        const q1 = s._q[1];
+        const q2 = s._q[2];
+        if (op === 0) {
+            SINK[0] ^= xLatSucc(s, qs, Q, LAT);
+        } else {
+            const d = xLatAdd(s, qs, Q, LAT);
+            if (d !== Q) fails.push('latency ' + cfg + ' add: deleted ' + d + ' of ' + Q);
+        }
+        const kicks = s._q[1] - q1;
+        const reseeds = s._q[2] - q2;
+        let mx = -1, bad = 0;
+        for (let i = 0; i < Q; i++) {
+            const v = LAT[i];
+            if (!(v >= 0) || !Number.isFinite(v)) bad++;
+            else if (v > mx) mx = v;
+        }
+        if (bad !== 0) {
+            fails.push('latency ' + cfg + ' ' + (op === 0 ? 'successor' : 'add') + ': ' + bad + ' of ' + Q +
+                ' samples not finite >= 0 (checked before the sketch)');
+            return;
+        }
+        sketch.clear();
+        for (let i = 0; i < Q; i++) sketch.addFrom(LAT, i);
+        sketch.quantilesInto(QQ, QO);
+        const p50 = QO[0], p99 = QO[1], smax = sketch.max, cnt = sketch.count;
+        ST.lat++;
+        say('  REPORTED latency ' + cfg + ' XFastTrie ' + (op === 0 ? 'successor' : 'add') + ' per-op (ns, DDSketch alpha 0.01, ' +
+            cnt + ' samples): p50 ' + fmt(p50) + ' p99 ' + fmt(p99) + ' max ' + fmt(mx) +
+            (op === 0 ? '' : ' (kicks +' + kicks + ' reseeds +' + reseeds + ' in this run; ' + (reseeds > 0 ? 'max may be a reseed spike' : 'no reseed: max is not a reseed spike') + ')'));
+        if (cnt !== Q || bad !== 0 || !Number.isFinite(p50) || !Number.isFinite(p99) || !(mx >= 0) || smax !== mx) {
+            fails.push('latency ' + cfg + ' ' + (op === 0 ? 'successor' : 'add') + ': count ' + cnt + ' bad ' + bad +
+                ' p50 ' + p50 + ' p99 ' + p99 + ' max ' + mx + ' sketch.max ' + smax);
+        }
+    };
+
+    const scenarios = [];
+
+    // 3. n-sweep at w 28: XFastTrie vs StratifiedBitset (A/B) and vs u32Successor (REPORTED)
+    say('n-sweep at w ' + XFT_W_N + ': XFastTrie vs StratifiedBitset (A/B scenario) and vs u32Successor (REPORTED)' +
+        ' (ns/op medians; wins / losses / ties of K ' + K + ')');
+    for (let j = 0; j < NS.length; j++) {
+        const n = NS[j];
+        const keys = genKeys(n, U_N, 0x5EED3000 + j);
+        const qs = genQueries(Q, U_N, 0x0E573000 + j);
+        const xs = genExtras(keys, U_N);
+        const abs = xGenAbsent(keys, U_N, Q, 0xAB5E3000 + j);
+        const cfg = 'n=' + n + ' w=' + XFT_W_N;
+        const xft = runner(X_XS, 'XFastTrie', xBuild(XFastTrie, keys, U_N, n + 1), n);
+        const sb = runner(X_SS, 'StratifiedBitset', xBuild(StratifiedBitset, keys, U_N, 0), n);
+        const u32 = runner(X_U32, 'u32Successor', keys, n);
+        prepass(cfg, u32, [xft, sb], [qs, xs]);
+        updCheck(cfg, runner(X_XU, 'XFastTrie', xft.obj, n), abs, n);
+        const ts = abba(cfg + ' vs SB', xft, qs, sb, qs);
+        const tu = abba(cfg + ' vs u32', xft, qs, u32, qs);
+        scenarios.push(ab('succ ' + cfg, ts));
+        say('  ' + cfg + ' XFastTrie ' + fmt(ts.candMed) + ' | SB ' + fmt(ts.foilMed) + ' | ' + tl(ts) +
+            ' ratio ' + r4(ts.ratio) + ' || vs u32 ' + fmt(tu.candMed) + ' | u32 ' + fmt(tu.foilMed) + ' | ' + tl(tu) +
+            ' ratio ' + r4(tu.ratio) + ' (REPORTED ' + pointVerdict(tu, NEED) + ') | byteLength XFT ' +
+            xft.obj.byteLength + ' B SB ' + sb.obj.byteLength + ' B');
+        latency(cfg, 0, xft.obj, qs);
+        latency(cfg, 1, xft.obj, abs);
+        if (xft.obj.size !== n) fails.push(cfg + ': XFastTrie size ' + xft.obj.size + ' != ' + n + ' after the lane');
+    }
+
+    // 4. U-sweep at n 4096: XFastTrie vs StratifiedBitset successor (A/B) + update (REPORTED)
+    const fl = [], fw = [], fs = [], fu = [];
+    say('U-sweep at n ' + XFT_N_U + ': XFastTrie vs StratifiedBitset successor (A/B scenario) and add+delete' +
+        ' (REPORTED) (ns/op medians; wins / losses / ties of K ' + K + ')');
+    if (WS.includes(32)) {
+        say('  CAVEAT w=32:' +
+            ' keys and returned keys >= 2^31 may box at a non-inlined call boundary (harness key stream and the member return), so w = 32 ns/op includes it (not measured separately)');
+    }
+    for (let j = 0; j < WS.length; j++) {
+        const w = WS[j];
+        const U = 2 ** w;
+        const keys = genKeys(XFT_N_U, U, 0x5EED4000 + w);
+        const qs = genQueries(Q, U, 0x0E574000 + w);
+        const xs = genExtras(keys, U);
+        const abs = xGenAbsent(keys, U, Q, 0xAB5E4000 + w);
+        const cfg = 'w=' + w + ' n=' + XFT_N_U;
+        const xft = runner(X_XS, 'XFastTrie', xBuild(XFastTrie, keys, U, XFT_N_U + 1), XFT_N_U);
+        const sb = runner(X_SS, 'StratifiedBitset', xBuild(StratifiedBitset, keys, U, 0), XFT_N_U);
+        const xu = runner(X_XU, 'XFastTrie', xft.obj, XFT_N_U);
+        const su = runner(X_SU, 'StratifiedBitset', sb.obj, XFT_N_U);
+        prepass(cfg, runner(X_U32, 'u32Successor', keys, XFT_N_U), [xft, sb], [qs, xs]);
+        updCheck(cfg, xu, abs, XFT_N_U);
+        updCheck(cfg, su, abs, XFT_N_U);
+        const ts = abba(cfg + ' succ', xft, qs, sb, qs);
+        const tu = abba(cfg + ' add+delete', xu, abs, su, abs);
+        scenarios.push(ab('succ ' + cfg, ts));
+        fw.push(w); fl.push(Math.log2(w)); fs.push(ts.candMed); fu.push(tu.candMed);
+        say('  ' + cfg + ' successor XFastTrie ' + fmt(ts.candMed) + ' | SB ' + fmt(ts.foilMed) + ' | ' + tl(ts) +
+            ' ratio ' + r4(ts.ratio) + ' || add+delete XFastTrie ' + fmt(tu.candMed) + ' | SB ' + fmt(tu.foilMed) +
+            ' | ' + tl(tu) + ' ratio ' + r4(tu.ratio) + ' (REPORTED ' + pointVerdict(tu, NEED) + ')');
+        latency(cfg, 0, xft.obj, qs);
+        latency(cfg, 1, xft.obj, abs);
+        if (xft.obj.size !== XFT_N_U || sb.obj.size !== XFT_N_U) fails.push(cfg + ': size changed by the lane');
+    }
+    if (fw.length !== WS.length || !(fw.length >= 2)) {
+        fails.push('U-sweep fit: ' + fw.length + ' points for ' + WS.length + ' widths (need >= 2)');
+    } else {
+        const sL = fitLogLinear(fl, fs);
+        const sW = fitLogLinear(fw, fs);
+        const uL = fitLogLinear(fl, fu);
+        const uW = fitLogLinear(fw, fu);
+        say('REPORTED fit XFastTrie successor vs log2(w) (the O(log w) axis): slope ' + fmt(sL.slope) +
+            ' ns/doubling intercept ' + fmt(sL.intercept) + ' R^2 ' + sL.r2.toFixed(4));
+        say('REPORTED fit XFastTrie successor vs w: slope ' + sW.slope.toFixed(4) + ' ns/bit intercept ' +
+            fmt(sW.intercept) + ' R^2 ' + sW.r2.toFixed(4));
+        say('REPORTED fit XFastTrie add+delete vs w (O(w) update): slope ' + uW.slope.toFixed(4) + ' ns/bit intercept ' +
+            fmt(uW.intercept) + ' R^2 ' + uW.r2.toFixed(4));
+        say('REPORTED fit XFastTrie add+delete vs log2(w) (O(w) update): slope ' + fmt(uL.slope) +
+            ' ns/doubling intercept ' + fmt(uL.intercept) + ' R^2 ' + uL.r2.toFixed(4));
+        say('  the O(w) update bound is PROVEN by the exact touch counts in test/XftCount.test.js (DETERMINISTIC,' +
+            ' npm test); these fits are REPORTED timing only');
+        for (const f of [sL, sW, uL, uW]) {
+            if (!Number.isFinite(f.slope) || !Number.isFinite(f.intercept) || !Number.isFinite(f.r2)) {
+                fails.push('U-sweep fit not finite: ' + JSON.stringify(f));
+            }
+        }
+    }
+
+    // 5. control: the XFastTrie successor block done twice (candidate) vs once: MUST lose
+    const tc = abba('control', ctrl, qAA, xA, qAA);
+    const control = { wins: tc.wins, losses: tc.losses, ratio: tc.ratio };
+    say('A/B control: XFastTrie x2 (candidate, double work) ' + fmt(tc.candMed) + ' vs XFastTrie ' + fmt(tc.foilMed) +
+        ' at n ' + XFT_N_AA + ' w ' + XFT_W_AA + ' | ' + tl(tc) + ' ratio ' + r4(tc.ratio) + ' (must lose)');
+
+    // 6. A/A: XFastTrie vs an independently built identical XFastTrie, successor and add+delete
+    const ta = abba('aa succ', xA, qAA, xB, qAA);
+    const tb = abba('aa add+delete', runner(X_XU, 'XFastTrie', xA.obj, XFT_N_AA), absAA,
+        runner(X_XU, 'XFastTrie(B)', xB.obj, XFT_N_AA), absAA);
+    const aa = [ab('aa succ n=' + XFT_N_AA + ' w=' + XFT_W_AA, ta), ab('aa add+delete n=' + XFT_N_AA + ' w=' + XFT_W_AA, tb)];
+    say('A/B A/A: successor XFastTrie ' + fmt(ta.candMed) + ' vs XFastTrie(B) ' + fmt(ta.foilMed) + ' | ' + tl(ta) +
+        ' ratio ' + r4(ta.ratio) + ' || add+delete ' + fmt(tb.candMed) + ' vs ' + fmt(tb.foilMed) + ' | ' + tl(tb) +
+        ' ratio ' + r4(tb.ratio) + ' (must not declare a winner above the floor)');
+    if (xA.obj.size !== XFT_N_AA || xB.obj.size !== XFT_N_AA) fails.push('A/A: size changed by the lane');
+
+    // drift + load
+    if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
+    const hd = hostDrift(series.subarray(0, ST.pos));
+    const loadEnd = os.loadavg();
+    const load1 = Math.max(loadStart[0], loadEnd[0]);
+    say('host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
+        fmt(median(series, ST.pos)) + ' ns/op) | loadavg end ' + loadEnd.map((x) => x.toFixed(2)).join(' ') +
+        ' load1 ' + load1.toFixed(2) + ' vs 0.5 x ' + cores + ' | run label ' + label);
+
+    // coverage floors: every scenario ran, every ABBA ran K rounds, every latency ran
+    const wantLat = 2 * (NS.length + WS.length);
+    say('COVERAGE: n-sweep ' + NS.length + ' points, U-sweep ' + WS.length + ' widths, ABBA runs ' + ST.abba + ' / ' +
+        nAbba + ' (K ' + K + ' rounds each), probe rounds ' + ST.pos + ', latency runs ' + ST.lat + ' / ' + wantLat +
+        ', A/B scenarios ' + scenarios.length + ', pre-pass queries ' + CHK[0]);
+    if (ST.abba !== nAbba) fails.push('coverage: ABBA runs ' + ST.abba + ' != ' + nAbba);
+    if (ST.lat !== wantLat) fails.push('coverage: latency runs ' + ST.lat + ' != ' + wantLat);
+    if (scenarios.length !== NS.length + WS.length || !(scenarios.length > 0)) {
+        fails.push('coverage: A/B scenarios ' + scenarios.length + ' != ' + (NS.length + WS.length));
+    }
+    if (!(CHK[0] > 0)) fails.push('coverage: the pre-pass compared 0 queries');
+    if (fails.length > 0) {
+        for (const f of fails) say('FAIL ' + f);
+        return 1;
+    }
+
+    // 7. verdict (REPORTED)
+    const v = abVerdict({ K, need: NEED, floor: FLOOR, scenarios, aa, control, drift: hd.drift, load1, cores });
+    for (const r of v.reasons) say('  reason ' + r);
+    say('A/B verdicts (B = XFastTrie vs A = StratifiedBitset successor) [' +
+        v.verdicts.map((x) => x.name + ' ' + x.verdict).join(', ') + '] decision ' + v.decision);
+    say('sink ' + SINK[0] + ' | wall ' + ((performance.now() - t0wall) / 1000).toFixed(2) + ' s | label ' + label);
+    const shapeOk = (v.exit === 0 || v.exit === 1 || v.exit === 2) && Array.isArray(v.reasons) &&
+        v.reasons.every((r) => typeof r === 'string') && Array.isArray(v.verdicts) &&
+        v.verdicts.length === scenarios.length && ['PASS', 'FAIL', 'PENDING'].includes(v.decision);
+    if (!shapeOk) {
+        say('FAIL abVerdict returned a malformed result');
+        return 1;
+    }
+    if (SMOKE) {
+        say('abVerdict exit (printed, not used in smoke): ' + v.exit + ' ' + v.decision);
+        say('XFT SMOKE ok (untimed wiring: every scenario ran, abVerdict called, percentiles computed)');
+        return 0;
+    }
+    say('XFT exit ' + v.exit + ' ' + v.decision + ' -- REPORTED with provenance (' + label +
+        '); D-host: never a release gate');
+    return v.exit;
+}
+
 // realpath the entry: a symlinked path (macOS /tmp -> /private/tmp) must still run main()
 function isEntry() {
     if (typeof process.argv[1] !== 'string') return false;
@@ -1529,7 +2094,11 @@ function failOut(e) {
     return 1;
 }
 
-if (IS_MAIN) {
+if (IS_MAIN && process.argv.slice(2).includes('--xft')) {
+    xftMain(process.argv.slice(2), process.env).then(
+        (c) => { process.exitCode = c; },
+        (e) => { process.exitCode = failOut(e); });
+} else if (IS_MAIN) {
     if (process.argv.slice(2).includes('--tier')) {
         tierMain(process.argv.slice(2), process.env).then(
             (c) => { process.exitCode = c; },

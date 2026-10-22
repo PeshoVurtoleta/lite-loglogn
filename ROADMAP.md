@@ -879,6 +879,23 @@ byte-identical. Order and space bound stated up front on each:
   bounded O(log), not O(1): array containers are binary-searched, at most 12 probes over
   4,096 entries (amended 2026-10-20). `successor` is O(log); with the summary pyramid of
   section 10 it is a bounded walk. Design notes: section 10 here and RESEARCH.md section 12.
+- **Sibling dependency rule (maintainer, 2026-10-22).** lite-o1, lite-logn, lite-adaptive,
+  lite-filter and lite-sketch are finished packages meant to improve every module. Use them at
+  full potential as devDependencies (oracles, foils, latency / drift harness pieces) or as an
+  OPTIONAL, caller-injected peerDependency; never a hard runtime dependency, never an import in
+  LogLogN.js. StratifiedBitset 0.2.0 uses lite-o1 + lite-logn as fuzz oracles and REPORTED
+  witness foils, lite-sketch DDSketch for latency quantiles, and lite-adaptive DriftDetector to
+  flag a drifting host (plan ADDENDUM 28-33).
+- **Hybrid tiered bitset** (PROPOSED, maintainer 2026-10-22; name and version slot open) -- one
+  ordered integer set that picks the best tier for its universe and workload, Timsort-style:
+  a one-word tier, a 32-word + summary tier, a fixed-depth tier (O(1) to 2^25), and the
+  log_32 U pyramid above that, plus bulk and / or / xor / popcount written in place. Every tier
+  is written in-file (design parity with lite-fastbit32 and lite-o1 BitSet, no imports). Needs
+  its own planner pass after 0.2.0. That pass must first show what it adds over (a)
+  StratifiedBitset with the 0.2.0 tiered fast paths (plan ADDENDUM 15+) and (b) RoaringSet,
+  which already adapts by density; if it adds nothing, it folds into one of them. Gates: a
+  parity fuzz against each tier's general form; tier-boundary mutants (U = 32/33, 1024/1025,
+  2^25/2^25+1); speed claims STATISTICAL and release-time only.
 - **FusionTree** (v0.7.0) -- RESEARCH-TRACK: word-level parallelism packs `w` keys into one
   word; O(log_w n) static predecessor. Notoriously subtle (sketch compression, msb-differing-bit)
   and w=32-capped in JS -- ship with the honest "why this is hard and when word-parallelism pays"
@@ -1023,6 +1040,14 @@ which fits this family's bounded-in-U theme (section 2).
 - **Hold:** a bit-sliced index (BSI) for numeric ranges and threshold counts (RESEARCH.md 12.8
   row K). It becomes the R2 follow-up only if lite-search becomes a consumer.
 - **Sequencing (maintainer, 2026-10-18):** the lite-signal 1.6.0 release comes first, suite-wide.
+- **Tiers at their best (maintainer, 2026-10-22).** The Timsort analogy: Timsort runs insertion
+  sort on short runs and merge sort above them; RoaringSet picks a representation per chunk the
+  same way. The models for each tier are lite-fastbit32 FastBit32 (one word), FastBit1024 (32
+  words + a 1-word summary), lite-o1 BitSet (a fixed 3-level summary, O(1) to 2^25) and
+  StratifiedBitset (log_32 U levels to 2^32). D-R1 (b) is a StratifiedBitset over the 2^16
+  chunk keys; D-R2 is a FastBit1024-style summary inside each bitmap. Copied by design parity
+  in the main file (never a runtime import); the siblings serve as devDep oracles and foils.
+  RESEARCH.md 12.10.
 
 **Settle before R1 (maintainer):**
 - **D-R1 top-level index.** (a) A sorted key array with binary search, at most 16 probes (the
@@ -1049,7 +1074,8 @@ which fits this family's bounded-in-U theme (section 2).
   max-single-op line. They are bounded but spiky, and never labelled O(1).
 
 **Not this:** 64-bit Roaring (an ART over the high 48 bits) is out of scope until SegmentedU
-settles the 32-bit ceiling. A lite-o1 member: the roster is closed. A dependency on lite-o1 or
-lite-fastbit32: design parity only.
+settles the 32-bit ceiling. A lite-o1 member: the roster is closed. A RUNTIME dependency on lite-o1 or
+lite-fastbit32 (amended 2026-10-22: devDependencies for oracles / foils / harness pieces, or an
+OPTIONAL caller-injected peer, are allowed and encouraged; the main file never imports one).
 
 MIT (c) Zahary Shinikchiev

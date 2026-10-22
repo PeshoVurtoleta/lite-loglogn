@@ -901,6 +901,27 @@ same bytes. It adds three things standard Roaring does not have:
 Without those three it would be a plain port, and there would be no reason to build it next to
 `bitrun`.
 
+### 12.10 Tiers at their best -- the Timsort analogy (maintainer, 2026-10-22)
+
+Timsort does not pick one algorithm: it runs insertion sort on short runs and merges above them,
+because each wins in its own range. The suite's bitsets split the same way. Nothing below is
+measured; every speed line is EXPECTED until a release-time A/B says otherwise.
+
+| Tier | Model (suite) | Universe | Best at | Missing |
+| --- | --- | --- | --- | --- |
+| one word | lite-fastbit32 FastBit32 | U <= 32 | flags, masks, lowest / highest in one op | anything past 32 bits |
+| 32 words + summary | lite-fastbit32 FastBit1024 | U <= 1,024 | lowest free slot (`acquire`), next set bit through its summary word | predecessor past 1,024 |
+| fixed 3-level summary | lite-o1 BitSet | U <= 2^25 | O(1) nextSet; bulk and / or / xor, popcount | predecessor, max, U above 2^25 |
+| log_32 U pyramid | StratifiedBitset (this package) | U <= 2^32 | strict successor AND predecessor, min / max, U to 2^32 | bulk set algebra (not in 0.2.0) |
+| per-chunk choice | RoaringSet (Tier 2) | 2^32, any density | sparse or clustered sets, compressed space | worst-case O(1) anything |
+
+Where the idea lands: (1) GUIDE.md gets this table as a "which bitset" guide plus a user-side
+recipe that imports the packages it needs (docs burst). (2) RoaringSet uses it as its design
+rule (ROADMAP section 10). (3) A hybrid tiered member is queued as PROPOSED (ROADMAP section 7,
+Tier 2). (4) StratifiedBitset 0.2.0 gets tiered fast paths in one class, a new rung after the
+general pyramid is approved, with the general form as its parity oracle
+(`.handoff/PLAN-stratifiedbitset.md` ADDENDUM 15+).
+
 ---
 
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full

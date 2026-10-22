@@ -294,18 +294,23 @@ zgcSuite({
     mustFail: [teethMustFailAlloc, teethMustFailGrow, teethMustFailSide],
 });
 
+// Pins the GATE key set: a new field forces an edit here AND a decision on
+// whether it is a threshold (passed to verdict) or a non-threshold (destructured out).
+test('GATE key set is the hand-written literal list', () => {
+    assert.deepEqual(Object.keys(GATE).sort(),
+        ['N', 'counters', 'k', 'maxArrayBuffersKB', 'maxOldGen', 'maxRetainedKB', 'maxScavenges']);
+    const { N: _N, k: _k, ...thresholds } = GATE;
+    assert.deepEqual(Object.keys(thresholds).sort(),
+        ['counters', 'maxArrayBuffersKB', 'maxOldGen', 'maxRetainedKB', 'maxScavenges']);
+});
+
 // Registered AFTER zgcSuite: node:test runs in registration order, so this
 // control (like mustFail) cannot pollute successorHot feedback the real
 // scenarios were measured on.
 test('teeth attribution: SideBufferBitset fails ONLY on the arrayBuffers lane (grows blind)', async () => {
     const r = await measure(teethMustFailSide, { N: GATE.N, k: GATE.k });
-    const v = verdict(r, {
-        maxScavenges: GATE.maxScavenges,
-        maxRetainedKB: GATE.maxRetainedKB,
-        maxOldGen: GATE.maxOldGen,
-        maxArrayBuffersKB: GATE.maxArrayBuffersKB,
-        counters: GATE.counters,
-    });
+    const { N: _N, k: _k, ...thresholds } = GATE;
+    const v = verdict(r, thresholds);
     const line = formatResult(r) + ' | reasons=' + JSON.stringify(v.reasons);
     console.log('[perf] ' + line);
     assert.equal(v.pass, false, 'SideBufferBitset passed the gate: ' + line);

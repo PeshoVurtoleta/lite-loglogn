@@ -157,7 +157,8 @@ function snap(s) {
 // Returns { err, compared }: err null when space is unchanged, else a failure
 // string; compared = the number of columns checked (coverage floor: 9).
 function spaceCheck(s, ref) {
-    const live = Object.keys(s).filter((k) => ArrayBuffer.isView(s[k])).sort().join(); if (live !== COLS.slice().sort().join()) return { err: 'typed-array field set ' + live, compared: 0 };
+    const live = Object.keys(s).filter((k) => ArrayBuffer.isView(s[k])).sort().join();
+    if (live !== COLS.slice().sort().join()) return { err: 'typed-array field set ' + live, compared: 0 };
     if (s.byteLength !== ref.byteLength) return { err: 'byteLength ' + ref.byteLength + ' -> ' + s.byteLength, compared: 0 };
     let compared = 0;
     for (const c of ref.cols) {

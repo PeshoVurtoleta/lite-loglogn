@@ -13,7 +13,7 @@
  * The XFastTrie formula is the one test/XFastTrieSpace.test.js gates.
  */
 
-import { StratifiedBitset } from '../LogLogN.js';
+import { StratifiedBitset, XFastTrie } from '../LogLogN.js';
 
 const US = [[16, 65536], [20, 1048576], [24, 16777216], [32, 4294967296]];
 const NS = [1000, 10000, 100000, 1000000];
@@ -58,6 +58,7 @@ function pad(s, n) {
     return s.length >= n ? s : s + ' '.repeat(n - s.length);
 }
 
+const XFT_BUILD_MAX = 64 * 1048576;
 const sbCell = [];
 for (const [k, U] of US) {
     const f = sbBytes(U);
@@ -74,6 +75,7 @@ console.log('space-table (REPORTED): XFastTrie (formula) vs StratifiedBitset byt
     process.version + ', ' + new Date().toISOString());
 console.log(pad('U', 6) + pad('n', 9) + pad('C (cap)', 18) + pad('XFastTrie', 30) + pad('StratifiedBitset', 42) + 'XFT / SB');
 let rows = 0;
+let checked = 0;
 for (let i = 0; i < US.length; i++) {
     const [k, U] = US[i];
     const sb = sbBytes(U);
@@ -81,6 +83,14 @@ for (let i = 0; i < US.length; i++) {
         const lim = U < CAP ? U : CAP;
         const C = n < lim ? n : lim;
         const x = xftBytes(U, C);
+        if (x <= XFT_BUILD_MAX) {
+            const real = new XFastTrie(U, C).byteLength;
+            if (real !== x) {
+                console.log('FAIL xftBytes(' + U + ', ' + C + ') = ' + x + ' != constructed byteLength ' + real);
+                process.exitCode = 1;
+            }
+            checked++;
+        }
         const cTxt = C === n ? String(C) : C + ' (capped)';
         console.log(pad('2^' + k, 6) + pad(String(n), 9) + pad(cTxt, 18) +
             pad(x + ' B (' + mb(x) + ')', 30) + pad(sbCell[i], 42) + (x / sb).toFixed(3));
@@ -88,3 +98,8 @@ for (let i = 0; i < US.length; i++) {
     }
 }
 if (rows !== US.length * NS.length) throw new Error('space-table printed ' + rows + ' rows, expected ' + US.length * NS.length);
+console.log('xftBytes self-check: ' + checked + ' cells constructed (<= 64 MB) and compared to byteLength');
+if (checked !== 14) {
+    console.log('FAIL xftBytes self-check covered ' + checked + ' cells, expected exactly 14 (coverage floor)');
+    process.exitCode = 1;
+}

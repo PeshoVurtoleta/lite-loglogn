@@ -24,11 +24,12 @@
  *       leaks 0.
  *   T3  controls that MUST flip their check: a retaining loop (alloc > 0), a
  *       transient-box loop (transient > 0), GrowingBitset (abGrowth > 0), a
- *       retained array (size > 0). Any control passing is exit 1.
+ *       retained array (size > 0), a gc kick (forced globalThis.gc() inside
+ *       T0's gc window: the T0 gc verdict not-ok, gcMajor > 0). Any control
+ *       passing is exit 1.
+ * KNOWN GAP: maxPauseMs has no must-fail control (a pause is host timing); the gc kick pins maxMajor only.
  * Exit 0 only if every tier passes and every control flips. Never widen a
  * budget to make this pass -- a budget that moves is not a gate.
- * KNOWN GAP: neither T0 nor X0 has a must-fail control for the gc major /
- * maxPauseMs lane (every window reads gcMinor 0); adding one is a NEXT.md filler.
  *
  * ENTRY CONTRACT: --expose-gc is mandatory (the GC gate is meaningless without
  * it); the devDeps are imported AFTER the guard so a fresh clone that skipped
@@ -202,6 +203,38 @@ async function main() {
 
     const fails = [];
 
+    // The T0 / X0 gc-budget lane: gc() + settle, then `ops` calls of fn inside
+    // one GcProfiler window (heap sampled every 8,192 ops), settle, verdict
+    // checkNoGc { maxMajor: 0, maxPauseMs: 4 }. errs = the violation strings,
+    // [] = pass. The real lanes and their must-fail gc controls (T3 gcKick, X4
+    // xGcKick) run through this ONE code path, so a control that flips proves
+    // this window and verdict can fail. Cold wrapper.
+    async function gcLane(tag, fn, ops) {
+        globalThis.gc();
+        await settle(50);
+        const g = new GcProfiler().start();
+        for (let i = 0; i < ops; i++) {
+            fn(i);
+            if ((i & 8191) === 0) {
+                g.sampleHeap(performance.now(), process.memoryUsage().heapUsed);
+            }
+        }
+        await settle(50);
+        const s = g.summary();
+        const rep = checkNoGc(s, { maxMajor: 0, maxPauseMs: 4 });
+        g.stop();
+        const errs = [];
+        let majorHit = false;
+        if (!rep.ok) {
+            for (const v of rep.violations) {
+                if (v.metric === 'gc.major') majorHit = true;
+                errs.push(tag + ' gc ' + v.metric + ' limit=' + v.limit + ' actual=' + v.actual);
+            }
+            if (rep.violations.length === 0) errs.push(tag + ' gc verdict=' + rep.verdict);
+        }
+        return { s, ok: rep.ok === true && errs.length === 0, errs, majorHit };
+    }
+
     // ---- T0: 2,000,000 mixed ops at U = 2^20 --------------------------------
     const k0 = keyRing(U0, 0x9e3779b9);
     const set0 = populate(new StratifiedBitset(U0), k0);
@@ -227,26 +260,11 @@ async function main() {
     }
 
     // T0c GC budget over the 2,000,000-op window.
-    globalThis.gc();
-    await settle(50);
-    const gc = new GcProfiler().start();
-    for (let i = 0; i < HOT; i++) {
-        step0(i);
-        if ((i & 8191) === 0) {
-            gc.sampleHeap(performance.now(), process.memoryUsage().heapUsed);
-        }
-    }
-    await settle(50);
-    const s0 = gc.summary();
-    const report = checkNoGc(s0, { maxMajor: 0, maxPauseMs: 4 });
-    gc.stop();
-    if (!report.ok) {
-        for (const v of report.violations) {
-            fails.push('T0 gc ' + v.metric + ' limit=' + v.limit + ' actual=' + v.actual);
-        }
-        if (report.violations.length === 0) fails.push('T0 gc verdict=' + report.verdict);
-    }
-    const t0Ok = allocOk && tOk && report.ok;
+    const g0 = await gcLane('T0', step0, HOT);
+    const s0 = g0.s;
+    for (const e of g0.errs) fails.push(e);
+    if (!g0.ok && g0.errs.length === 0) fails.push('T0 gc not ok (no violation listed)');
+    const t0Ok = allocOk && tOk && g0.ok;
     console.log('T0 ops=' + HOT + ' U=' + U0 +
         ' alloc=' + (bpc === null ? 'null' : Math.round(bpc)) + ' B/op' +
         ' allocRaw=' + fmt(bpc, 4) +
@@ -404,17 +422,41 @@ async function main() {
     const c4Flip = live4 > 0;
     held.length = 0;
 
+    // C5 gc kick: the T0 step plus a forced globalThis.gc() (a full, major GC)
+    // every 65,536 ops, through gcLane -- T0c's window and verdict. The verdict
+    // MUST be not-ok with gcMajor > 0. Coverage floor: the kick count, bumped in
+    // the gc() branch, must equal GC_KICK_OPS / 65,536 = 4.
+    const GC_KICK_OPS = 1 << 18;
+    const GC_KICKS = 4;
+    const kick0 = new Int32Array(1);
+    const gcKickFn = function gcKick(i) {
+        step0(i);
+        if ((i & 65535) === 0) {
+            globalThis.gc();
+            kick0[0]++;
+        }
+    };
+    const c5 = await gcLane('T0 control gcKick', gcKickFn, GC_KICK_OPS);
+    const c5Flip = !c5.ok && c5.majorHit && c5.s.gc.major > 0 && kick0[0] === GC_KICKS;
+
     console.log('T3 controls' +
         ' retain.alloc=' + (c1Bpc === null ? 'null' : Math.round(c1Bpc)) + ' B/op ' +
         (c1Flip ? 'flipped' : 'PASSED') +
         ' box.transient=' + fmt(c2Bpo, 3) + ' B/op ' + (c2Flip ? 'flipped' : 'PASSED') +
         ' growing.abGrowth=' + ab3.growthBytes + ' ' + (c3Flip ? 'flipped' : 'PASSED') +
         ' retained.size=' + live4 + ' ' + (c4Flip ? 'flipped' : 'PASSED') +
-        ' | ' + (c1Flip && c2Flip && c3Flip && c4Flip ? 'ok' : 'FAIL'));
+        ' gcKick.gcMajor=' + c5.s.gc.major + ' maxPauseMs=' + c5.s.gc.maxMs.toFixed(2) +
+        ' kicks=' + kick0[0] + '/' + GC_KICKS + ' violations=' + c5.errs.length + ' ' +
+        (c5Flip ? 'flipped' : 'PASSED') +
+        ' | ' + (c1Flip && c2Flip && c3Flip && c4Flip && c5Flip ? 'ok' : 'FAIL'));
     if (!c1Flip) fails.push('control retain PASSED its check (alloc ' + c1Bpc + ' B/op): T0 alloc lane is blind');
     if (!c2Flip) fails.push('control box PASSED its check: T0 transient lane is blind');
     if (!c3Flip) fails.push('control growing PASSED its check (abGrowth ' + ab3.growthBytes + '): T1 is blind');
     if (!c4Flip) fails.push('control retained PASSED its check (size ' + live4 + '): T2 is blind');
+    if (!c5Flip) {
+        fails.push('control gcKick PASSED its check (gcMajor ' + c5.s.gc.major + ', kicks ' +
+            kick0[0] + '/' + GC_KICKS + ', violations ' + c5.errs.length + '): T0 gc lane is blind');
+    }
 
     // ==== X-tiers: XFastTrie (PLAN-xfasttrie G4 / G5, tasks G0b + G7) ========
     // Run after T0-T3 so the StratifiedBitset tiers keep their own feedback; the
@@ -444,7 +486,8 @@ async function main() {
     //       (X0 window excess >= limit), ReallocReseed (X2 abGrowth > 0),
     //       DropReseed (M-reseedAlloc: a Uint32Array per reseed, dropped -- X2's
     //       transient excess >= limit, on a measured window, not on null),
-    //       retained array (X3 size > 0).
+    //       retained array (X3 size > 0), gc kick (forced globalThis.gc() inside
+    //       X0's gc window: the X0 gc verdict not-ok, gcMajor > 0).
     //
     // G0b CENSUS (2026-10-22, B1 engine): collide(2^16, 16, 9) = keys
     // 0,2,16,17,19,24,47,61,73 (level-16 prefixes share h1 AND h2 under the
@@ -557,28 +600,13 @@ async function main() {
                 fmt(t, 3) + ' B/op, excess ' + ns.excess + ' B per ' + NS_K +
                 ' ops >= ' + NS_MAX_EXCESS));
         }
-        globalThis.gc();
-        await settle(50);
-        const g = new GcProfiler().start();
-        for (let i = 0; i < HOT; i++) {
-            step(i);
-            if ((i & 8191) === 0) {
-                g.sampleHeap(performance.now(), process.memoryUsage().heapUsed);
-            }
-        }
-        await settle(50);
-        const s = g.summary();
-        const rep = checkNoGc(s, { maxMajor: 0, maxPauseMs: 4 });
-        g.stop();
-        if (!rep.ok) {
-            for (const v of rep.violations) {
-                fails.push(tag + ' gc ' + v.metric + ' limit=' + v.limit + ' actual=' + v.actual);
-            }
-            if (rep.violations.length === 0) fails.push(tag + ' gc verdict=' + rep.verdict);
-        }
+        const gl = await gcLane(tag, step, HOT);
+        const s = gl.s;
+        for (const e of gl.errs) fails.push(e);
+        if (!gl.ok && gl.errs.length === 0) fails.push(tag + ' gc not ok (no violation listed)');
         const z = zeroSlot(cnt);
         if (z >= 0) fails.push(tag + ' coverage: tally slot ' + z + ' is 0 (an op kind or hit/miss never ran)');
-        const ok = aOk && nOk && rep.ok && z < 0;
+        const ok = aOk && nOk && gl.ok && z < 0;
         console.log(tag + ' ops=' + HOT + ' U=' + u + ' C=' + XC +
             ' alloc=' + (b === null ? 'null' : Math.round(b)) + ' B/op' +
             ' allocRaw=' + fmt(b, 4) +
@@ -602,9 +630,13 @@ async function main() {
     const x0b = await xTier0('X0b', XU1, 0x85ebca6b);
 
     // ---- X1: arrayBuffers growth at U = 2^32 ---------------------------------
-    // 64 ring slots carry 2^32 - 1 - (j >>> 3), spread over every op kind (slot
-    // mod 8 = j & 7): populate adds 2^32 - 1 (slot 0), so max() must read
-    // 2^32 - 1, and slot 3 asks successor(2^32 - 1) -- always a miss.
+    // 64 ring slots carry 2^32 - 1 - (j >>> 3), at ring index j * 1024 + (j & 7)
+    // (index mod 8 = j & 7, eight per residue). Only residues 0 (add, and the
+    // delete half a ring later), 2 (has), 3 / 4 (successor) and 5 (predecessor)
+    // read their slot; residues 1, 6 and 7 are written but never read (delete
+    // reads a residue-0 key, min / max take none). populate adds 2^32 - 1
+    // (slot 0), so max() must read 2^32 - 1, and slot 3 asks successor(2^32 - 1)
+    // -- always a miss.
     const kx1 = keyRing(XU2, 0x1b873593);
     for (let j = 0; j < 64; j++) kx1[j * 1024 + (j & 7)] = 4294967295 - (j >>> 3);
     const cnt1 = new Int32Array(16);
@@ -635,9 +667,9 @@ async function main() {
 
     // One reseed cycle: arm the stub's failure budget (a dummy slot on an
     // unstubbed instance), add the collide keys (the last one stalls), clear().
-    function makeReseedStep(set, calls, fails, nFail) {
+    function makeReseedStep(set, calls, budget, nFail) {
         return function reseedStep(i) {
-            fails[0] = nFail;
+            budget[0] = nFail;
             for (let j = 0; j < NXK; j++) set.add(xKeys[j]);
             SINK[0] = (SINK[0] + set.size + (i & 1)) | 0;
             set.clear();
@@ -710,9 +742,11 @@ async function main() {
 
     // X2c transient lane. nsLane's shape (gc before each window, scavenged
     // window discarded, min over windows 1..NS_W-1, window 0 printed only) at
-    // XNS_K reseed cycles per window: a dropped per-reseed typed array (~150 B
-    // / cycle) then fills ~2.4 MB of new space, flipping on excess instead of
-    // scavenging every window into a null. The limit stays NS_MAX_EXCESS bytes
+    // XNS_K reseed cycles per window: a dropped per-reseed typed array (measured
+    // 200.0 B / cycle, the CX5 census) then fills ~3.3 MB of new space per
+    // window (measured 3,277,104 B; torture 2026-10-22, Node v26.8.2,
+    // deterministic), flipping on excess instead of scavenging
+    // every window into a null. The limit stays NS_MAX_EXCESS bytes
     // per window (a window holds 2.5 x NS_K ops, so per op it is stricter).
     // `set` null = baseline (no counter checks). bad = windows whose cycle
     // count or reseedOps delta missed the model.
@@ -902,6 +936,20 @@ async function main() {
     const cx4Flip = liveX4 > 0;
     xHeld.length = 0;
 
+    // CX6 gc kick: the X0 (2^20) step plus a forced globalThis.gc() every
+    // 65,536 ops, through gcLane -- X0's window and verdict (as C5). The verdict
+    // MUST be not-ok with gcMajor > 0; the kick count must equal GC_KICKS.
+    const kickX = new Int32Array(1);
+    const xGcKickFn = function xGcKick(i) {
+        xStepA(i);
+        if ((i & 65535) === 0) {
+            globalThis.gc();
+            kickX[0]++;
+        }
+    };
+    const cx6 = await gcLane('X0 control xGcKick', xGcKickFn, GC_KICK_OPS);
+    const cx6Flip = !cx6.ok && cx6.majorHit && cx6.s.gc.major > 0 && kickX[0] === GC_KICKS;
+
     console.log('X4 controls' +
         ' retain.alloc=' + (cx1Bpc === null ? 'null' : Math.round(cx1Bpc)) + ' B/op ' +
         (cx1Flip ? 'flipped' : 'PASSED') +
@@ -912,7 +960,10 @@ async function main() {
         (cx5.excess === null ? 'null' : fmt(cx5.excess / XNS_K, 1)) + ' B/cycle, valid=' + cx5.valid +
         ' badWindows=' + cx5.bad + ') ' + (cx5Flip ? 'flipped' : 'PASSED') +
         ' retained.size=' + liveX4 + ' ' + (cx4Flip ? 'flipped' : 'PASSED') +
-        ' | ' + (cx1Flip && cx2Flip && cx3Flip && cx4Flip && cx5Flip ? 'ok' : 'FAIL'));
+        ' xGcKick.gcMajor=' + cx6.s.gc.major + ' maxPauseMs=' + cx6.s.gc.maxMs.toFixed(2) +
+        ' kicks=' + kickX[0] + '/' + GC_KICKS + ' violations=' + cx6.errs.length + ' ' +
+        (cx6Flip ? 'flipped' : 'PASSED') +
+        ' | ' + (cx1Flip && cx2Flip && cx3Flip && cx4Flip && cx5Flip && cx6Flip ? 'ok' : 'FAIL'));
     if (!cx1Flip) fails.push('control xRetain PASSED its check (alloc ' + cx1Bpc + ' B/op): X0 alloc lane is blind');
     if (!cx2Flip) fails.push('control xBox PASSED its check: X0 transient lane is blind');
     if (!cx3Flip) {
@@ -923,6 +974,10 @@ async function main() {
     if (!cx5Flip) {
         fails.push('control DropReseed PASSED its check (nsExcess ' + cx5.excess + ', valid ' +
             cx5.valid + ', badWindows ' + cx5.bad + '): X2 transient lane is blind');
+    }
+    if (!cx6Flip) {
+        fails.push('control xGcKick PASSED its check (gcMajor ' + cx6.s.gc.major + ', kicks ' +
+            kickX[0] + '/' + GC_KICKS + ', violations ' + cx6.errs.length + '): X0 gc lane is blind');
     }
 
     const xAlloc = Math.max(x0a.b === null ? Infinity : Math.round(x0a.b),

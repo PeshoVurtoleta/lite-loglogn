@@ -1,0 +1,1178 @@
+{
+  "what": "lite-loglogn XFastTrie pre-engine vectors (B0b E2), cut from SortedOracle; StratifiedBitset cross-checked per op for U <= 2^28",
+  "streamVersion": 1,
+  "nOps": 20000,
+  "every": 1000,
+  "fullThrows": 50,
+  "baseSeed": 1492623811,
+  "seedRule": "(BASE_SEED + imul(index + 1, 0x9e3779b9)) >>> 0",
+  "sbCrossMaxU": 268435456,
+  "streams": [
+    {
+      "U": 2,
+      "C": 2,
+      "w": 1,
+      "seed": 4147059580,
+      "resultsHash": "a37f8aa7",
+      "finalSize": 1,
+      "sortedHash": "07a4b765",
+      "checkpoints": {
+        "size": [1, 1, 2, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0, 1, 2, 1, 0, 1],
+        "resultsHash": ["3951d65e", "16160401", "4c97b7fd", "a45c34bf", "72e08fea", "b004708b", "9e5686f4", "ac127119", "2f749123", "12da8cb0", "8e34c89c", "ede52b25", "d7a725fa", "318725b1", "042509b4", "08bc22b2", "7790f087", "72cd67ee", "1b5daa64", "2a5ea2bb"],
+        "sortedHash": ["07a4b765", "07a4b765", "944fa9b5", "d35207d6", "d35207d6", "00a3c664", "00a3c664", "00a3c664", "d35207d6", "07a4b765", "07a4b765", "00a3c664", "07a4b765", "d35207d6", "00a3c664", "d35207d6", "944fa9b5", "d35207d6", "00a3c664", "07a4b765"]
+      },
+      "rows": {
+        "bad": 565,
+        "has": 2591,
+        "qPresent": 3314,
+        "qAbsent": 2767,
+        "minMax": 1598,
+        "addPresent": 3395,
+        "addFull": 0,
+        "addNew": 2237,
+        "delAbsent": 1297,
+        "delPresent": 2236
+      },
+      "model": {
+        "T": 0,
+        "touchSeqHash": "2d42bef6",
+        "touches": 20074,
+        "tableWrites": 11184,
+        "threadWrites": 17893
+      }
+    },
+    {
+      "U": 3,
+      "C": 3,
+      "w": 2,
+      "seed": 2506528053,
+      "resultsHash": "cf34a51e",
+      "finalSize": 1,
+      "sortedHash": "d35207d6",
+      "checkpoints": {
+        "size": [1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 0, 2, 1, 0, 0, 1, 1, 1],
+        "resultsHash": ["fb760216", "edf78a35", "abb63069", "2e7d3856", "857f859f", "10003a67", "b15ee328", "a89d214e", "1bd8732d", "fc0ec1ee", "29952f31", "c3c24eeb", "f22a8f9e", "960ba676", "68462d2b", "e64d6075", "44854124", "3293e9f8", "726e75f5", "9c2b172c"],
+        "sortedHash": ["07a4b765", "07a4b765", "07a4b765", "07a4b765", "07a4b765", "4a36394b", "4a36394b", "4a36394b", "4a36394b", "00a3c664", "944fa9b5", "00a3c664", "00a3c664", "6adb5d08", "4a36394b", "00a3c664", "00a3c664", "d35207d6", "d35207d6", "d35207d6"]
+      },
+      "rows": {
+        "bad": 544,
+        "has": 2672,
+        "qPresent": 3644,
+        "qAbsent": 2758,
+        "minMax": 1538,
+        "addPresent": 3110,
+        "addFull": 0,
+        "addNew": 2226,
+        "delAbsent": 1283,
+        "delPresent": 2225
+      },
+      "model": {
+        "T": 1,
+        "touchSeqHash": "2505deb7",
+        "touches": 29579,
+        "tableWrites": 21742,
+        "threadWrites": 17805
+      }
+    },
+    {
+      "U": 5,
+      "C": 5,
+      "w": 3,
+      "seed": 865996526,
+      "resultsHash": "ce0e9c1c",
+      "finalSize": 1,
+      "sortedHash": "07a4b765",
+      "checkpoints": {
+        "size": [1, 1, 0, 1, 0, 0, 1, 0, 0, 3, 1, 1, 1, 2, 4, 0, 0, 2, 2, 1],
+        "resultsHash": ["be2f94ba", "6fa84cf5", "0716edc0", "24e62cf4", "acb88bb6", "84d09693", "211ac95d", "638a80ff", "93ee7e89", "6ea3d4f5", "5cf845cd", "77d60b63", "cd58a2bf", "0f666fd4", "69f064b4", "030e3cb4", "6fb5d698", "5bd92f6b", "a3f5834b", "f3301246"],
+        "sortedHash": ["07a4b765", "07a4b765", "00a3c664", "4a36394b", "00a3c664", "00a3c664", "4a36394b", "00a3c664", "00a3c664", "ccfd0c8e", "d35207d6", "15e389bc", "4a36394b", "a83b0043", "0d8f315f", "00a3c664", "00a3c664", "550f80d8", "6adb5d08", "07a4b765"]
+      },
+      "rows": {
+        "bad": 526,
+        "has": 2776,
+        "qPresent": 3411,
+        "qAbsent": 3269,
+        "minMax": 1733,
+        "addPresent": 2959,
+        "addFull": 0,
+        "addNew": 2141,
+        "delAbsent": 1045,
+        "delPresent": 2140
+      }
+    },
+    {
+      "U": 16,
+      "C": 16,
+      "w": 4,
+      "seed": 3520432295,
+      "resultsHash": "ca37cc05",
+      "finalSize": 1,
+      "sortedHash": "64e4c0e7",
+      "checkpoints": {
+        "size": [3, 1, 5, 0, 0, 1, 1, 2, 3, 1, 1, 0, 2, 1, 2, 0, 0, 6, 0, 1],
+        "resultsHash": ["4d8e03f4", "37198845", "f79013af", "97656e8b", "1ede49e5", "906b6bd8", "f6f8feea", "81d92d76", "3efd18e7", "2c47c877", "5953c9ad", "714711cd", "d791e00c", "820b3f26", "a6986fbc", "37ab69de", "81b52eda", "cd93f7b2", "54704e7c", "d755e3f5"],
+        "sortedHash": ["cb8bf427", "30921158", "04bd26c5", "00a3c664", "00a3c664", "ea07c4b3", "ea07c4b3", "e5b8593c", "d64c6fc6", "c513357f", "ea07c4b3", "00a3c664", "bd8b8769", "ee008f72", "99325521", "00a3c664", "00a3c664", "8ac2ccfc", "00a3c664", "64e4c0e7"]
+      },
+      "rows": {
+        "bad": 547,
+        "has": 2715,
+        "qPresent": 3000,
+        "qAbsent": 3665,
+        "minMax": 1756,
+        "addPresent": 2913,
+        "addFull": 0,
+        "addNew": 2217,
+        "delAbsent": 971,
+        "delPresent": 2216
+      },
+      "model": {
+        "T": 2,
+        "touchSeqHash": "92fff0b0",
+        "touches": 44670,
+        "tableWrites": 40198,
+        "threadWrites": 17733
+      }
+    },
+    {
+      "U": 17,
+      "C": 8,
+      "w": 5,
+      "seed": 1879900768,
+      "resultsHash": "1c2690b8",
+      "finalSize": 0,
+      "sortedHash": "00a3c664",
+      "checkpoints": {
+        "size": [8, 2, 0, 0, 1, 2, 1, 1, 3, 3, 2, 1, 0, 5, 2, 0, 2, 6, 0, 0],
+        "resultsHash": ["8cdff2f3", "2ac7ad83", "bceaaaa4", "df51e800", "229ac78c", "51bcef4e", "2b17cb78", "2f678def", "e32b50ec", "31dd431e", "e7d742a1", "6ba20317", "779d6c79", "a4410b7f", "1922b1a3", "d662fa59", "0b97f14f", "e9c4c2a9", "4574092b", "b0ebd8e1"],
+        "sortedHash": ["d8731973", "b0252d2f", "00a3c664", "00a3c664", "1c30c695", "550f80d8", "b5b51524", "a77642cd", "f638ea42", "b77ed287", "7e4b5e8c", "7323933e", "00a3c664", "2ac099e9", "5699e1c3", "00a3c664", "f4e10c40", "a4ed0b78", "00a3c664", "00a3c664"]
+      },
+      "rows": {
+        "bad": 507,
+        "has": 2724,
+        "qPresent": 2847,
+        "qAbsent": 3915,
+        "minMax": 1779,
+        "addPresent": 2612,
+        "addFull": 99,
+        "addNew": 2281,
+        "delAbsent": 955,
+        "delPresent": 2281
+      }
+    },
+    {
+      "U": 256,
+      "C": 64,
+      "w": 8,
+      "seed": 239369241,
+      "resultsHash": "13204600",
+      "finalSize": 7,
+      "sortedHash": "eb877087",
+      "checkpoints": {
+        "size": [60, 24, 42, 39, 61, 30, 48, 63, 61, 0, 56, 63, 64, 19, 35, 43, 64, 34, 63, 7],
+        "resultsHash": ["29481d2f", "81510e5f", "dd158ac4", "65253bb5", "c57dcfab", "abdb0448", "2ed0a607", "e603dec8", "8f73caaf", "703d30b8", "81467989", "6126ef7b", "726d0ac6", "7f5de374", "c7ea45e4", "e7a9ee82", "e659a601", "4d902578", "8fd88ac3", "30262234"],
+        "sortedHash": ["731a989a", "ed01fb98", "51eb94c7", "405b209e", "f2edfd47", "86b266da", "8636ed8c", "834a1f3c", "e47b11dc", "00a3c664", "d499809a", "206dae1e", "3ffb5450", "9470bff2", "ad6b5cba", "1c3cd2f7", "0eb39ec7", "710227ee", "f0ea66c4", "eb877087"]
+      },
+      "rows": {
+        "bad": 516,
+        "has": 2600,
+        "qPresent": 1989,
+        "qAbsent": 4335,
+        "minMax": 1569,
+        "addPresent": 1701,
+        "addFull": 398,
+        "addNew": 3129,
+        "delAbsent": 641,
+        "delPresent": 3122
+      },
+      "model": {
+        "T": 3,
+        "touchSeqHash": "98f35377",
+        "touches": 69723,
+        "tableWrites": 59304,
+        "threadWrites": 25011
+      }
+    },
+    {
+      "U": 1000,
+      "C": 200,
+      "w": 10,
+      "seed": 2893805010,
+      "resultsHash": "74433970",
+      "finalSize": 199,
+      "sortedHash": "e5e95467",
+      "checkpoints": {
+        "size": [190, 66, 92, 2, 14, 30, 43, 190, 180, 195, 187, 189, 170, 163, 166, 169, 146, 132, 108, 199],
+        "resultsHash": ["b5b90703", "2ad7d13e", "25a434b5", "d92d6d26", "6e57d5c0", "1d498ad2", "44fe1131", "fd840766", "ec7b5a50", "6b0bd9ad", "bb681250", "0082712f", "3b856e02", "7e513fb9", "546e18f0", "4aabce91", "dd66b662", "a42550d5", "c29c0b65", "d416c0c4"],
+        "sortedHash": ["e73ed2ad", "85f5a1da", "bedf9042", "0b3b9934", "0ac658c2", "9362e44e", "7af9e39d", "433babcf", "e78bfc56", "436e9406", "ff19aeea", "77664bd0", "aa122990", "2012ed9a", "070eb1b3", "5d7f02df", "abf42fbf", "11ea6150", "e0b482d3", "e5e95467"]
+      },
+      "rows": {
+        "bad": 554,
+        "has": 2437,
+        "qPresent": 2246,
+        "qAbsent": 3675,
+        "minMax": 1560,
+        "addPresent": 2164,
+        "addFull": 174,
+        "addNew": 3383,
+        "delAbsent": 623,
+        "delPresent": 3184
+      }
+    },
+    {
+      "U": 65536,
+      "C": 4096,
+      "w": 16,
+      "seed": 1253273483,
+      "resultsHash": "ba362324",
+      "finalSize": 754,
+      "sortedHash": "36955cc9",
+      "checkpoints": {
+        "size": [638, 1273, 1896, 2541, 3149, 3783, 3696, 2720, 1727, 741, 0, 63, 103, 123, 111, 108, 125, 101, 113, 754],
+        "resultsHash": ["2453372b", "356e6ceb", "fc613f7f", "3a4e06fc", "3a876bb8", "fcd4ff49", "fa176468", "162d7ee6", "deabf2b7", "c194b375", "3d06b18b", "81203b3c", "d839d8c1", "0ca9d859", "a8386f82", "8488eae0", "920f57b5", "df7e0e33", "6043e59b", "1d946271"],
+        "sortedHash": ["5f23c799", "bb08a572", "dab52ac3", "a5307908", "419c9c35", "e24223c5", "900d2283", "04335dfc", "a9047b2c", "a02d4dbe", "00a3c664", "5cbc6b40", "50356dfd", "eeee8b22", "64767d9a", "b81a52c7", "676b27df", "eb3e827d", "9c77bba8", "36955cc9"]
+      },
+      "rows": {
+        "bad": 487,
+        "has": 1391,
+        "qPresent": 1237,
+        "qAbsent": 2245,
+        "minMax": 846,
+        "addPresent": 1964,
+        "addFull": 50,
+        "addNew": 6132,
+        "delAbsent": 270,
+        "delPresent": 5378
+      },
+      "model": {
+        "T": 4,
+        "touchSeqHash": "0c278c97",
+        "touches": 132363,
+        "tableWrites": 175227,
+        "threadWrites": 46794
+      }
+    },
+    {
+      "U": 65537,
+      "C": 1024,
+      "w": 17,
+      "seed": 3907709252,
+      "resultsHash": "f9ba0c9f",
+      "finalSize": 92,
+      "sortedHash": "11d6aa7b",
+      "checkpoints": {
+        "size": [605, 811, 1, 153, 959, 1022, 1020, 1024, 1020, 805, 7, 0, 740, 1024, 115, 1, 33, 0, 75, 92],
+        "resultsHash": ["994823db", "52e9c633", "2e4b5394", "c86327a8", "1cc06699", "b43f5f65", "5a9a2717", "6baae35f", "49f5deee", "a3629f0b", "a11b1eb2", "f53d4945", "d3de1c8a", "abcb74b3", "3f18624b", "90230579", "a6cdbd43", "959226ed", "ac1c97fb", "672f6f28"],
+        "sortedHash": ["980d7068", "1ca3c2e7", "756eeea1", "7a843931", "2431e7c7", "886e448f", "c9d4ad6b", "21630ff9", "e4052632", "8b26aec7", "8bc2ef99", "00a3c664", "ac95a431", "73b5416f", "d2c54c91", "a3855154", "dfa7f6ab", "00a3c664", "e0f80420", "11d6aa7b"]
+      },
+      "rows": {
+        "bad": 511,
+        "has": 2109,
+        "qPresent": 1090,
+        "qAbsent": 3902,
+        "minMax": 1348,
+        "addPresent": 1030,
+        "addFull": 342,
+        "addNew": 4698,
+        "delAbsent": 364,
+        "delPresent": 4606
+      }
+    },
+    {
+      "U": 1048576,
+      "C": 4096,
+      "w": 20,
+      "seed": 2267177725,
+      "resultsHash": "4eca85ad",
+      "finalSize": 3251,
+      "sortedHash": "10257592",
+      "checkpoints": {
+        "size": [628, 1274, 1910, 2569, 3203, 3817, 3655, 2680, 1695, 710, 41, 91, 118, 162, 726, 1541, 2359, 3177, 3996, 3251],
+        "resultsHash": ["316085f7", "418272a5", "77599c39", "e96a6212", "8d8693f5", "e1b2c54b", "d5f92044", "d390800f", "84aa74fc", "991496d1", "8f06f836", "70d70f78", "d586b8de", "70ce6f0f", "9be68c3e", "cf518f6c", "63a84ce6", "8b31be38", "d6d9b380", "4937dc57"],
+        "sortedHash": ["4e4be1db", "22f3326c", "4141dee7", "ae1e0fc3", "2dc8d39f", "124f7d3a", "3770fbff", "30c7c497", "4eac47b6", "cbf1680c", "b39eaac1", "d03a8446", "41f8eb0e", "a70efc34", "d0d38e25", "33cc0d97", "a9461c02", "ae2007c5", "0deea6c4", "10257592"]
+      },
+      "rows": {
+        "bad": 499,
+        "has": 917,
+        "qPresent": 816,
+        "qAbsent": 1579,
+        "minMax": 564,
+        "addPresent": 1242,
+        "addFull": 57,
+        "addNew": 8722,
+        "delAbsent": 133,
+        "delPresent": 5471
+      }
+    },
+    {
+      "U": 16777216,
+      "C": 4096,
+      "w": 24,
+      "seed": 626646198,
+      "resultsHash": "e8b278d6",
+      "finalSize": 4090,
+      "sortedHash": "60e0ba9f",
+      "checkpoints": {
+        "size": [630, 1264, 1896, 2525, 3164, 3822, 4014, 3025, 2049, 1065, 79, 43, 636, 1443, 2286, 3102, 3922, 4091, 4087, 4090],
+        "resultsHash": ["801374e9", "8ed0e37f", "c9ac976f", "d51ec56e", "c449930d", "4b1ec85f", "57b11ada", "3f86c677", "5428d257", "f4bf838f", "4dd7be2f", "04df17db", "36320f68", "cb7f5bbc", "afa3cc72", "4ecf6d23", "54165e12", "22e5f616", "e5647215", "e0c80cae"],
+        "sortedHash": ["9e91a233", "0884eec3", "426fd637", "cad02200", "87050129", "98730557", "b84c31cb", "d782d8f6", "a4e37e05", "c781af5b", "9e29787b", "140e283f", "0c9dd405", "5e8fb811", "f6d83dd4", "58e71a3b", "be817ae0", "5c9b1244", "d44beba0", "60e0ba9f"]
+      },
+      "rows": {
+        "bad": 571,
+        "has": 1105,
+        "qPresent": 891,
+        "qAbsent": 1663,
+        "minMax": 663,
+        "addPresent": 1287,
+        "addFull": 167,
+        "addNew": 8798,
+        "delAbsent": 147,
+        "delPresent": 4708
+      }
+    },
+    {
+      "U": 268435456,
+      "C": 4096,
+      "w": 28,
+      "seed": 3281081967,
+      "resultsHash": "61cada55",
+      "finalSize": 4096,
+      "sortedHash": "c47dea52",
+      "checkpoints": {
+        "size": [637, 1267, 1889, 2520, 3176, 3813, 4096, 3800, 2820, 1839, 854, 1, 64, 245, 1019, 1821, 2643, 3470, 4096, 4096],
+        "resultsHash": ["e682f992", "8291a803", "4563a0b8", "ca52e917", "55fdf9ab", "002fd49b", "7e50078a", "acd1ecd5", "9ccc51f3", "266d829c", "f5bfd0b3", "64da1968", "f6391989", "b4c1e112", "a495a5a8", "e5e6091f", "69161b1c", "d3f3c16e", "7ac34876", "4522ee7e"],
+        "sortedHash": ["1b8493fc", "00d51482", "ce47fa24", "7ebdde0c", "e2d12d05", "7693e046", "2503ad41", "c6f4e5c5", "60c0054a", "d013389b", "7a501c51", "81376905", "cbbf62f5", "918e6ddd", "31a9ec72", "5876f0e3", "72b6e98e", "c8dd3121", "a9a5b0df", "c47dea52"]
+      },
+      "rows": {
+        "bad": 505,
+        "has": 1078,
+        "qPresent": 737,
+        "qAbsent": 1839,
+        "minMax": 655,
+        "addPresent": 1286,
+        "addFull": 255,
+        "addNew": 8786,
+        "delAbsent": 169,
+        "delPresent": 4690
+      }
+    },
+    {
+      "U": 4294967296,
+      "C": 4096,
+      "w": 32,
+      "seed": 1640550440,
+      "resultsHash": "701a55f3",
+      "finalSize": 193,
+      "sortedHash": "70db54cb",
+      "checkpoints": {
+        "size": [651, 1288, 1938, 2570, 3203, 3826, 4089, 4068, 4061, 4088, 4095, 3354, 2368, 1382, 401, 0, 71, 102, 149, 193],
+        "resultsHash": ["4244008c", "5c5255e3", "353d3fc2", "c11d0e08", "f85a9d60", "2bf2c0ac", "923646c3", "51ec8f96", "d286a943", "3cf5ebd6", "d5556b29", "08cd4fdf", "56d887a9", "64ea42e7", "427344f2", "3c45a1ec", "ea226afb", "a20be9f2", "c4e9ad90", "8fa04d3f"],
+        "sortedHash": ["2bf22705", "04cd6cbc", "97e819a0", "993becc3", "c9502f2e", "cccf6ea3", "10a64dda", "e1690429", "e4a97d47", "0f73d1ee", "eab41a11", "591f7a78", "d3e69c27", "76650ad2", "042e984b", "00a3c664", "a1488653", "44acac3b", "8dc073ad", "70db54cb"]
+      },
+      "rows": {
+        "bad": 508,
+        "has": 1500,
+        "qPresent": 1164,
+        "qAbsent": 2480,
+        "minMax": 927,
+        "addPresent": 1737,
+        "addFull": 221,
+        "addNew": 5656,
+        "delAbsent": 344,
+        "delPresent": 5463
+      },
+      "model": {
+        "T": 5,
+        "touchSeqHash": "4988e326",
+        "touches": 287361,
+        "tableWrites": 512843,
+        "threadWrites": 44669
+      }
+    },
+    {
+      "U": 4294967295,
+      "C": 1024,
+      "w": 32,
+      "seed": 18913,
+      "resultsHash": "48af103c",
+      "finalSize": 438,
+      "sortedHash": "21bd694c",
+      "checkpoints": {
+        "size": [636, 725, 29, 95, 92, 117, 143, 20, 836, 267, 35, 71, 168, 231, 11, 82, 158, 205, 64, 438],
+        "resultsHash": ["9b15a12e", "266a5b72", "e5f4a7e8", "5d6974cd", "015d392f", "88119f2a", "178843d1", "b21628c1", "ad087a9f", "e89fb22f", "b381d624", "d976f69e", "408a5ccd", "fab014f6", "8f6ba477", "3d4ef00d", "491e2626", "76053425", "75134029", "18f21872"],
+        "sortedHash": ["6d4c1bd3", "93babe8a", "483fdbf6", "08429d5c", "49dc6855", "f607698e", "99564a9c", "487b71ec", "ef1932a0", "22527a86", "28b35dc3", "48e54b61", "cfba90a1", "e9c352f1", "d3bce0fd", "5f289c6f", "91af56d8", "f8db1ef0", "1bbdf92f", "21bd694c"]
+      },
+      "rows": {
+        "bad": 477,
+        "has": 1973,
+        "qPresent": 1340,
+        "qAbsent": 3417,
+        "minMax": 1194,
+        "addPresent": 1453,
+        "addFull": 59,
+        "addNew": 5009,
+        "delAbsent": 507,
+        "delPresent": 4571
+      },
+      "model": {
+        "T": 5,
+        "touchSeqHash": "d675b1e3",
+        "touches": 270050,
+        "tableWrites": 458542,
+        "threadWrites": 38758
+      }
+    },
+    {
+      "U": 2147483649,
+      "C": 512,
+      "w": 32,
+      "seed": 2654454682,
+      "resultsHash": "7b1d9303",
+      "finalSize": 512,
+      "sortedHash": "c6ef5523",
+      "checkpoints": {
+        "size": [512, 506, 490, 447, 169, 0, 48, 34, 89, 112, 141, 151, 189, 198, 233, 511, 0, 71, 2, 512],
+        "resultsHash": ["5e1a2e97", "433b443c", "005758c8", "e1523707", "b5353991", "b51e2952", "612984e6", "e090905a", "bd5c65db", "fe077a64", "20ec93fd", "ea8dadb1", "5189dbfc", "b629f28d", "bdc8903b", "2832600c", "46625d14", "81c4f864", "95c13ade", "7d647f7a"],
+        "sortedHash": ["310cb37f", "565e6f54", "2c18b3d6", "f2df49b5", "d0b7d959", "00a3c664", "e1805983", "f26ffa95", "2354b22e", "334615b2", "297067f9", "c3b419e0", "b43336b7", "71d085f9", "9ff26427", "1b020234", "00a3c664", "2afbad8a", "12b08035", "c6ef5523"]
+      },
+      "rows": {
+        "bad": 531,
+        "has": 2274,
+        "qPresent": 1372,
+        "qAbsent": 3999,
+        "minMax": 1369,
+        "addPresent": 1385,
+        "addFull": 395,
+        "addNew": 4314,
+        "delAbsent": 559,
+        "delPresent": 3802
+      },
+      "model": {
+        "T": 5,
+        "touchSeqHash": "cbfbafae",
+        "touches": 205395,
+        "tableWrites": 319986,
+        "threadWrites": 32976
+      }
+    }
+  ],
+  "boundary": [
+    {
+      "U": 2,
+      "C": 2,
+      "xs": [0, 1],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false],
+          "succ": [null, null],
+          "pred": [null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false],
+          "succ": [null, null],
+          "pred": [null, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [1],
+          "min": 1,
+          "max": 1,
+          "has": [false, true],
+          "succ": [1, null],
+          "pred": [null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 1],
+          "min": 0,
+          "max": 1,
+          "has": [true, true],
+          "succ": [1, null],
+          "pred": [null, 0]
+        },
+        {
+          "name": "full",
+          "keys": [0, 1],
+          "min": 0,
+          "max": 1,
+          "has": [true, true],
+          "succ": [1, null],
+          "pred": [null, 0]
+        }
+      ]
+    },
+    {
+      "U": 3,
+      "C": 3,
+      "xs": [0, 1, 2],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false],
+          "succ": [null, null, null],
+          "pred": [null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false],
+          "succ": [null, null, null],
+          "pred": [null, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [2],
+          "min": 2,
+          "max": 2,
+          "has": [false, false, true],
+          "succ": [2, 2, null],
+          "pred": [null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 2],
+          "min": 0,
+          "max": 2,
+          "has": [true, false, true],
+          "succ": [2, 2, null],
+          "pred": [null, 0, 0]
+        },
+        {
+          "name": "full",
+          "keys": [0, 1, 2],
+          "min": 0,
+          "max": 2,
+          "has": [true, true, true],
+          "succ": [1, 2, null],
+          "pred": [null, 0, 1]
+        }
+      ]
+    },
+    {
+      "U": 5,
+      "C": 5,
+      "xs": [0, 1, 2, 3, 4],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [4],
+          "min": 4,
+          "max": 4,
+          "has": [false, false, false, false, true],
+          "succ": [4, 4, 4, 4, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 4],
+          "min": 0,
+          "max": 4,
+          "has": [true, false, false, false, true],
+          "succ": [4, 4, 4, 4, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "full",
+          "keys": [0, 1, 2, 3, 4],
+          "min": 0,
+          "max": 4,
+          "has": [true, true, true, true, true],
+          "succ": [1, 2, 3, 4, null],
+          "pred": [null, 0, 1, 2, 3]
+        }
+      ]
+    },
+    {
+      "U": 16,
+      "C": 16,
+      "xs": [0, 1, 13, 14, 15],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [15],
+          "min": 15,
+          "max": 15,
+          "has": [false, false, false, false, true],
+          "succ": [15, 15, 15, 15, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 15],
+          "min": 0,
+          "max": 15,
+          "has": [true, false, false, false, true],
+          "succ": [15, 15, 15, 15, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "full",
+          "keys": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+          "min": 0,
+          "max": 15,
+          "has": [true, true, true, true, true],
+          "succ": [1, 2, 14, 15, null],
+          "pred": [null, 0, 12, 13, 14]
+        }
+      ]
+    },
+    {
+      "U": 17,
+      "C": 8,
+      "xs": [0, 1, 14, 15, 16],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [16],
+          "min": 16,
+          "max": 16,
+          "has": [false, false, false, false, true],
+          "succ": [16, 16, 16, 16, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 16],
+          "min": 0,
+          "max": 16,
+          "has": [true, false, false, false, true],
+          "succ": [16, 16, 16, 16, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 256,
+      "C": 64,
+      "xs": [0, 1, 253, 254, 255],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [255],
+          "min": 255,
+          "max": 255,
+          "has": [false, false, false, false, true],
+          "succ": [255, 255, 255, 255, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 255],
+          "min": 0,
+          "max": 255,
+          "has": [true, false, false, false, true],
+          "succ": [255, 255, 255, 255, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 1000,
+      "C": 200,
+      "xs": [0, 1, 997, 998, 999],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [999],
+          "min": 999,
+          "max": 999,
+          "has": [false, false, false, false, true],
+          "succ": [999, 999, 999, 999, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 999],
+          "min": 0,
+          "max": 999,
+          "has": [true, false, false, false, true],
+          "succ": [999, 999, 999, 999, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 65536,
+      "C": 4096,
+      "xs": [0, 1, 65533, 65534, 65535],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [65535],
+          "min": 65535,
+          "max": 65535,
+          "has": [false, false, false, false, true],
+          "succ": [65535, 65535, 65535, 65535, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 65535],
+          "min": 0,
+          "max": 65535,
+          "has": [true, false, false, false, true],
+          "succ": [65535, 65535, 65535, 65535, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 65537,
+      "C": 1024,
+      "xs": [0, 1, 65534, 65535, 65536],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [65536],
+          "min": 65536,
+          "max": 65536,
+          "has": [false, false, false, false, true],
+          "succ": [65536, 65536, 65536, 65536, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 65536],
+          "min": 0,
+          "max": 65536,
+          "has": [true, false, false, false, true],
+          "succ": [65536, 65536, 65536, 65536, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 1048576,
+      "C": 4096,
+      "xs": [0, 1, 1048573, 1048574, 1048575],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [1048575],
+          "min": 1048575,
+          "max": 1048575,
+          "has": [false, false, false, false, true],
+          "succ": [1048575, 1048575, 1048575, 1048575, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 1048575],
+          "min": 0,
+          "max": 1048575,
+          "has": [true, false, false, false, true],
+          "succ": [1048575, 1048575, 1048575, 1048575, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 16777216,
+      "C": 4096,
+      "xs": [0, 1, 16777213, 16777214, 16777215],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [16777215],
+          "min": 16777215,
+          "max": 16777215,
+          "has": [false, false, false, false, true],
+          "succ": [16777215, 16777215, 16777215, 16777215, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 16777215],
+          "min": 0,
+          "max": 16777215,
+          "has": [true, false, false, false, true],
+          "succ": [16777215, 16777215, 16777215, 16777215, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 268435456,
+      "C": 4096,
+      "xs": [0, 1, 268435453, 268435454, 268435455],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false],
+          "succ": [null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [268435455],
+          "min": 268435455,
+          "max": 268435455,
+          "has": [false, false, false, false, true],
+          "succ": [268435455, 268435455, 268435455, 268435455, null],
+          "pred": [null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 268435455],
+          "min": 0,
+          "max": 268435455,
+          "has": [true, false, false, false, true],
+          "succ": [268435455, 268435455, 268435455, 268435455, null],
+          "pred": [null, 0, 0, 0, 0]
+        }
+      ]
+    },
+    {
+      "U": 4294967296,
+      "C": 4096,
+      "xs": [0, 1, 1073741824, 2147483647, 2147483648, 2147483649, 4294967293, 4294967294, 4294967295],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false, false, false, false, false],
+          "succ": [null, null, null, null, null, null, null, null, null],
+          "pred": [null, null, null, null, null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false, false, false, false, false],
+          "succ": [null, null, null, null, null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [4294967295],
+          "min": 4294967295,
+          "max": 4294967295,
+          "has": [false, false, false, false, false, false, false, false, true],
+          "succ": [4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, null],
+          "pred": [null, null, null, null, null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 4294967295],
+          "min": 0,
+          "max": 4294967295,
+          "has": [true, false, false, false, false, false, false, false, true],
+          "succ": [4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, 4294967295, null],
+          "pred": [null, 0, 0, 0, 0, 0, 0, 0, 0]
+        },
+        {
+          "name": "top",
+          "keys": [2147483647, 2147483648],
+          "min": 2147483647,
+          "max": 2147483648,
+          "has": [false, false, false, true, true, false, false, false, false],
+          "succ": [2147483647, 2147483647, 2147483647, 2147483648, null, null, null, null, null],
+          "pred": [null, null, null, null, 2147483647, 2147483648, 2147483648, 2147483648, 2147483648]
+        }
+      ]
+    },
+    {
+      "U": 4294967295,
+      "C": 1024,
+      "xs": [0, 1, 1073741824, 2147483647, 2147483648, 2147483649, 4294967292, 4294967293, 4294967294],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false, false, false, false, false],
+          "succ": [null, null, null, null, null, null, null, null, null],
+          "pred": [null, null, null, null, null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false, false, false, false, false],
+          "succ": [null, null, null, null, null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [4294967294],
+          "min": 4294967294,
+          "max": 4294967294,
+          "has": [false, false, false, false, false, false, false, false, true],
+          "succ": [4294967294, 4294967294, 4294967294, 4294967294, 4294967294, 4294967294, 4294967294, 4294967294, null],
+          "pred": [null, null, null, null, null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 4294967294],
+          "min": 0,
+          "max": 4294967294,
+          "has": [true, false, false, false, false, false, false, false, true],
+          "succ": [4294967294, 4294967294, 4294967294, 4294967294, 4294967294, 4294967294, 4294967294, 4294967294, null],
+          "pred": [null, 0, 0, 0, 0, 0, 0, 0, 0]
+        },
+        {
+          "name": "top",
+          "keys": [2147483647, 2147483648],
+          "min": 2147483647,
+          "max": 2147483648,
+          "has": [false, false, false, true, true, false, false, false, false],
+          "succ": [2147483647, 2147483647, 2147483647, 2147483648, null, null, null, null, null],
+          "pred": [null, null, null, null, 2147483647, 2147483648, 2147483648, 2147483648, 2147483648]
+        }
+      ]
+    },
+    {
+      "U": 2147483649,
+      "C": 512,
+      "xs": [0, 1, 1073741824, 2147483646, 2147483647, 2147483648],
+      "states": [
+        {
+          "name": "empty",
+          "keys": [],
+          "min": null,
+          "max": null,
+          "has": [false, false, false, false, false, false],
+          "succ": [null, null, null, null, null, null],
+          "pred": [null, null, null, null, null, null]
+        },
+        {
+          "name": "lo",
+          "keys": [0],
+          "min": 0,
+          "max": 0,
+          "has": [true, false, false, false, false, false],
+          "succ": [null, null, null, null, null, null],
+          "pred": [null, 0, 0, 0, 0, 0]
+        },
+        {
+          "name": "hi",
+          "keys": [2147483648],
+          "min": 2147483648,
+          "max": 2147483648,
+          "has": [false, false, false, false, false, true],
+          "succ": [2147483648, 2147483648, 2147483648, 2147483648, 2147483648, null],
+          "pred": [null, null, null, null, null, null]
+        },
+        {
+          "name": "ends",
+          "keys": [0, 2147483648],
+          "min": 0,
+          "max": 2147483648,
+          "has": [true, false, false, false, false, true],
+          "succ": [2147483648, 2147483648, 2147483648, 2147483648, 2147483648, null],
+          "pred": [null, 0, 0, 0, 0, 0]
+        },
+        {
+          "name": "top",
+          "keys": [2147483647, 2147483648],
+          "min": 2147483647,
+          "max": 2147483648,
+          "has": [false, false, false, false, true, true],
+          "succ": [2147483647, 2147483647, 2147483647, 2147483647, 2147483648, null],
+          "pred": [null, null, null, null, null, 2147483647]
+        }
+      ]
+    }
+  ],
+  "collide": {
+    "U": 65536,
+    "C": 16,
+    "w": 16,
+    "B": 4,
+    "S": 32,
+    "s1": 315909199,
+    "s2": 1259903736,
+    "keys": [0, 2, 16, 17, 19, 24, 47, 61, 73]
+  }
+}

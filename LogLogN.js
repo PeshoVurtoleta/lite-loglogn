@@ -2,7 +2,9 @@
  * @zakkster/lite-loglogn -- a tree-shakeable, zero-GC family of sub-logarithmic
  * bounded-integer predecessor/successor data structures that doubles as a
  * teachable textbook: each member solves a real ordered-integer problem AND
- * proves its bound is real (the O(log log U) Witness -- see test/witness.mjs).
+ * proves its bound is real. The proof is deterministic COUNTS (exact words /
+ * probes per op, gated in `npm test`; decisions/0004 Amendment 1); timing
+ * (test/witness.mjs) is REPORTED, never the gate.
  *
  * The identity is the SPANNING framing: this is a family of sub-logarithmic
  * bounded-integer predecessor/successor structures spanning O(log_w U) to
@@ -12,14 +14,16 @@
  * strict O(log log U) members (x-fast / y-fast / vEB) follow. The witness's
  * PRIMARY axis is the universe BIT-WIDTH w, never a copied log2(n).
  *
- * v0.1.0 was the SCAFFOLD release (the `VERSION` const only). StratifiedBitset is
- * the first member and ships in 0.2.0, appended below append-only: this header,
- * the roster comment and the `VERSION` const are the only prior lines that ever
- * change. StratifiedBitset: array-embedded O(log_w U) successor / predecessor over
- * a hierarchical bit tree, O(U/w) space. Still planned: XFastTrie (O(log log U)
- * query over pointer-free open-addressing LevelTables, O(n*w) space), YFastTrie
- * (the O(n)-space fix over x-fast representatives, expected / amortized), and
- * vEBTree (a flattened van Emde Boas keeping worst-case O(log log U) and 0 B/op).
+ * v0.1.0 was the SCAFFOLD release (the `VERSION` const only). Members are
+ * appended below append-only: this header, the roster comment and the `VERSION`
+ * const are the only prior lines that ever change. StratifiedBitset (0.2.0):
+ * array-embedded O(log_w U) successor / predecessor over a hierarchical bit
+ * tree, O(U/w) space. XFastTrie (0.3.0): O(log log U) successor / predecessor
+ * over pointer-free bucketized-cuckoo LevelTables, one per prefix length, plus a
+ * sorted leaf thread; updates are honestly O(w); O(n*w) space, preallocated at a
+ * FIXED capacity. Still planned: YFastTrie (the O(n)-space fix over x-fast
+ * representatives, expected / amortized) and vEBTree (a flattened van Emde Boas
+ * keeping worst-case O(log log U) and 0 B/op).
  * Members are independent (no shared mutable module state), so a bundler that
  * imports one drops the others (`sideEffects: false`).
  *
@@ -27,24 +31,29 @@
  * constant, slope ~ 0); lite-logn proves a STRAIGHT line vs log2(n) (one added
  * level per doubling of n); lite-loglogn's bound is in the UNIVERSE, not n.
  * StratifiedBitset is O(log_32 U): levels = max(1, ceil(w/5)), linear in the
- * bit-width w. The planned strict members target O(log log U), one step per
- * doubling of w. The HARD proof is deterministic COUNTS (exact words read /
- * written per op, gated in `npm test`; decisions/0004 Amendment 1, 0006).
- * Timing is a release-time statistical witness that reports the n-sweep
- * crossover over an O(log n) foil (the "when does this beat a binary search"
- * answer as a number).
+ * bit-width w. XFastTrie's absent-key query is 1 + T level-table probes, T =
+ * log2(w) binary-search steps for w = 2^j: one step per doubling of w. The HARD
+ * proof is deterministic COUNTS (exact words / probes read and written per op,
+ * gated in `npm test`; decisions/0004 Amendment 1, 0006). Timing is REPORTED: a
+ * release-time run reports the n-sweep crossover over an O(log n) foil (the
+ * "when does this beat a binary search" answer as a number) and gates nothing.
  * Keys are w-bit integers in [0, U), U = 2^w, with w <= 32 in JS (bitwise ops
  * are 32-bit); wider keys are a labeled SegmentedU variant, never a silent
  * BigInt hot path.
- * Every hot op each member ships is O(log log U) worst-case (or O(log_w U) /
- * expected / amortized where stated) and allocates ZERO bytes after construction.
+ * Every hot op each member ships states its bound -- O(log_w U) (StratifiedBitset),
+ * O(log log U) queries and O(w) updates (XFastTrie; an update's cuckoo insert is
+ * expected O(1) per level, with an in-place reseed on a stall), worst-case unless
+ * labelled expected / amortized -- and allocates ZERO bytes after construction.
  *
  * The SPACE price is a co-headline, stated on every member with the same
  * prominence as the time bound (vEB O(U), x-fast O(n*w), y-fast O(n),
- * StratifiedBitset O(U/w)) -- this family's defining honesty hook. The witness
- * harness (never imported here) REPORTS fits on both the log2(w) and the w axis
- * and gates on neither: the w axis fit StratifiedBitset better in the 2026-10-22
- * run (R^2 0.7293 vs 0.6589), as its O(log_32 U) label predicts.
+ * StratifiedBitset O(U/w)) -- this family's defining honesty hook. XFastTrie
+ * allocates its O(C*w) worst case up front, sized by its capacity C, not by the
+ * keys present: byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16 (see its class
+ * comment). The witness harness (never imported here) REPORTS fits on both the
+ * log2(w) and the w axis and gates on neither: the w axis fit StratifiedBitset
+ * better in the 2026-10-22 run (R^2 0.7293 vs 0.6589), as its O(log_32 U) label
+ * predicts.
  *
  * @license MIT
  */
@@ -309,8 +318,12 @@ export class StratifiedBitset {
 
 /**
  * MurmurHash3 32-bit finalizer (fmix32), lite-o1 CuckooMap parity. The result is
- * a SIGNED int32 (`| 0`), so it never boxes at a call boundary; every consumer
- * masks it. @param {number} h an int32 @returns {number} a signed int32
+ * a SIGNED int32 (`| 0`), so on Node (32-bit Smi) it never boxes at a call
+ * boundary. On a pointer-compressed engine (31-bit Smi: Chrome / Electron, d8) a
+ * result outside [-2^30, 2^30) boxes when the call is NOT inlined; its hot
+ * callers can inline it (<= 460 B, gated by test/XftBytecode.test.js; inlining
+ * itself is not gated). Every consumer masks it.
+ * @param {number} h an int32 @returns {number} a signed int32
  */
 function fmix32(h) {
     h = h ^ (h >>> 16);
@@ -347,23 +360,42 @@ function throwFull(c) {
  * (length C+1; slot 0 = the circular sentinel: next[0] = min leaf, prev[0] = max
  * leaf; free leaves form a LIFO list through `_next`). `_q` I32[4] = scratch x|0,
  * then the REPORTED counters kicks, reseedOps, tries (cumulative; clear() keeps
- * them). byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16, TS = sum S_L.
+ * them). The counters are Int32 and WRAP at 2^31 (to -2^31, no saturation);
+ * they are REPORTED diagnostics and the engine never reads them. byteLength (every typed array
+ * plus the 16 B of `_q`) = 13 TS + 12 (C+1) + 16 (w+1) + 16, TS = sum S_L
+ * (13 = occ 1 + tk 4 + tmin 4 + tmax 4 B per slot; 12 = key + next + prev).
  *
- * Cost (1 touch = 1 level-table probe = 4 `_lv` reads, <= 8 `_occ` reads, = 8 on
- * a miss; T = binary-search steps over w prefix lengths, = log2(w) for w = 2^j):
- * has 1; successor / predecessor 1 (x present) or 1+T (absent); min / max 0;
- * add of a new key 1+T+(w-m) touches (m = the shorter common prefix with its
- * neighbours: the update walk stops early); delete of a present key w-m. Queries
- * are O(log log U); updates are honestly O(w). Hot methods allocate 0 bytes; a
- * returned key >= 2^31 may box when the call is not inlined.
+ * Cost in level-table TOUCHES (1 touch = 1 probe = 4 `_lv` reads, <= 8 `_occ`
+ * reads, = 8 on a miss; T = binary-search steps over the w prefix lengths,
+ * = log2(w) for w = 2^j; m = the shorter common prefix length of x with its two
+ * thread neighbours -- the update walk stops early at m):
+ *
+ *   op                              touches
+ *   has                             1
+ *   successor / predecessor         1 (x present), 1 + T (x absent)
+ *   min / max                       0 (thread reads only)
+ *   add, new key                    1 + T + (w - m)
+ *   add, present or full            1
+ *   delete, key present             w - m
+ *   delete, key absent              1
+ *   any op, bad key                 0
+ * Rows are exact when no kick / reseed fires (add only; kicks / tries are REPORTED in _q).
+ *
+ * Queries are O(log log U); delete is O(w) worst-case, add expected O(w) (a stall
+ * reseeds one level: up to 32 passes, O(C) each). Hot methods allocate 0
+ * bytes; a returned key >= 2^31 on Node (>= 2^30 on Chrome / Electron, pointer-
+ * compressed) may box as a HeapNumber when the call is not inlined.
  * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
  * touches nothing: has / delete -> false, successor / predecessor -> undefined,
  * add -> RangeError. add of a NEW key at size === capacity -> RangeError, nothing
  * written. A cuckoo stall reseeds that level in place from the leaf thread (0 B);
  * if 32 tries fail the add is rolled back (logical restore) and throws
  * RangeError; if even the rollback cannot re-place a level, the instance is
- * POISONED (`_q = null`, loud Error; every hot method then throws TypeError) and
- * only clear() revives it.
+ * POISONED (`_q = null`, loud Error) and only clear() revives it. Poisoned, every
+ * hot method throws TypeError on a VALID key (min / max always); a bad key is
+ * rejected before `_q` is read, so it still gives false / undefined / RangeError.
+ * Storing null widens the `_q` field type of the XFastTrie shape (cold, once:
+ * optimized code that assumed an Int32Array there deopts).
  */
 export class XFastTrie {
     /**

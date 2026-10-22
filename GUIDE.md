@@ -2,14 +2,15 @@
 
 A repo-only decision guide for the sub-logarithmic family: which member, which
 bitset, reach-for / avoid, and how to measure the bound and the space price
-yourself. StratifiedBitset (0.2.0) is the
-first member; XFastTrie, YFastTrie and vEBTree are PLANNED. It is NOT an API
+yourself. StratifiedBitset (0.2.0) and
+XFastTrie (0.3.0) are shipped; YFastTrie and vEBTree are PLANNED. It is NOT an API
 encyclopedia (that is the README + `LogLogN.d.ts`); it answers "which member,
 is my bound real, and what does it cost in space?"
 
 Every number below names its tier: DETERMINISTIC (gated in `npm test` /
-`npm run verify`), STATISTICAL (gated once per release, `npm run witness`) or
-REPORTED (a measurement with provenance, gates nothing).
+`npm run verify`) or REPORTED (a measurement with provenance, gates nothing).
+This package has no CI, so every timing claim (`npm run witness`,
+`witness:tier`, `witness:xft`) is REPORTED, not a gated STATISTICAL claim.
 
 ---
 
@@ -28,7 +29,8 @@ Amendment 1, ADR 0006). Timing is evidence on one host, not the proof: no R^2
 floor and no slope band is gated. Each member declares which axis it fits;
 StratifiedBitset fits the `w` axis (REPORTED, A8 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66: R^2 0.7293 vs 0.6589
 for log2(w), 1 run), and does not claim a log2(w) line. "log2(w) must win" belongs
-to the strict O(log log U) members (planned), proven there by counts.
+to the strict O(log log U) members (XFastTrie shipped, others planned), proven
+there by counts.
 
 ---
 
@@ -44,7 +46,8 @@ START -- what do you need on a BOUNDED integer universe?
 |   and the universe U/w fits in memory?              -> StratifiedBitset (wc, O(U/w) space)  [0.2.0]
 |
 +-- Fastest possible query, space is not the constraint,
-|   universe can be up to 2^32?                       -> XFastTrie (wc, O(n*w) space)          [planned 0.3.0]
+|   universe can be up to 2^32, and updates are rare
+|   or the set is sparse in a huge universe?          -> XFastTrie (wc query, O(w) update, O(n*w) space)  [0.3.0]
 |
 +-- O(log log U) query but you cannot pay O(n*w) space
 |   (many elements)?                                  -> YFastTrie (exp, O(n) space)           [planned 0.4.0]
@@ -58,7 +61,7 @@ START -- what do you need on a BOUNDED integer universe?
 | Need | Member | Time (query) | Space | Version |
 | --- | --- | --- | --- | --- |
 | Teachable predecessor / successor, array-embedded | StratifiedBitset | O(log_32 U); min / max read Lc words (Lc = levels <= 7) | O(U/w) | 0.2.0 |
-| Fastest query, space no object | XFastTrie | O(log log U) | O(n*w) | planned 0.3.0 |
+| Fastest query, sparse set in a huge universe, space and update cost accepted | XFastTrie | O(log log U) query; O(w) update | O(n*w), preallocated at a FIXED capacity | 0.3.0 |
 | O(log log U) at O(n) space | YFastTrie | expected O(log log U) | O(n) | planned 0.4.0 |
 | Classic worst-case, compact universe | vEBTree | O(log log U) worst-case | O(U) | planned 0.5.0 |
 
@@ -81,26 +84,62 @@ START -- what do you need on a BOUNDED integer universe?
 ### Avoid it
 
 - The set is sparse in a huge universe: space is O(U/w) regardless of n (U = 2^32 is
-  about 554 MB; w = 28 level 0 alone is 32 MB). Use the planned YFastTrie or a
-  sorted array.
+  about 554 MB; w = 28 level 0 alone is 32 MB). Use XFastTrie (O(n*w), fixed
+  capacity; see below), the planned YFastTrie, or a sorted array.
 - U <= 2^25 and you only need successor: lite-o1 `BitSet` has a fixed 3 levels
   (O(1) in U) and bulk and / or / xor + popcount; see the table below.
 - Non-integer or unbounded keys: see the family boundary.
 - You need bulk set algebra or an iterator: iteration here is a successor walk
-  only, and there is no and / or / xor in 0.2.0.
+  only, and there is no and / or / xor.
 
 ### Measure it yourself
 
 - Bound (DETERMINISTIC): `npm test` runs the exact word counts (`test/Count.test.js`).
 - Zero-GC (DETERMINISTIC): `npm run torture`, `npm run test:perf`.
-- Speed (STATISTICAL, once per release, on a quiet host):
+- Speed (REPORTED, release-time, on a quiet host):
   `node ~/.claude/hooks/quiet-lock.mjs run "loglogn witness" -- npm run witness`
   (exit 0 pass / 1 fail / 2 inconclusive host); `npm run witness:w32` adds the
-  opt-in w = 32 (about 554 MB); `node test/witness.mjs --tier` is the peel A/B.
-- A8 headline (STATISTICAL, 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1
+  opt-in w = 32 (about 554 MB); `npm run witness:tier` is the peel A/B.
+- A8 headline (REPORTED, 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1
   3.66 -> 3.71, 1 run): at w = 28 the member beat a local binary search at all 9
   n from 1e3 to 1e7 (15/0 each; member 11.74-17.84 ns/op, binary search
   32.22 -> 197.78), so the crossover is at or below n = 1e3, the smallest n tested.
+
+---
+
+## XFastTrie
+
+### Reach for it
+
+- Query speed in a HUGE universe: an absent `successor` / `predecessor` costs
+  1 + log2(w) level-table touches (DETERMINISTIC, `test/XftCount.test.js`: 2, 3,
+  4, 5, 6 touches at w = 2, 4, 8, 16, 32), 6 at w = 32, and a present key costs 1.
+- The set is SPARSE in a big universe (U = 2^32, n up to about 10^6): there it
+  is smaller than StratifiedBitset (REPORTED, `node test/space-table.mjs`,
+  2026-10-22: n = C = 1,000,000 at U = 2^32 -> 393,682,220 B vs 554,189,332 B).
+- You can name a capacity up front and can live with it (fixed, never grows).
+
+### Avoid it
+
+- Frequent updates: `add` of a new key is 1 + T + (w - m) touches and `delete`
+  is w - m (DETERMINISTIC; 38 touches for an add into an empty trie at w = 32).
+  Updates are O(w), not O(log log U).
+- A dense or small universe: space is O(n*w), preallocated at the CAPACITY you
+  pass, not the keys present (`byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16`;
+  worst case 4,563,403,308 B at U = 2^32, C = 2^24). At U = 2^20, n = C =
+  1,000,000 it is 66,526,316 B against StratifiedBitset's 135,300 B (REPORTED
+  bytes, 491.7x). Use StratifiedBitset there.
+- Untrusted keys: the cuckoo seeds are fixed, so adversarial keys can force
+  kicks and reseeds (correctness holds, time suffers; ADR 0007).
+- A growing set: add of a new key at `size === capacity` throws a RangeError.
+
+### Measure it yourself
+
+- Bound (DETERMINISTIC): `npm test` (`XftCount`, `XFastTrieSpace`).
+- Zero-GC (DETERMINISTIC): `npm run torture` lanes X0-X4, `npm run test:perf`.
+- Speed (REPORTED, release-time, quiet host): `npm run witness:xft` (2% minimum
+  effect floor on every XFastTrie-vs-StratifiedBitset win; the binary-search comparison is a REPORTED point verdict without it; exit 0 / 1 / 2). No XFastTrie timing is quoted in
+  the docs until the release run.
 
 ---
 
@@ -110,7 +149,9 @@ Timsort runs insertion sort on short runs and merges above them, because each wi
 in its own range. The suite's bitsets split the same way: pick by universe and by
 which operations you need. Word counts are REPORTED from sibling source read
 2026-10-22 (words of the bit arrays read per op, worst case); the StratifiedBitset
-row is DETERMINISTIC (counts gated by Count.test.js and TierParity.test.js).
+row is DETERMINISTIC (counts gated by Count.test.js and TierParity.test.js); the
+XFastTrie row counts level-table touches, not words, and is DETERMINISTIC
+(XftCount.test.js).
 
 | Universe | Structure | next / prev / min-max | Extras | Absent |
 | --- | --- | --- | --- | --- |
@@ -118,6 +159,7 @@ row is DETERMINISTIC (counts gated by Count.test.js and TierParity.test.js).
 | U <= 1,024 | FastBit1024 | next 2 + field / prev none / 1 + field | `acquire` (lowest free slot) | -1 |
 | U <= 2^25, next only | lite-o1 BitSet | next 7 (U <= 2^20) / 38 (U = 2^25), no prev, first only | and / or / xor + popcount, size O(words) | -1 |
 | U <= 2^32 | StratifiedBitset | next <= 2Lc-1 / prev <= 2Lc-1 / min-max Lc | size O(1) | `undefined` |
+| U <= 2^32, sparse | XFastTrie | next / prev 1 + log2(w) touches (absent) / min-max 0; update w - m | fixed capacity, size O(1) | `undefined` |
 
 At U <= 1,024 StratifiedBitset touches the same number of words as the sibling
 (Lc <= 2); pick the sibling for its surface. The boundary row: U <= 2^25 and
@@ -189,7 +231,7 @@ console.log(t.successor(7), t.successor(2 ** 28 - 1));   // 300 undefined
   `@zakkster/lite-logn` (SkipList / balanced structures, O(log n)). lite-loglogn
   needs a bounded integer universe (w <= 32).
 - **Approximate membership** -> `@zakkster/lite-filter` (Bloom / cuckoo /
-  binary-fuse). lite-loglogn owns exact ordered integer structures; 0.2.0 has no
+  binary-fuse). lite-loglogn owns exact ordered integer structures; it has no
   use of lite-filter.
 - **Caching / eviction** -> `@zakkster/lite-lru`. It uses ordering internally but
   is a cache, not an ordered-collection library.

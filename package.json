@@ -2,7 +2,7 @@
   "name": "@zakkster/lite-loglogn",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "version": "0.2.0",
-  "description": "Zero-dependency, zero-GC sub-logarithmic bounded-integer predecessor/successor structures. StratifiedBitset ships: array-embedded 32-ary bit pyramid, O(log_32 U) successor/predecessor, O(U/w) space, 0 B/op, bound gated by exact word-read counts. XFastTrie, YFastTrie and vEBTree (O(log log U) family bound) are planned. Tree-shakeable named exports.",
+  "description": "Zero-dependency, zero-GC sub-logarithmic bounded-integer predecessor/successor structures. StratifiedBitset: array-embedded 32-ary bit pyramid, O(log_32 U) successor/predecessor, O(U/w) space. XFastTrie: O(log log U) successor/predecessor, O(w) updates, O(n*w) space at a fixed capacity. 0 B/op, bounds gated by exact counts. YFastTrie and vEBTree (O(log log U) family bound) are planned. Tree-shakeable named exports.",
   "type": "module",
   "main": "./LogLogN.js",
   "module": "./LogLogN.js",
@@ -31,6 +31,7 @@
     "witness": "node test/witness.mjs",
     "witness:w32": "node test/witness.mjs --w32",
     "witness:tier": "node test/witness.mjs --tier",
+    "witness:xft": "node test/witness.mjs --xft",
     "test:perf": "node --expose-gc --max-semi-space-size=4 --test-concurrency=1 --test test/perf/*.test.mjs",
     "verify": "npm test && npm run test:types && npm run torture && npm run test:perf"
   },

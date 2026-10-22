@@ -1,7 +1,7 @@
 # 0003 -- LevelTable / NodePool direction (L-03)
 
 - Status: ACCEPTED (direction only; concrete table deferred to XFastTrie;
-  RATIFIED by the maintainer 2026-10-22)
+  RATIFIED by the maintainer 2026-10-22; AMENDED 2026-10-22 -- see Amendment 1)
 - Severity: S1 (outlives many members; the single most consequential
   cross-package call, shared with lite-logn)
 - Date: 2026-09-18
@@ -69,3 +69,28 @@ flattened vEBTree do NOT (array-embedded, index-arithmetic, no pool).
   substrate implementation; deciding the direction is enough, and the real design
   pressure (what XFastTrie needs -- load factor, rehash, threaded columns) is not
   present yet.
+
+## Amendment 1 (maintainer, 2026-10-22) -- L-03 settled by ADR 0007
+
+The "concrete table" this record deferred is now decided; see
+`decisions/0007-leveltable.md`.
+
+- **The concrete call is SETTLED (2026-10-22): ADR 0007.** The LevelTable is an
+  in-file bucketized cuckoo table in `LogLogN.js`, with a fixed capacity, shipped
+  with XFastTrie in 0.3.0. The Status line above ("concrete table deferred to
+  XFastTrie") is therefore closed.
+- **"Reconcile" means design parity (ruling R1).** It does NOT mean importing
+  lite-o1's code or a shared primitive: lite-o1 rejected a public `SlotPool` (its
+  ADR 0021), lite-logn's NodePool is internal, and the sibling rule forbids a
+  runtime import into `LogLogN.js`. XFastTrie follows the lite-o1 `CuckooMap`
+  design (2 tables x 4-slot buckets, occupancy byte, no tombstones, load <= 0.90,
+  fmix32, in-place reseed of up to 32 tries) in its own file; `CuckooMap` is a
+  devDependency cross-check oracle only. No fork of its code.
+- **Open-addressing is not what shipped.** The body above sketches
+  open-addressing `Uint32Array` LevelTables with a load factor and a rehash policy;
+  the shipped table is the bucketized cuckoo design and has no growth rehash
+  (capacity is fixed; ADR 0007).
+- **Version labels in the body above are stale; the correct ones are:**
+  XFastTrie is **0.3.0** (the body says "v0.2.0" in the Decision and Consequences
+  sections), and StratifiedBitset is **0.2.0** (the body says "v0.1.0"; 0.1.0 was
+  the scaffold, `VERSION` only). The body is left as written, as history.

@@ -1,6 +1,6 @@
 # 0006 -- StratifiedBitset: peel (D10), counting method (D7), witness protocol (D8), A12 + waiver
 
-- Status: ACCEPTED (maintainer, 2026-10-22)
+- Status: ACCEPTED (maintainer, 2026-10-22; AMENDED 2026-10-22 -- see Amendment 1)
 - Severity: S1 (the first member; its gates are the template for every later member)
 - Date: 2026-10-22
 - Session: StratifiedBitset (B1 .. B-docs)
@@ -138,3 +138,22 @@ below some minimum relative difference is noise) before the next member's A/B.
   SURFACE, not a tier; it belongs to the planned hybrid tiered member.
 - **A timing R^2 floor / slope band as the gate.** Rejected (Amendment 1): w and
   log2(w) correlate at 0.9948 over five points.
+
+## Amendment 1 (maintainer, 2026-10-22) -- the effect floor (R4)
+
+The open question in "A12 result and the waiver" above (an effect-size floor for the
+A/A rule before the next member's A/B) is decided for the XFastTrie A/B lane.
+
+- **Ruling R4: the floor is 2%.** An A/A twin is flagged as a "winner" only if it
+  reaches `need` of K rounds AND `|median ratio - 1| >= 0.02`; an A/B "win" also
+  needs a median effect of at least 2%. The constant is `AB_EFFECT_FLOOR = 0.02`.
+- **Where it lives.** In `abVerdict` (`test/helpers/abVerdict.mjs`), the pure
+  verdict used by `node test/witness.mjs --xft` (`npm run witness:xft`), gated on
+  injected vectors by `test/AbVerdict.test.js` (DETERMINISTIC).
+- **What did not change (A5).** `tierVerdict` and the A12 lane keep their shipped
+  behavior, including the exit 2 on an A/A "winner" and the waiver recorded in
+  "A12 result"; the floor is NOT retrofitted into the `--tier` verdict. The A8 and
+  A12 result sections above stay as the historical record of those runs.
+- **Re-tier of the A8 / A12 timing.** The A8 and A12 results above are now tiered REPORTED, not STATISTICAL (D-host: this package has no CI, so statistical claims are REPORTED only). The numbers and their provenance are unchanged; only the tier label and any "gated" wording moved.
+- **Tier.** A verdict from this lane is a timing measurement on one host: it is
+  REPORTED (this package has no CI), never part of `npm test` or `npm run verify`.

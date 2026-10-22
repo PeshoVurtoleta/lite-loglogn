@@ -12,26 +12,29 @@ predecessor/successor data structures whose bound is proven by exact COUNTS. The
 identity is the SPANNING framing: the family spans O(log_w U) to O(log log U)
 over a bounded integer universe -- not a strict "O(log log U) only" package.
 The FAMILY bound is O(log log U), in the universe size U (never the element
-count n); StratifiedBitset itself is O(log_32 U). Every hot op allocates zero
-bytes after construction.
+count n); StratifiedBitset itself is O(log_32 U), and XFastTrie is the first
+strict O(log log U) member (queries only; its updates are O(w)). Every hot op
+allocates zero bytes after construction.
 
 It is the O(log log U) sibling of @zakkster/lite-o1 (the constant) and
 @zakkster/lite-logn (the logarithm in n): lite-loglogn holds the double
 logarithm in U. StratifiedBitset does NOT claim a log2(w) line; "log2(w) must
-win" belongs to the strict O(log log U) members (planned), proven there by counts.
+win" belongs to the strict O(log log U) members (XFastTrie shipped, others
+planned), proven there by counts.
 
 Keys are w-bit integers in [0, U), U <= 2^32 (bitwise ops are 32-bit); wider keys
 are a labeled SegmentedU variant, never a silent BigInt hot path. The SPACE price
 is a co-headline on every member, stated with the same prominence as the time bound.
 
-Roster (one member per release, append-only). StratifiedBitset ships in 0.2.0;
-everything after it is PLANNED:
+Roster (one member per release, append-only). StratifiedBitset (0.2.0) and
+XFastTrie (0.3.0) are shipped; YFastTrie and vEBTree are PLANNED:
 
 - StratifiedBitset (0.2.0) -- array-embedded 32-ary bit pyramid. O(log_32 U)
   successor / predecessor; min / max read Lc words (Lc = levels <= 7);
   O(U/w) SPACE; 0 B/op on every hot method.
-- XFastTrie (0.3.0, planned) -- O(log log U) query via binary search over w
-  pointer-free LevelTables; O(n*w) SPACE.
+- XFastTrie (0.3.0) -- O(log log U) query via binary search over w pointer-free
+  cuckoo LevelTables + a sorted leaf thread; O(w) UPDATE; O(n*w) SPACE,
+  preallocated at a FIXED capacity.
 - YFastTrie (0.4.0, planned) -- the O(n)-space fix over x-fast representatives;
   expected / amortized O(log log U).
 - vEBTree (0.5.0, planned) -- flattened van Emde Boas; worst-case O(log log U); O(U) SPACE.
@@ -41,6 +44,8 @@ everything after it is PLANNED:
 - `VERSION` -- string. The package version; one of the three version sites
   (package.json / LogLogN.js VERSION const / this file's `Version:` header).
 - `StratifiedBitset` -- class. An integer set over the fixed universe [0, U).
+- `XFastTrie` -- class. An integer set over the fixed universe [0, U) with a
+  fixed capacity; O(log log U) successor / predecessor, O(w) updates.
 
 ### StratifiedBitset
 
@@ -96,22 +101,88 @@ Space (O(U/w); pinned in test/Space.test.js): U = 2^16 -> 8,460 B; 2^20 ->
 Boxing: hot methods allocate 0 bytes; a returned key >= 2^31 (>= 2^30 on a
 pointer-compressed engine) may box as a HeapNumber when the call is not inlined.
 
+### XFastTrie
+
+    import { XFastTrie } from '@zakkster/lite-loglogn';
+    const t = new XFastTrie(2 ** 32, 1024);   // universe, capacity (fixed)
+    t.add(5).add(70);                         // chainable, idempotent
+    t.successor(5);                           // 70   (STRICT, > 5)
+    t.predecessor(70);                        // 5    (STRICT, < 70)
+    t.successor(70);                          // undefined
+
+Constructor: `new XFastTrie(universe, capacity)` -- universe an integer in
+[2, 2^32], capacity an integer in [1, min(universe, 2^24)], else RangeError.
+Allocates every column once; nothing is ever replaced except `_q` (nulled by a
+poison, re-created by clear()). Getters (cold): `size`,
+`universe`, `capacity`, `bits` (w = ceil(log2 U)), `byteLength`. Hot (0 B):
+`has`, `add`, `delete`, `successor`, `predecessor`, `min`, `max` (same return
+conventions as StratifiedBitset: absent = undefined, a bad key touches nothing,
+-0 aliases 0, add of a bad key -> RangeError). Cold: `clear()` (restores the
+default seeds, revives a poisoned instance), `dump()` -> { universe, capacity,
+size, bits, keys: Uint32Array ascending, levels[L-1] = { capacity, prefix, min,
+max } } (ALLOCATES).
+
+Failure modes: add of a NEW key at size === capacity -> RangeError, no state
+change. If 32 in-place reseed tries cannot place a key the add is rolled back
+and throws RangeError; if the rollback itself fails the instance is POISONED:
+every hot method throws TypeError on a valid key until clear().
+
+Cost model (DETERMINISTIC; level-table TOUCHES counted through a Proxy over all
+eight columns, test/XftCount.test.js; T = binary-search steps = log2(w) for
+w = 2^j; m = shorter common prefix length of x with its thread neighbours):
+- has: 1. successor / predecessor: 1 (x present), 1 + T (x absent). min / max: 0.
+- add new key: 1 + T + (w - m). add present or full: 1.
+- delete present: w - m. delete absent: 1. Any op with a bad key: 0.
+- Rows are exact when no kick / reseed fires (add only).
+- absent successor at w = 2, 4, 8, 16, 32 -> 2, 3, 4, 5, 6 touches; add into an
+  empty trie (m = 0) -> 4, 7, 12, 21, 38 touches.
+
+Caveats (stated plainly): FAST QUERY (1 + log2(w) touches when absent); O(w)
+UPDATE (not O(log log U)); O(n*w) SPACE with FIXED capacity: byteLength =
+13 TS + 12 (C+1) + 16 (w+1) + 16, TS = total level-table slots. Pinned
+(DETERMINISTIC, test/XFastTrieSpace.test.js): (U, C) = (2^16, 1024) -> 225,580 B;
+(2^20, 16384) -> 3,604,844 B; (2^32, 1) -> 3,896 B; (2^32, 65536) -> 31,457,836 B;
+(2^32, 2^24) -> 4,563,403,308 B (worst case, formula only, about 4.6 GB). REPORTED
+(node test/space-table.mjs, 2026-10-22, Node v26.8.2, deterministic bytes):
+n = C = 1,000,000 at U = 2^20 -> 66,526,316 B vs StratifiedBitset 135,300 B
+(491.7x); at U = 2^24 -> 175,578,284 B vs 2,164,804 B (81.1x); at U = 2^32 ->
+393,682,220 B vs 554,189,332 B (0.71x). Dense universes favour StratifiedBitset;
+XFastTrie pays off for a SPARSE set in a huge universe.
+Hash-flood caveat: the cuckoo seeds are FIXED defaults, so adversarial keys can
+force kick chains and reseeds (correctness holds, time suffers); see
+decisions/0007-leveltable.md. Boxing: as StratifiedBitset (a returned key >= 2^31
+may box when the call is not inlined).
+
+XFastTrie timing (REPORTED; no number from this cycle yet):
+<!-- XFT-WITNESS-BEGIN -->
+@@XFT-WITNESS@@
+<!-- XFT-WITNESS-END -->
+
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 162 tests, 0 fail, 2026-10-22, Node v26.8.2; also
-  npm run verify = test + test:types + torture + test:perf): exact counts, seeded
-  oracle fuzz, sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat +
-  SortedArray; 0 divergences), space pins, tier parity, bytecode-size gate.
-  `npm run torture`: 2,000,000 ops at U = 2^20 -> 0 B/op, gc major 0 / minor 0.
-  `npm run test:perf`: 7 zero-alloc scenarios + 3 must-fail teeth + flag pin (2) + arrayBuffers attribution (1) = 14/14.
-- STATISTICAL (release-time, NOT in verify, 1 run each, exit 0 pass / 1 fail /
-  2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node
+- DETERMINISTIC (npm test = 342 tests, 0 fail, 2026-10-22, Node v26.8.2; also
+  npm run verify = test + test:types + torture + test:perf): exact counts (words for
+  StratifiedBitset, level-table touches for XFastTrie), seeded oracle fuzz,
+  sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
+  0 divergences), space pins, tier parity, bytecode-size gates, a parity pin of
+  the StratifiedBitset region of the file against 0.2.0.
+  `npm run torture`: T0 2,000,000 ops at U = 2^20 -> 0 B/op, gc major 0 / minor 0;
+  XFastTrie lanes X0-X4 (QUIET verify run 2026-10-22, load1 1.32, baseline
+  2.21, 12 cores, Node v26.8.2, 1 run): 2,000,000 ops at U = 2^20 and U = 2^30
+  (C = 8192) -> 0 B/op, gc major 0 / minor 0, including kicks and reseeds
+  (X2: 50,000 cycles natural and forced, abGrowth 0); X4's six must-fail controls flip (torture run 2026-10-23).
+  `npm run test:perf`: PerfGate 14/14 (7 zero-alloc scenarios + 3 must-fail teeth +
+  flag pin (2) + arrayBuffers attribution (1)) + XFastTriePerf 17/17 = 31/31 (same QUIET run).
+- REPORTED (no CI for this package: statistical claims are REPORTED only; release-time,
+  NOT in verify, 1 run each, exit 0 pass / 1 fail / 2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node
   26.8.2, load1 3.66): member successor vs a local Uint32Array binary search at
   w = 28 won 15/0 at all nine n from 1e3 to 1e7 (member 11.74-17.84 ns/op;
-  binary search 32.22 -> 197.78 ns/op). `node test/witness.mjs --tier` (the
+  binary search 32.22 -> 197.78 ns/op). `npm run witness:tier` (the
   level-0 peel A/B; 2026-10-22T02:27:20Z, same host / Node, load1 4.79) returned EXIT 2 (inconclusive: a 1% A/A difference on identical
   code); the peel ships by maintainer waiver (dense-succ 11.5% and dense-pred
-  16.5% faster, no scenario lost).
+  16.5% faster, no scenario lost). The follow-up (ADR 0006 amendment): the
+  XFastTrie A/B lane, `npm run witness:xft`, uses a 2% minimum-effect floor
+  (test/helpers/abVerdict.mjs); tierVerdict is unchanged.
 - REPORTED (docs only; same A8 run: 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run): the U-sweep fits better vs w (R^2 0.7293) than vs log2(w)
   (R^2 0.6589); no R^2 floor or slope band is gated. lite-o1 BitSet is faster where
   it applies (4.28-4.82 vs 4.87-7.61 ns/op at n = 4096, w = 16..24).
@@ -141,6 +212,6 @@ pointer-compressed engine) may box as a HeapNumber when the call is not inlined.
 - @zakkster/lite-logn -- the O(log n) sibling. A general comparator ordered map is
   O(log n) and belongs there.
 - @zakkster/lite-filter -- owns approximate / probabilistic membership;
-  lite-loglogn owns exact ordered integer structures. No overlap; no 0.2.0 use.
+  lite-loglogn owns exact ordered integer structures. No overlap; no use of it.
 - @zakkster/lite-fastbit32 -- owns the clz32 / word-bit primitives; lite-loglogn
   cross-links its recipe, never a drifting reimplementation (decision D-05).

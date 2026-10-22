@@ -6,6 +6,47 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`XFastTrie`, the second member (0.3.0).** O(log log U) `successor` /
+  `predecessor` over a FIXED universe [0, U), 2 <= U <= 2^32, holding at most a
+  FIXED `capacity` (an integer in [1, min(U, 2^24)]) of keys:
+  `new XFastTrie(universe, capacity)`. One pointer-free in-file bucketized
+  cuckoo LevelTable per prefix length (2 tables x B buckets x 4 slots, occupancy
+  byte, no tombstones, load <= 0.90, in-place reseed of up to 32 tries; design
+  parity with lite-o1 CuckooMap, no import; ADR 0007) plus a sorted leaf thread.
+  Hot (0 B): `has`, `add` (idempotent, chainable), `delete`, `successor`,
+  `predecessor` (both STRICT), `min`, `max`; absent = `undefined`; a bad key
+  touches nothing; -0 aliases key 0. Cold: `clear()` (restores the default
+  seeds and revives a poisoned instance), allocating `dump()`, getters `size`,
+  `universe`, `capacity`, `bits`, `byteLength`. `add` of a NEW key at
+  `size === capacity` throws a `RangeError` and writes nothing; after 32 failed
+  reseed tries the add is rolled back and throws; if the rollback cannot
+  re-place a level the instance is POISONED until `clear()`.
+- **XFastTrie cost model (DETERMINISTIC, gated in `npm test`).** Exact
+  level-table touches (T = binary-search steps, log2(w) for w = 2^j; m = the
+  shorter common prefix length with the thread neighbours; the update walk stops
+  early at m): `has` 1; `successor` / `predecessor` 1 (present) or 1 + T
+  (absent); `min` / `max` 0; `add` new key 1 + T + (w - m); `delete` present
+  w - m. Absent successor at w = 2, 4, 8, 16, 32 -> 2, 3, 4, 5, 6 touches; add
+  into an empty trie 4, 7, 12, 21, 38.
+- **XFastTrie caveats, stated plainly.** FAST QUERY (1 + log2(w) touches when
+  absent), but O(w) UPDATE (not O(log log U)) and O(n*w) SPACE preallocated at
+  the declared capacity: `byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16`
+  (DETERMINISTIC pins; worst case 4,563,403,308 B at U = 2^32, C = 2^24,
+  formula only). The cuckoo seeds are fixed defaults, so adversarial keys can
+  force kicks and reseeds: correctness holds, time suffers. Capacity never
+  grows. Hot methods allocate 0 B/op including kicks and reseeds (torture
+  X0-X4; QUIET verify run 2026-10-22, load1 1.32, 12 cores, Node
+  v26.8.2, 1 run, plus `test:perf` 31/31).
+- **Package scripts.** Added `witness:xft` (`node test/witness.mjs --xft`, the
+  XFastTrie lane; REPORTED, release-time, 2% minimum-effect floor).
+- **Docs.** README, llms.txt and GUIDE.md gain the XFastTrie sections; ADR 0007
+  (LevelTable), ADR 0003 Amendment 1 (L-03 settled: "reconcile" means design
+  parity) and an ADR 0006 amendment (the 2% effect floor lives in `abVerdict`).
+  The 0.2.0 witness results are re-tiered REPORTED (no CI for this package).
+  XFastTrie timing numbers are filled from the release run only.
+
 ### Changed
 
 - **Package scripts.** Added `witness:tier` (`node test/witness.mjs --tier`).
@@ -14,8 +55,29 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Tests
 
-- Repo-only harness fixes (nothing shipped changes behavior; `LogLogN.js` is
-  byte-identical to 0.2.0). `witnessVerdict` / `tierVerdict` reject inherited
+- **XFastTrie gates** (DETERMINISTIC unless noted; `npm test` = 342
+  tests, 2026-10-22, Node v26.8.2): `XftVectors` (15 seeded streams replayed
+  against `test/vectors/xft-b0.json`, StratifiedBitset cross-check, a `>=`
+  successor mutant control); `XftCount` (exact touches through a counting Proxy
+  over all eight columns; the absent-successor and add-on-empty rows above;
+  six must-fail mutant controls plus a hang control); `XFastTrie` / `XFastTrieBoundary` /
+  `XFastTrieOracle` (behavior, boundary keys, seeded oracle fuzz);
+  `XFastTrieSpace` (byteLength pins, identity of every column, growth
+  controls); `XftBytecode` (every hot body <= 460 B); `Parity` (the
+  StratifiedBitset region of `LogLogN.js` is pinned against 0.2.0 by
+  `test/vectors/parity.json`); `AbVerdict` (the pure A/B verdict with a 2%
+  minimum-effect floor, `test/helpers/abVerdict.mjs`; `tierVerdict` unchanged);
+  `QaAudit` gains the XFastTrie coercion / boundary block (A6) and the export
+  surface now includes `XFastTrie`; `XftWitness` (smoke gate for
+  `node test/witness.mjs --xft --smoke`: counts and strings, never a timing).
+- `npm run torture` lanes X0-X4 (0 B/op over 2,000,000 ops at U = 2^20 and
+  2^30, reseed and kick churn, leak census, six must-fail controls) and
+  `test/perf/XFastTriePerf.test.mjs` (17 tests; `test:perf` 31/31 with PerfGate).
+- REPORTED: `node test/witness.mjs --xft` (U-sweep, n-sweep, update fit,
+  latency, A/B via `abVerdict`) and `node test/space-table.mjs` (deterministic
+  bytes, XFastTrie vs StratifiedBitset).
+- Repo-only harness fixes (no StratifiedBitset behavior changes; its region of
+  `LogLogN.js` is byte-identical to 0.2.0, gated by `Parity`). `witnessVerdict` / `tierVerdict` reject inherited
   and unknown keys (TypeError). New drift controls SPIKES3 / DIPS3 gate both
   clamp bounds. The `--tier` pre-pass control now covers each of its three
   checks. Latency lines report the clock granularity instead of a clock-floor

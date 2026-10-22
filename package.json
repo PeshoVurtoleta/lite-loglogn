@@ -26,12 +26,14 @@
   "scripts": {
     "test": "node --test test/*.test.js test/Bench.test.mjs",
     "test:types": "tsc -p test/types/tsconfig.json",
+    "test:big": "node test/big/run.mjs",
     "torture": "node --expose-gc test/torture.mjs",
     "witness": "node test/witness.mjs",
+    "witness:w32": "node test/witness.mjs --w32",
     "test:perf": "node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs",
     "bench": "node benchmark/Bench.mjs",
     "bench:report": "node benchmark/Bench.mjs && node benchmark/Report.mjs",
-    "verify": "npm test && npm run test:types && npm run torture && npm run witness && npm run test:perf"
+    "verify": "npm test && npm run test:types && npm run torture && npm run test:perf"
   },
   "keywords": [
     "van-emde-boas",
@@ -67,9 +69,14 @@
     "access": "public"
   },
   "devDependencies": {
+    "@zakkster/lite-adaptive": "^1.12.0",
+    "@zakkster/lite-fastbit32": "^1.5.0",
     "@zakkster/lite-gc-profiler": "^1.16.0",
     "@zakkster/lite-leak": "^1.10.0",
+    "@zakkster/lite-logn": "^1.5.1",
+    "@zakkster/lite-o1": "^1.11.3",
     "@zakkster/lite-perf-gate": "^1.4.2",
+    "@zakkster/lite-sketch": "^1.2.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   },

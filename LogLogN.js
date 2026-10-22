@@ -240,7 +240,7 @@ export class StratifiedBitset {
         }
         while (L > 0) {
             L--;
-            v = b[o[L] + i];
+            v = b[o[L] + i] | 0;
             i = (i << 5) | (31 - Math.clz32(v));
         }
         return i >>> 0;
@@ -267,12 +267,12 @@ export class StratifiedBitset {
         const b = this._bits;
         const o = this._off;
         let L = this._top;
-        let v = b[o[L]];
+        let v = b[o[L]] | 0;
         if (v === 0) return undefined;
         let i = 31 - Math.clz32(v);
         while (L > 0) {
             L--;
-            v = b[o[L] + i];
+            v = b[o[L] + i] | 0;
             i = (i << 5) | (31 - Math.clz32(v));
         }
         return i >>> 0;

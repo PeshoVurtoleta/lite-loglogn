@@ -215,7 +215,7 @@ most load-bearing decision in the document.
 | **L-01** | **S1** | **The IDENTITY WORDING.** Is the package "strictly O(log log U) (vEB/x-fast/y-fast), with StratifiedBitset as an O(log_w U) cousin" or "sub-logarithmic bounded-integer predecessor/successor, spanning O(log_w U) to O(log log U)"? This decides the HEADLINE member (StratifiedBitset vs vEB), the witness's PRIMARY axis, and every card, README first screen, and GUIDE table. | **Lean: the spanning framing, StratifiedBitset first** -- the honest, teachable entry point (array-embedded, zero-GC with no substrate to settle, correct in a page). But it is the user's call and it shapes everything, so it is settled explicitly, on the record, before any code. | **S0** |
 | **L-02** | **S1** | **The package NAME.** `@zakkster/lite-loglogn` / `LogLogN.js` / `[lite-loglogn]` is RECOMMENDED but unconfirmed; the package is unpublished. | Confirm the recommendation (parallels `lite-logn` / `LogN.js`); reject `lite-loglog` and `lite-log-log-n`. Confirm before `git init` / scaffolding. | **S0** |
 | **L-03** | **S1** | **LevelTable / NodePool ownership.** Re-export lite-o1's `SlotPool`, depend on lite-arena, share lite-logn's `NodePool`, or ship a separate open-addressing integer table? The single most consequential cross-package call (shared with lite-logn). Reconcile, do NOT fork. | **Decide the DIRECTION in S0**; it BLOCKS XFastTrie and YFastTrie. StratifiedBitset and (flattened) vEB do NOT need it, so the concrete substrate can be finalized by the XFastTrie session at the latest -- but the direction is set before member 1 so the trie members do not fork an allocator. | **S0** (direction) / **XFastTrie** (concrete) |
-| **L-04** | **S1** | **The witness fit thresholds + which sweep is the HARD gate.** What `R^2` floor + slope band make a fair, non-flaky gate over a SHORT ~5-point bit-width sweep (w = 16..32)? Is the U-sweep double-log fit the hard gate, or the n-sweep crossover vs the O(log n) foil? The short axis is noisier than lite-logn's n-sweep -- the real risk. | Settle empirically in StratifiedBitset (the cleanest witness); expect the siblings' steady-window / median-of-9 / do-not-widen-the-floor discipline (lite-o1 ADR-0004 amendment). **Lean: the n-sweep crossover is the more robust HARD gate, the U-sweep fit reported.** Record in an ADR; it becomes the FAMILY gate. | **StratifiedBitset** (using S0 direction) |
+| **L-04** | **S1** | **The witness fit thresholds + which sweep is the HARD gate.** What `R^2` floor + slope band make a fair, non-flaky gate over a SHORT ~5-point bit-width sweep (w = 16..32)? Is the U-sweep double-log fit the hard gate, or the n-sweep crossover vs the O(log n) foil? The short axis is noisier than lite-logn's n-sweep -- the real risk. | Settle empirically in StratifiedBitset (the cleanest witness); expect the siblings' steady-window / median-of-9 / do-not-widen-the-floor discipline (lite-o1 ADR-0004 amendment). **SETTLED 2026-10-22 (decisions/0004 Amendment 1, 0006): exact word COUNTS are the hard gate (`npm test`); the n-sweep crossover is the release-time witness; both U-sweep fits are REPORTED, none gated.** Record in an ADR; it becomes the FAMILY gate. | **StratifiedBitset** (using S0 direction) |
 | **L-05** | **S2** | **The 32-bit ceiling / wider-key policy.** JS bitwise ops are 32-bit, so the natural universe is <= 2^32. Is a 53-bit / 64-bit `SegmentedU` variant a Tier-1 split-word concern or a Tier-2 labeled variant? | **Lean: 32-bit default, `SegmentedU` as Tier 2** (a labeled high-word + low-word split, or a cold BigInt path -- never a silent BigInt hot path). | **S0** (policy) / **SegmentedU** (build) |
 | **L-06** | **S2** | **vEB flattening strategy.** The textbook recursive-object vEB allocates per level. Which flattening -- a vEB-layout typed array, or an iterative high/low-word split -- keeps worst-case O(log log U) AND 0 B/op AND stays readable enough to teach? | Settle in the vEBTree session; prove the chosen flattening against the recursive reference for correctness and against the torture gate for 0 B/op. Design reference (added 2026-10-22): the Dementiev et al. ALENEX 2004 Stree, a non-recursive 3-level 32-bit tree with summary pyramids (RESEARCH.md 13.4 row 1). | **vEBTree** |
 | **L-07** | **S3** | **The `clz32` word-primitive boundary vs lite-fastbit32.** The `clz32` / `ctz` / next-set-bit ops the stratified bitset (and every member) leans on are lite-fastbit32's territory. | A tiny shared internal here, a dev-only cross-check dependency on lite-fastbit32, or a cross-linked recipe -- never a drifting reimplementation. Decide the direction in S0; keep it a few lines if internal. | **S0** |
@@ -330,15 +330,16 @@ suite" or "reuse vs fork the framework," that is superseded by this adoption.
 S0 (settle identity + name + substrate direction + witness-threshold plan + 32-bit ceiling)
       |
       v
-StratifiedBitset (v0.1.0)  <-- headline; brings up witness (both sweeps) + torture + perf + SPACE gates;
+Version slots amended 2026-10-22: 0.1.0 shipped as the scaffold, so every member is one minor later.
+StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + torture + perf + SPACE gates;
       |                         witness thresholds settled here BECOME the family gate (L-04)
       |
-      +--> XFastTrie (v0.2.0)  <-- NEEDS the LevelTable direction from S0 (L-03)
+      +--> XFastTrie (v0.3.0)  <-- NEEDS the LevelTable direction from S0 (L-03)
       |          |
       |          v
-      |     YFastTrie (v0.3.0) <-- the O(n)-space fix, over x-fast representatives
+      |     YFastTrie (v0.4.0) <-- the O(n)-space fix, over x-fast representatives
       |
-      +--> vEBTree (v0.4.0)    <-- does NOT need LevelTable (flattened typed arrays)
+      +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -442,13 +443,13 @@ DONE WHEN
 ```
 
 ===============================================================================
-# StratifiedBitset -- v0.1.0 -- the headline + the family gates
+# StratifiedBitset -- v0.2.0 -- the headline + the family gates
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-loglogn"
-version_target: 0.1.0
+version_target: 0.2.0
 status: planned
 gc_maxMajor: 0
 gc_maxPauseMs: 4
@@ -481,16 +482,16 @@ TASKS
   - Tighten the `successor` descend bookkeeping (the reference sketch shows the climb/descend
     structure; prove the index arithmetic against a brute-force oracle).
   - Bring up test/witness.mjs with `logLogWitness` (BOTH sweeps): U-sweep double-log fit
-    (both axes, `log2(w)` must win) + n-sweep crossover vs a lite-logn O(log n) foil.
+    (both axes REPORTED, neither gated -- L-04) + n-sweep crossover vs a lite-logn O(log n) foil.
     Foils: a single flat bitset scanned linearly for the successor (the family's poor cousin)
     and a lite-logn member on the n-sweep.
-  - **SETTLE L-04:** calibrate the R^2 floor + slope band over the ~5-point w=16..32 sweep;
-    decide the hard gate (lean: n-sweep crossover) vs reported; record in
-    decisions/0004-witness-thresholds.md. These become the FAMILY gate.
+  - **L-04 SETTLED (decisions/0004 Amendment 1, 0006):** exact word COUNTS are the hard gate;
+    the n-sweep crossover is the release-time STATISTICAL witness; both U-sweep fits are
+    REPORTED (no R^2 floor or slope band is gated). This is the FAMILY gate.
   - Bring up test/torture.mjs (T0-T3) and test/perf/PerfGate.test.mjs for every hot op.
   - Assert the SPACE bound: O(U/w) (~1.03 bits per universe slot); backing arrays are the
     expected size for a given U and do NOT grow per op.
-  - Docs: llms.txt + README member section (bound + SPACE) + GUIDE section + CHANGELOG 0.1.0
+  - Docs: llms.txt + README member section (bound + SPACE) + GUIDE section + CHANGELOG 0.2.0
     + decisions/0005-stratifiedbitset.md.
 
 ASSERTIONS
@@ -498,11 +499,11 @@ ASSERTIONS
     linear-scan predecessor): 0 divergences. successor past max = `undefined`; universe=1,
     empty, full, single-key, keys at 0 and U-1, non-power-of-two universe all correct.
   - QaAudit: Symbol / BigInt / {valueOf} / boxed Number / NaN / null / -1 / 1.5 / >= U
-    rejected typeof-first with `[lite-loglogn]` and a byte-identical no-op; `-0` does not
-    alias key 0; clz32/ctz correct at bit 0, bit 31, all-zero word never dereferenced.
-  - witness: `log2(w)` fit R^2 >= floor, slope in band, and BEATS the `w`-axis fit;
-    n-sweep crossover reported; the O(log n) foil submitted as candidate FAILS the
-    fit-wins control.
+    rejected typeof-first with `[lite-loglogn]` and a byte-identical no-op; `-0` aliases
+    key 0 (D1); clz32/ctz correct at bit 0, bit 31, all-zero word never dereferenced.
+  - witness (as shipped, 0006): n-sweep crossover GATED at release; both U-sweep fits
+    REPORTED (the `w` axis fit StratifiedBitset better, as O(log_32 U) predicts); the
+    naive candidate must LOSE (control).
   - torture "ok", 0 B/op on every hot path, arrayBuffers no-growth, leak 0/0; T3 controls
     exit non-zero. test:perf green + teeth case fails.
   - SPACE canary passes; a control member that grows a backing array per query fails it.
@@ -522,13 +523,13 @@ DONE WHEN
 ```
 
 ===============================================================================
-# XFastTrie -- v0.2.0 -- binary search over the bit-levels (the trick)
+# XFastTrie -- v0.3.0 -- binary search over the bit-levels (the trick)
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-loglogn"
-version_target: 0.2.0
+version_target: 0.3.0
 status: planned
 gc_maxMajor: 0
 gc_maxPauseMs: 4
@@ -566,7 +567,7 @@ TASKS
   - Extend torture (level-table rehash must not allocate per op or the design fails the
     arrayBuffers gate), perf, and SPACE (assert O(n*w), stated as the honest caveat).
   - Docs: member section with the fast-query / O(w)-update / O(n*w)-space caveat spelled out;
-    CHANGELOG 0.2.0; ADR. Prior member (StratifiedBitset) BYTE-IDENTICAL.
+    CHANGELOG 0.3.0; ADR. Prior member (StratifiedBitset) BYTE-IDENTICAL.
 
 ASSERTIONS
   - Fuzz vs oracle 0 divergences incl. the threaded-leaf order (successor/predecessor walk
@@ -592,13 +593,13 @@ DONE WHEN
 ```
 
 ===============================================================================
-# YFastTrie -- v0.3.0 -- the O(n)-space fix (the practical member)
+# YFastTrie -- v0.4.0 -- the O(n)-space fix (the practical member)
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-loglogn"
-version_target: 0.3.0
+version_target: 0.4.0
 status: planned
 gc_maxMajor: 0
 gc_maxPauseMs: 4
@@ -633,7 +634,7 @@ TASKS
   - Extend torture (split/merge must not allocate per steady-state op), perf, SPACE (assert
     O(n), the space fix).
   - Docs: member section stating O(log log U) EXPECTED/AMORTIZED + O(n) space + the tail;
-    CHANGELOG 0.3.0; ADR. Prior members BYTE-IDENTICAL.
+    CHANGELOG 0.4.0; ADR. Prior members BYTE-IDENTICAL.
 
 ASSERTIONS
   - Fuzz vs oracle 0 divergences across add/delete/successor/predecessor with splits and
@@ -661,13 +662,13 @@ DONE WHEN
 ```
 
 ===============================================================================
-# vEBTree -- v0.4.0 -- the worst-case showpiece, flattened for zero-GC
+# vEBTree -- v0.5.0 -- the worst-case showpiece, flattened for zero-GC
 ===============================================================================
 
 ```markdown
 ---
 package: "@zakkster/lite-loglogn"
-version_target: 0.4.0
+version_target: 0.5.0
 status: planned
 gc_maxMajor: 0
 gc_maxPauseMs: 4
@@ -701,7 +702,7 @@ TASKS
     torture, perf, SPACE (assert O(U); a canary that the arrays are sized to the universe and
     do not grow per op).
   - Docs: member section with O(U) space stated as prominently as the time bound + the explicit
-    cross-link to y-fast for large universes; CHANGELOG 0.4.0; ADR. Prior members BYTE-IDENTICAL.
+    cross-link to y-fast for large universes; CHANGELOG 0.5.0; ADR. Prior members BYTE-IDENTICAL.
 
 ASSERTIONS
   - Fuzz vs oracle 0 divergences; boundary incl. U=2 base case, single key, full universe,
@@ -830,7 +831,7 @@ TASKS
     string `"n/a"`, never numeric 0), the `traceHash` determinism check, and the hand-rolled
     zero-dep inline-SVG HTML report renderer. Bring `Template.mjs` + `METHODOLOGY.md` across.
   - ADD (the only new work):
-    1. **Dimension 1:** the U-sweep double-log FIT (both axes, `log2(w)` must win) + the
+    1. **Dimension 1:** the U-sweep double-log FIT (both axes REPORTED, neither gated -- L-04) + the
        O(log n) lite-logn crossover FOIL.
     2. **Dimension 4 (memory), the MEMORY KERNEL promoted to CO-HEADLINE:** footprint vs U AND
        vs n -- the vEB O(U) / y-fast O(n) / stratified O(U/w) story, plotted so the reader picks
@@ -872,8 +873,8 @@ byte-identical. Order and space bound stated up front on each:
   `EliasFano` in 1.9.0 (ADR 0025: a STATIC codec lives in lite-o1, not here). Since lite-o1
   1.11.2, its `access` is O(1) typical / worst-case O(log n) and `nextGEQ` is O(1) typical /
   O(log n) worst. Do NOT rebuild it here. Re-adopt it (design parity, or cite it as the
-  succinct comparison point) and use the v0.5.0 slot for the next Tier 2 member.
-- **RoaringSet** (v0.6.0) -- the PRACTICAL space-adaptive set: partition the 32-bit universe
+  succinct comparison point) and use the v0.6.0 slot for the next Tier 2 member.
+- **RoaringSet** (v0.7.0) -- the PRACTICAL space-adaptive set: partition the 32-bit universe
   into 2^16 chunks, each stored as whichever container is smallest (sorted Uint16 / bitset /
   run-length). The real-world workhorse; the adaptivity is the teaching beat. `has` is
   bounded O(log), not O(1): array containers are binary-searched, at most 12 probes over
@@ -898,14 +899,14 @@ byte-identical. Order and space bound stated up front on each:
   which already adapts by density; if it adds nothing, it folds into one of them. Gates: a
   parity fuzz against each tier's general form; tier-boundary mutants (U = 32/33, 1024/1025,
   2^25/2^25+1); speed claims STATISTICAL and release-time only.
-- **FusionTree** (v0.7.0) -- RESEARCH-TRACK: word-level parallelism packs `w` keys into one
+- **FusionTree** (v0.8.0) -- RESEARCH-TRACK: word-level parallelism packs `w` keys into one
   word; O(log_w n) static predecessor. Notoriously subtle (sketch compression, msb-differing-bit)
   and w=32-capped in JS -- ship with the honest "why this is hard and when word-parallelism pays"
   note, not an early ship.
-- **IntUniverseMap** (v0.8.0) -- a composition: any Tier-1 index + a parallel value/handle
+- **IntUniverseMap** (v0.9.0) -- a composition: any Tier-1 index + a parallel value/handle
   column, turning membership into an ordered integer->payload map. Inherits the chosen index's
   bound and space.
-- **SegmentedU** (v0.9.0) -- the 32-bit-ceiling answer (L-05): a labeled 53-bit / split-word
+- **SegmentedU** (v0.10.0) -- the 32-bit-ceiling answer (L-05): a labeled 53-bit / split-word
   variant (high word = a Tier-1 structure + low words, or a cold BigInt path). O(log log U) with
   a 2-level split. A variant, never the default; never a silent BigInt hot path.
 

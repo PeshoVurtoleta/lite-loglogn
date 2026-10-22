@@ -475,7 +475,7 @@ export class StratifiedBitset {
         return true;
     }
 
-    /** Smallest present key >= x, or undefined. O(levels): climb to a nonzero summary, descend. */
+    /** Smallest present key > x (STRICT, as shipped), or undefined. O(levels): climb to a nonzero summary, descend. */
     successor(x) {
         if (typeof x !== "number" || (x >>> 0) !== x) return undefined;
         if (x >= this._u) return undefined;
@@ -642,7 +642,7 @@ demo shows steady-state ops + the doubly-logarithmic-growth witness + the space 
    oblivious vEB LAYOUT) -- each a dedicated future member built ONLY when a real use case names it, each
    shipped with the witness AND its honest caveat (expected-not-worst, a distribution assumption, or a
    within-a-word constant). The "old but gold / exotic" reserve, not the near-term queue.
-8. Every member proven by `node --expose-gc test/torture.mjs` (0 B/op) AND the witness gate (the
+8. [Gate wording superseded 2026-10-22 by decisions/0004 Amendment 1: counts are the hard gate, fits REPORTED.] Every member proven by `node --expose-gc test/torture.mjs` (0 B/op) AND the witness gate (the
    double-log fit stays within its `R^2` floor and slope band across the U-sweep, and beats the O(log n)
    foil past the reported crossover on the n-sweep) AND the perf gate AND a stated SPACE number. No gate
    output is a FAIL.
@@ -665,7 +665,7 @@ coder -> reviewer -> qa + the torture, witness, and perf gates. A+ bar per membe
   bounded-integer predecessor/successor, spanning O(log_w U) to O(log log U)"? This decides the headline
   member (StratifiedBitset vs vEB), the witness's primary axis, and every card. Lean: the latter, honest
   framing with StratifiedBitset first -- but it is the user's call and shapes everything.
-- **The witness's fit thresholds.** What `R^2` floor and slope band make a fair, non-flaky gate across a
+- **The witness's fit thresholds.** [SETTLED 2026-10-22 by decisions/0004 Amendment 1 + 0006: no R^2 floor or slope band is gated.] What `R^2` floor and slope band make a fair, non-flaky gate across a
   SHORT bit-width sweep (only ~5 points: w = 16..32) and CI noise? The short axis is the real risk -- fewer
   points than lite-logn's n-sweep. Settle empirically in the StratifiedBitset session; expect the same
   steady-window / median-of-9 / do-not-widen-the-floor discipline as lite-o1's flatness gate

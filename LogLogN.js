@@ -77,8 +77,10 @@ function throwKey(x, u) {
  * max(1, ceil(log2(U)/5)). SPACE = byteLength = 4 x total words.
  *
  * Cost (words of `_bits` read R / written Wr; Lc = levels): has R=1; add/delete
- * R=Wr <= Lc (1 + levels whose word changed emptiness); successor/predecessor
- * R <= 2Lc-1; min/max R=Lc (1 if empty). Hot methods allocate 0 bytes.
+ * R=Wr <= Lc (1 + levels whose word changed emptiness) when the key changes, else
+ * R=1 Wr=0 (no-op); successor/predecessor R <= 2Lc-1; min/max R=Lc (1 if empty).
+ * Hot methods allocate 0 bytes; a returned key >= 2^31 (>= 2^30 on a pointer-
+ * compressed engine) may box as a HeapNumber when the call is not inlined.
  * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
  * (not a number, not an integer in [0, U)) touches no word: has/delete -> false,
  * successor/predecessor -> undefined, add -> RangeError.
@@ -187,9 +189,12 @@ export class StratifiedBitset {
         if (i >= this._u) return undefined;
         const b = this._bits;
         const o = this._off;
-        let L = 0;
-        let p = 0;
-        let v = 0;
+        let p = i >>> 5;
+        let v = b[p] & (-1 << (i & 31));
+        if (v !== 0) return ((p << 5) | (31 - Math.clz32(v & -v))) >>> 0;
+        i = p + 1;
+        if (i >= o[1]) return undefined;
+        let L = 1;
         for (;;) {
             p = i >>> 5;
             v = b[o[L] + p] & (-1 << (i & 31));
@@ -216,12 +221,15 @@ export class StratifiedBitset {
         const b = this._bits;
         const o = this._off;
         let i = x - 1;
-        let L = 0;
-        let p = 0;
-        let v = 0;
+        let p = i >>> 5;
+        let v = b[p] & ~(-2 << (i & 31));
+        if (v !== 0) return ((p << 5) | (31 - Math.clz32(v))) >>> 0;
+        if (p === 0) return undefined;
+        i = p - 1;
+        let L = 1;
         for (;;) {
             p = i >>> 5;
-            v = b[o[L] + p] & ((2 << (i & 31)) - 1);
+            v = b[o[L] + p] & ~(-2 << (i & 31));
             if (v !== 0) {
                 i = (p << 5) | (31 - Math.clz32(v));
                 break;

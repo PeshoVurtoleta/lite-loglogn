@@ -1,0 +1,242 @@
+{
+  "what": "lite-loglogn StratifiedBitset tier parity vectors (B1c A9), cut from the frozen B1a build",
+  "streamVersion": 1,
+  "node": "v26.8.2",
+  "b1aBlob": "ca75e5e579e650e20322b856988acae1b6295f4b",
+  "b1aSha256": "bbc184d7a034a83057e2f1b3a24abb2815b11e98a818f41c161dbb2fc0f9c579",
+  "b1aBytecode": {
+    "has": 68,
+    "add": 197,
+    "delete": 194,
+    "successor": 264,
+    "predecessor": 232,
+    "min": 137,
+    "max": 121
+  },
+  "maxInlinedBytecodeSize": 460,
+  "nOps": 200000,
+  "baseSeed": 1910878624,
+  "seedRule": "(baseSeed + imul(index + 1, 0x9e3779b9)) >>> 0",
+  "rows": [
+    {
+      "U": 1,
+      "seed": 270347097,
+      "levels": 1,
+      "resultsHash": "8721d1d5",
+      "countsHash": "1794e344",
+      "sumR": 123463,
+      "sumWr": 37008,
+      "opCounts": [
+        64195,
+        28868,
+        18430,
+        36930,
+        36484,
+        7498,
+        7595
+      ],
+      "sparseCross": 0,
+      "size": 0
+    },
+    {
+      "U": 32,
+      "seed": 2924782866,
+      "levels": 1,
+      "resultsHash": "042b6fb3",
+      "countsHash": "909e6f25",
+      "sumR": 183336,
+      "sumWr": 34692,
+      "opCounts": [
+        45892,
+        22637,
+        19072,
+        47759,
+        48020,
+        8385,
+        8235
+      ],
+      "sparseCross": 0,
+      "size": 14
+    },
+    {
+      "U": 33,
+      "seed": 1284251339,
+      "levels": 2,
+      "resultsHash": "1fb5655c",
+      "countsHash": "6e627b85",
+      "sumR": 213496,
+      "sumWr": 35328,
+      "opCounts": [
+        42356,
+        21503,
+        19310,
+        49923,
+        50233,
+        8276,
+        8399
+      ],
+      "sparseCross": 0,
+      "size": 11
+    },
+    {
+      "U": 1024,
+      "seed": 3938687108,
+      "levels": 2,
+      "resultsHash": "0fb96fad",
+      "countsHash": "9372a854",
+      "sumR": 303282,
+      "sumWr": 43447,
+      "opCounts": [
+        40452,
+        26964,
+        18760,
+        49137,
+        48502,
+        8117,
+        8068
+      ],
+      "sparseCross": 0,
+      "size": 325
+    },
+    {
+      "U": 1025,
+      "seed": 2298155581,
+      "levels": 3,
+      "resultsHash": "ba335452",
+      "countsHash": "b983ae02",
+      "sumR": 299835,
+      "sumWr": 46952,
+      "opCounts": [
+        45935,
+        28149,
+        18215,
+        45870,
+        45473,
+        8110,
+        8248
+      ],
+      "sparseCross": 0,
+      "size": 385
+    },
+    {
+      "U": 32768,
+      "seed": 657624054,
+      "levels": 3,
+      "resultsHash": "0c2017f2",
+      "countsHash": "256a81d5",
+      "sumR": 414403,
+      "sumWr": 81395,
+      "opCounts": [
+        42768,
+        40157,
+        17906,
+        41707,
+        42280,
+        7597,
+        7585
+      ],
+      "sparseCross": 28774,
+      "size": 1667
+    },
+    {
+      "U": 32769,
+      "seed": 3312059823,
+      "levels": 4,
+      "resultsHash": "0ac590bc",
+      "countsHash": "d37b09a2",
+      "sumR": 434441,
+      "sumWr": 79270,
+      "opCounts": [
+        40950,
+        37925,
+        17647,
+        44041,
+        43851,
+        7773,
+        7813
+      ],
+      "sparseCross": 28987,
+      "size": 315
+    },
+    {
+      "U": 1048576,
+      "seed": 1671528296,
+      "levels": 4,
+      "resultsHash": "4b9dbbb8",
+      "countsHash": "7d0c67f2",
+      "sumR": 506420,
+      "sumWr": 122281,
+      "opCounts": [
+        44629,
+        45972,
+        19243,
+        37101,
+        37255,
+        7852,
+        7948
+      ],
+      "sparseCross": 25365,
+      "size": 81
+    },
+    {
+      "U": 1048577,
+      "seed": 30996769,
+      "levels": 5,
+      "resultsHash": "0d4f2b40",
+      "countsHash": "3b9bb656",
+      "sumR": 558196,
+      "sumWr": 118121,
+      "opCounts": [
+        43852,
+        46338,
+        17966,
+        38339,
+        38451,
+        7560,
+        7494
+      ],
+      "sparseCross": 34485,
+      "size": 1
+    },
+    {
+      "U": 33554432,
+      "seed": 2685432538,
+      "levels": 5,
+      "resultsHash": "f26f8df1",
+      "countsHash": "c5f11301",
+      "sumR": 647518,
+      "sumWr": 136788,
+      "opCounts": [
+        46587,
+        46324,
+        17496,
+        37253,
+        37418,
+        7395,
+        7527
+      ],
+      "sparseCross": 28784,
+      "size": 2858
+    },
+    {
+      "U": 33554433,
+      "seed": 1044901011,
+      "levels": 6,
+      "resultsHash": "2315378f",
+      "countsHash": "fcc5cf25",
+      "sumR": 708840,
+      "sumWr": 142400,
+      "opCounts": [
+        42513,
+        45585,
+        18536,
+        38910,
+        39223,
+        7507,
+        7726
+      ],
+      "sparseCross": 33281,
+      "size": 171
+    }
+  ]
+}

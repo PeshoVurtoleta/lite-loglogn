@@ -1,7 +1,7 @@
 {
   "name": "@zakkster/lite-loglogn",
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Zero-dependency, zero-GC sub-logarithmic bounded-integer predecessor/successor structures. StratifiedBitset: array-embedded 32-ary bit pyramid, O(log_32 U) successor/predecessor, O(U/w) space. XFastTrie: O(log log U) successor/predecessor, O(w) updates, O(n*w) space at a fixed capacity. 0 B/op, bounds gated by exact counts. YFastTrie and vEBTree (O(log log U) family bound) are planned. Tree-shakeable named exports.",
   "type": "module",
   "main": "./LogLogN.js",

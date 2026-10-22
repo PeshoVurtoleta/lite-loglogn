@@ -344,10 +344,10 @@ Keys are integers in [0, U): map timestamps to slots (`Math.floor((ms - origin) 
 
 DETERMINISTIC numbers (2026-10-22, Node v26.8.2, every run of the named script):
 
-- `npm run torture` (`node --expose-gc test/torture.mjs`): T0 runs 2,000,000 ops at U = 2^20 -> retained 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; T1-T2 ok; T3's five must-fail controls (one per T0-T2 check, plus gcKick) each flip (torture run 2026-10-23, host PRELIMINARY, Node v26.8.2, 1 run; a count gate, not timing).
-- XFastTrie torture lanes X0-X4 (QUIET verify run 2026-10-22, load1 1.32 vs baseline 2.21, 12 cores, Node v26.8.2, 1 run; the same counts hold on every run): X0a 2,000,000 ops at U = 2^20, C = 8192 and X0b 2,000,000 ops at U = 2^30, C = 8192 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; X1 200,000 ops at U = 2^32, C = 8192 (byteLength 4,571,692, abGrowth 0, key 4294967295 returned); X2 reseed churn at U = 65536, C = 16, 50,000 cycles each: natural (kicks +2,000,000, reseedOps +50,000, tries +50,000) and forced (kicks +2,000,000, reseedOps +50,000, rebuilds +200,000) -> 0 B/op, abGrowth 0; X3 leak census (4096 create / drop cycles, 4096/4096 collected, 0 findings); X4's six must-fail controls (retain, box, a reallocating reseed, a dropped-reseed count, a retained set, xGcKick) each flip (torture run 2026-10-23, host PRELIMINARY, Node v26.8.2, 1 run; a count gate, not timing).
-- `npm run test:perf` also runs `test/perf/XFastTriePerf.test.mjs`: 8 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20, successor at U = 2^32 (keys < 2^30)), and 3 must-fail teeth (a fresh-array loop, GrowingXft, SideBufferXft) = flag pin (2) + detector (1) + 8 scenarios + 3 teeth + attribution (1) + dual-lane (1) + coverage floor (1) = 17 tests; with PerfGate's 14, the QUIET verify run gave 31/31 pass (2026-10-22, QUIET, same host, 1 run).
-- `npm run test:perf` (`@zakkster/lite-perf-gate`), StratifiedBitset file `test/perf/PerfGate.test.mjs`: 7 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20) + 3 must-fail teeth + flag pin (2) + arrayBuffers attribution (1) = 14/14.
+- `npm run torture` (`node --expose-gc test/torture.mjs`): T0 runs 2,000,000 ops at U = 2^20 -> retained 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; T1-T2 ok; T3's five must-fail controls (retain, box, growing, retained, gcKick) each flip (QUIET release verify run 2026-10-23, Node v26.8.2, 1 run; a count gate, not timing).
+- XFastTrie torture lanes X0-X4 (QUIET verify run 2026-10-22, load1 1.32 vs baseline 2.21, 12 cores, Node v26.8.2, 1 run; the same counts hold on every run): X0a 2,000,000 ops at U = 2^20, C = 8192 and X0b 2,000,000 ops at U = 2^30, C = 8192 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; X1 200,000 ops at U = 2^32, C = 8192 (byteLength 4,571,692, abGrowth 0, key 4294967295 returned); X2 reseed churn at U = 65536, C = 16, 50,000 cycles each: natural (kicks +2,000,000, reseedOps +50,000, tries +50,000) and forced (kicks +2,000,000, reseedOps +50,000, rebuilds +200,000) -> 0 B/op, abGrowth 0; X3 leak census (4096 create / drop cycles, 4096/4096 collected, 0 findings); X4's six must-fail controls (retain, box, a reallocating reseed, a dropped per-reseed snapshot, a retained set, xGcKick) each flip (QUIET release verify run 2026-10-23, Node v26.8.2, 1 run; a count gate, not timing).
+- `npm run test:perf` also runs `test/perf/XFastTriePerf.test.mjs`: 8 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20, successor at U = 2^32 (keys < 2^30)), and 3 must-fail teeth (a fresh-array loop, GrowingXft, SideBufferXft) = flag pin (2) + detector (1) + 8 scenarios + 3 teeth + attribution (1) + dual-lane (1) + coverage floor (1) = 17 tests; with PerfGate's 15, the 0.3.0 release verify run gave 32/32 pass (2026-10-23, quiet-lock QUIET, load1 2.84 at start vs baseline 2.21, Node v26.8.2, 1 run).
+- `npm run test:perf` (`@zakkster/lite-perf-gate`), StratifiedBitset file `test/perf/PerfGate.test.mjs`: 7 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20) + 3 must-fail teeth + flag pin (2) + detector (1) + arrayBuffers attribution (1) + GATE key-set pin (1) = 15/15.
 
 </details>
 
@@ -395,10 +395,37 @@ No scenario lost. Control A x2 vs A: 0/15 ok. Drift quiet over 105 rounds. The e
 
 ### REPORTED: `npm run witness:xft` (XFastTrie), release run
 
-The XFastTrie lane (`node test/witness.mjs --xft`; `--smoke` is a counts-only smoke) runs a U-sweep, an n-sweep, an update fit and latency, A/B-timing XFastTrie `successor` against StratifiedBitset (abVerdict: 2% effect floor on every "win" and A/A flag) and, as a REPORTED point verdict with no floor, against a local `Uint32Array` binary search (exit 0 pass / 1 fail / 2 inconclusive). Its timing numbers come from the release run only and are not in `npm test`; the smoke gate (`test/XftWitness.test.js`) asserts counts and strings, never a timing value.
+The XFastTrie lane (`node test/witness.mjs --xft`; `--smoke` is a counts-only smoke) runs a U-sweep, an n-sweep, an update fit and latency, A/B-timing XFastTrie `successor` against StratifiedBitset (abVerdict: 2% effect floor on every "win" and A/A flag) and, as a REPORTED point verdict with no floor, against a local `Uint32Array` binary search (exit 0 pass / 1 fail / 2 inconclusive). Its timing numbers are REPORTED from one release run (below) and are not in `npm test`; the smoke gate (`test/XftWitness.test.js`) asserts counts and strings, never a timing value. Before round 1 the untimed probe tier-up runs in a GC window (gc.major 0, arrayBuffers growth 0 B, both zero tolerance); a violation prints FAIL and exits 1, also in smoke.
 
 <!-- XFT-WITNESS-BEGIN -->
-@@XFT-WITNESS@@
+**One run, a measurement, not a law (REPORTED).** 2026-10-23 (log ISO 2026-10-22T23:27:09Z), Apple M4 Pro, 12 cores, Node v26.8.2 (V8 14.6.202.34-node.28), darwin/arm64, quiet-lock QUIET (load1 2.72 at start, 2.77 at end, baseline 2.21), 1 run, K 15, need 13, floor 0.02, 65536 queries per block, HEAD c930000, LogLogN.js sha256 ee895d54, wall 28.66 s, exit 0 (decision PASS). No CI runs this lane; ns/op medians, ratio = XFastTrie / comparator, so a ratio above 1 means XFastTrie is slower.
+
+**What PASS means here.** XFastTrie LOSES every successor A/B scenario against StratifiedBitset (all 11 verdicts are `lose`, 0 wins / 15 losses of K 15 each). `decision PASS` (exit 0) does not say XFastTrie is faster. It says the run was valid: load1 at most 0.5 x cores, no drift, no A/A winner above the floor, and the double-work control lost as it must (so the verdict can fail). Per-scenario win/lose verdicts do not set the exit code.
+
+n-sweep at w 28 (successor; "vs SB" is the A/B scenario, "vs u32" a REPORTED point verdict against a local `Uint32Array` binary search, its ratio being the XFastTrie median of the interleaved u32 pair over the u32 median, also `lose` 0 / 15 / 0 at every n):
+
+| n | XFastTrie | StratifiedBitset | ratio vs SB | XFastTrie (u32 pair) | u32 binary search | ratio vs u32 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1000 | 102.25 | 23.63 | 4.3264 | 101.57 | 30.89 | 3.2882 |
+| 3000 | 106.47 | 22.46 | 4.7413 | 105.98 | 37.64 | 2.8154 |
+| 10000 | 119.52 | 21.25 | 5.6230 | 118.79 | 44.54 | 2.6674 |
+| 30000 | 130.97 | 21.29 | 6.1506 | 122.62 | 51.19 | 2.3955 |
+| 100000 | 156.37 | 21.24 | 7.3631 | 157.42 | 65.32 | 2.4099 |
+| 300000 | 264.49 | 21.63 | 12.2259 | 251.53 | 78.31 | 3.2120 |
+| 1000000 | 397.08 | 16.89 | 23.5067 | 400.47 | 93.94 | 4.2630 |
+
+U-sweep at n 4096 (XFastTrie vs StratifiedBitset; every cell 0 / 15 / 0, `lose`):
+
+| w | successor XFastTrie | successor SB | successor ratio | add+delete XFastTrie | add+delete SB | add+delete ratio |
+| --- | --- | --- | --- | --- | --- | --- |
+| 16 | 87.16 | 5.30 | 16.4483 | 326.63 | 3.32 | 98.2686 |
+| 20 | 100.18 | 5.58 | 17.9664 | 462.00 | 4.42 | 104.5031 |
+| 24 | 110.41 | 8.20 | 13.4708 | 597.84 | 7.41 | 80.7244 |
+| 28 | 113.88 | 20.78 | 5.4801 | 709.44 | 19.38 | 36.6041 |
+
+Fits (REPORTED timing; the O(w) update bound itself is proven by the exact touch counts in `test/XftCount.test.js`, DETERMINISTIC): successor vs log2(w) slope 34.08 ns/doubling, R^2 0.9755; successor vs w slope 2.2596 ns/bit, R^2 0.9454; add+delete vs w slope 32.1067 ns/bit, R^2 0.9979; add+delete vs log2(w) slope 476.58 ns/doubling, R^2 0.9976.
+
+Controls: the A/B control (XFastTrie x2, double work, vs XFastTrie, n 4096 w 20) ratio 2.0050, 0 / 15 / 0, must lose and did. A/A (n 4096 w 20): successor 7 / 8 / 0 ratio 0.9947, add+delete 9 / 6 / 0 ratio 0.9912 (no winner above the floor). Drift: false over 375 probe rounds. COVERAGE: n-sweep 7 points, U-sweep 4 widths, ABBA runs 25 / 25, probe rounds 375, latency runs 22 / 22, A/B scenarios 11, pre-pass queries 1667825, gc window blocks 16 / 16.
 <!-- XFT-WITNESS-END -->
 
 ### REPORTED: fits, foils and latency (from the A8 log, gates nothing)
@@ -424,14 +451,14 @@ See [`decisions/`](./decisions) for the full records.
 
 ## Testing
 
-`node:test` only, zero runtime deps. `npm test`: 342 tests, 0 fail (DETERMINISTIC; 2026-10-22, Node v26.8.2). It covers, for StratifiedBitset, exact counts (Count), a seeded oracle fuzz (Oracle), sibling oracles (lite-o1 BitSet.nextSet for U <= 2^25, lite-o1 EliasFano.nextGEQ, lite-logn Scapegoat + SortedArray; 0 divergences, each with a must-fail control), FastBit32Cross, Space, TierParity, the witness / tier verdict functions on injected vectors, and the `QaAudit` block (VERSION trinity, frozen export surface, six-file pack, author spelling, ASCII, plus an XFastTrie coercion / boundary block). For XFastTrie: `XftVectors` (15 seeded streams replayed against a stored cut, cross-checked against StratifiedBitset, with a `>=` mutant control), `XftCount` (exact touches through a counting Proxy over all eight columns, with six must-fail mutant controls plus a hang control), `XFastTrie` / `XFastTrieBoundary` / `XFastTrieOracle` (behavior, boundary keys, seeded oracle fuzz), `XFastTrieSpace` (byteLength pins and the identity of every column), `XftBytecode` (every hot body <= 460 B), `Parity` (the StratifiedBitset region of the file is byte-pinned against 0.2.0), `AbVerdict` (the 2% effect floor), and `XftWitness` (the `--xft --smoke` gate, counts and strings only).
+`node:test` only, zero runtime deps. `npm test`: 343 tests, 0 fail (DETERMINISTIC; 2026-10-23, Node v26.8.2). It covers, for StratifiedBitset, exact counts (Count), a seeded oracle fuzz (Oracle), sibling oracles (lite-o1 BitSet.nextSet for U <= 2^25, lite-o1 EliasFano.nextGEQ, lite-logn Scapegoat + SortedArray; 0 divergences, each with a must-fail control), FastBit32Cross, Space, TierParity, the witness / tier verdict functions on injected vectors, and the `QaAudit` block (VERSION trinity, frozen export surface, six-file pack, author spelling, ASCII, plus an XFastTrie coercion / boundary block). For XFastTrie: `XftVectors` (15 seeded streams replayed against a stored cut, cross-checked against StratifiedBitset, with a `>=` mutant control), `XftCount` (exact touches through a counting Proxy over all eight columns, with six must-fail mutant controls plus a hang control), `XFastTrie` / `XFastTrieBoundary` / `XFastTrieOracle` (behavior, boundary keys, seeded oracle fuzz), `XFastTrieSpace` (byteLength pins and the identity of every column), `XftBytecode` (every hot body <= 460 B), `Parity` (the StratifiedBitset region of the file is byte-pinned against 0.2.0), `AbVerdict` (the 2% effect floor), and `XftWitness` (the `--xft --smoke` gate, counts and strings only).
 
 | Script | What it does |
 | --- | --- |
 | `npm test` | The suite above. |
 | `npm run test:types` | `tsc` over the ambient `LogLogN.d.ts`. |
 | `npm run torture` | `node --expose-gc test/torture.mjs`: lanes T0-T3 (StratifiedBitset) and X0-X4 (XFastTrie, including kicks and reseeds): 0 B/op, gc major 0 / minor 0. |
-| `npm run test:perf` | `@zakkster/lite-perf-gate`: PerfGate (7 zero-alloc scenarios + 3 teeth, flag pin, attribution = 14) and XFastTriePerf (8 scenarios, teeth, attribution = 17); 31/31 in the 2026-10-22 QUIET verify run. |
+| `npm run test:perf` | `@zakkster/lite-perf-gate`: PerfGate (7 zero-alloc scenarios + 3 teeth, flag pin, detector, attribution, GATE key-set pin = 15) and XFastTriePerf (8 scenarios, teeth, attribution = 17); 32/32 in the 2026-10-23 QUIET release verify run. |
 | `npm run verify` | The four above in sequence (no witness). |
 | `npm run test:big` | Opt-in big-universe suite. |
 | `npm run witness` | REPORTED A8, release-time, quiet host. |

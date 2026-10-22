@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-23
+
 ### Added
 
 - **`XFastTrie`, the second member (0.3.0).** O(log log U) `successor` /
@@ -38,14 +40,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   force kicks and reseeds: correctness holds, time suffers. Capacity never
   grows. Hot methods allocate 0 B/op including kicks and reseeds (torture
   X0-X4; QUIET verify run 2026-10-22, load1 1.32, 12 cores, Node
-  v26.8.2, 1 run, plus `test:perf` 31/31).
+  v26.8.2, 1 run; `test:perf` 32/32 in the QUIET release verify run 2026-10-23).
 - **Package scripts.** Added `witness:xft` (`node test/witness.mjs --xft`, the
   XFastTrie lane; REPORTED, release-time, 2% minimum-effect floor).
 - **Docs.** README, llms.txt and GUIDE.md gain the XFastTrie sections; ADR 0007
   (LevelTable), ADR 0003 Amendment 1 (L-03 settled: "reconcile" means design
   parity) and an ADR 0006 amendment (the 2% effect floor lives in `abVerdict`).
   The 0.2.0 witness results are re-tiered REPORTED (no CI for this package).
-  XFastTrie timing numbers are filled from the release run only.
+  XFastTrie timing numbers are in README and llms.txt (REPORTED, one run).
 
 ### Changed
 
@@ -55,8 +57,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Tests
 
-- **XFastTrie gates** (DETERMINISTIC unless noted; `npm test` = 342
-  tests, 2026-10-22, Node v26.8.2): `XftVectors` (15 seeded streams replayed
+- **XFastTrie gates** (DETERMINISTIC unless noted; `npm test` = 343
+  tests, 2026-10-23, Node v26.8.2): `XftVectors` (15 seeded streams replayed
   against `test/vectors/xft-b0.json`, StratifiedBitset cross-check, a `>=`
   successor mutant control); `XftCount` (exact touches through a counting Proxy
   over all eight columns; the absent-successor and add-on-empty rows above;
@@ -72,7 +74,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `node test/witness.mjs --xft --smoke`: counts and strings, never a timing).
 - `npm run torture` lanes X0-X4 (0 B/op over 2,000,000 ops at U = 2^20 and
   2^30, reseed and kick churn, leak census, six must-fail controls) and
-  `test/perf/XFastTriePerf.test.mjs` (17 tests; `test:perf` 31/31 with PerfGate).
+  `test/perf/XFastTriePerf.test.mjs` (17 tests; `test:perf` 32/32 with PerfGate's 15).
 - REPORTED: `node test/witness.mjs --xft` (U-sweep, n-sweep, update fit,
   latency, A/B via `abVerdict`) and `node test/space-table.mjs` (deterministic
   bytes, XFastTrie vs StratifiedBitset).
@@ -85,7 +87,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   predecessor mutant control; torture prints its transient limit and refuses a
   semi-space flag; PerfGate requires `--max-semi-space-size=4` and proves its
   arrayBuffers lane with a side-buffer mutant; QaAudit pins the `test:perf` /
-  `torture` script flags.
+  `torture` script flags. `witness --xft` runs the probe tier-up inside a GC
+  window (lite-gc-profiler + arrayBuffers, zero tolerance, CONTROL gc-window
+  must-fail rows; a violation prints FAIL and exits 1); its tie column of the --xft lines
+  prints rounds - wins - losses. Torture T3 / X4 gained gc-kick must-fail
+  controls (gcKick / xGcKick: a forced major GC inside the window must flip
+  the gc check).
 
 ## [0.2.0] - 2026-10-22
 
@@ -208,6 +215,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   / cross-linked recipe, never a drifting reimplementation). Each carries the
   "Recommended resolution -- PENDING USER RATIFICATION at review" stamp.
 
-[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PeshoVurtoleta/lite-loglogn/releases/tag/v0.1.0

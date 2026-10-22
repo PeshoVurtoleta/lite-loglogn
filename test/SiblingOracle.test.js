@@ -26,7 +26,10 @@
  * from the REAL source text (one exact string replacement in successor's climb
  * loop, asserted to match exactly once, loaded via a data: URL), so the control
  * tracks the shipped body. It must diverge from EACH oracle at U = 2^15 and
- * U = 2^20.
+ * U = 2^20. MUST-FAIL CONTROL M1P (predecessor's climb `i = (p >>> 5) - 1`) is
+ * built the same way and must diverge at both U from EACH oracle that compares
+ * predecessor (Scapegoat, SortedArray; BitSet and EliasFano compare successor
+ * only).
  *
  * HANG RULE: every replay runs in a worker_threads Worker
  * (test/_sibling-worker.mjs) with the KILL_MS kill timer of test/_worker-run.mjs;
@@ -57,6 +60,11 @@ const CONTROL_OPS = 30000;
 // M1: successor's climb loop (levels >= 1) steps to (p >>> 5) + 1 instead of p + 1
 const M1_FROM = 'i = p + 1;\n            if (i >= o[L + 1] - o[L]) return undefined;';
 const M1_TO = 'i = (p >>> 5) + 1;\n            if (i >= o[L + 1] - o[L]) return undefined;';
+// M1P: predecessor's climb loop (levels >= 1) steps to (p >>> 5) - 1 instead of p - 1
+const M1P_FROM = 'i = p - 1;\n            L++;';
+const M1P_TO = 'i = (p >>> 5) - 1;\n            L++;';
+// the oracles whose replay compares predecessor (test/_sibling-worker.mjs)
+const PRED_ORACLES = ['Scapegoat', 'SortedArray'];
 
 function seedFor(U) {
     return (BASE_SEED ^ Math.imul(U, 0x9E3779B1)) >>> 0;
@@ -75,6 +83,8 @@ function countOf(text, sub) {
 const SHIPPED = readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
 const M1_MATCHES = countOf(SHIPPED, M1_FROM);
 const M1_SRC = M1_MATCHES === 1 ? SHIPPED.replace(M1_FROM, M1_TO) : null;
+const M1P_MATCHES = countOf(SHIPPED, M1P_FROM);
+const M1P_SRC = M1P_MATCHES === 1 ? SHIPPED.replace(M1P_FROM, M1P_TO) : null;
 
 // --- runner (never rejects) ------------------------------------------------------
 
@@ -134,6 +144,12 @@ for (const U of CONTROL_US) {
     CTRL.set(U, M1_SRC === null
         ? Promise.resolve({ result: null, error: 'M1 replacement matched ' + M1_MATCHES + ' times (need exactly 1)' })
         : siblingJob(U, CONTROL_OPS, M1_SRC, 'M1 U=' + U));
+}
+const CTRLP = new Map();
+for (const U of CONTROL_US) {
+    CTRLP.set(U, M1P_SRC === null
+        ? Promise.resolve({ result: null, error: 'M1P replacement matched ' + M1P_MATCHES + ' times (need exactly 1)' })
+        : siblingJob(U, CONTROL_OPS, M1P_SRC, 'M1P U=' + U));
 }
 
 // --- tests -------------------------------------------------------------------------
@@ -196,6 +212,37 @@ for (const name of ORACLES) {
         }
     });
 }
+
+test('M1P mutant is built from the shipped source (exactly one replacement)', T, () => {
+    assert.equal(M1P_MATCHES, 1, 'M1P site in predecessor\'s climb loop must match exactly once');
+    assert.notEqual(M1P_SRC, SHIPPED);
+    assert.equal(M1P_SRC.length, SHIPPED.length + M1P_TO.length - M1P_FROM.length);
+    for (const name of PRED_ORACLES) assert.ok(ORACLES.includes(name), name + ' missing from ORACLES');
+});
+
+for (const name of PRED_ORACLES) {
+    test('M1P control: the mutant diverges from ' + name + ' at U=2^15 and U=2^20', T, async (t) => {
+        for (const U of CONTROL_US) {
+            const r = await expectResult(CTRLP.get(U));
+            const b = r.oracles[name];
+            const line = 'M1P U=' + U + ' ops=' + r.nOps + ' ' + name + '=' + b.cmp + '/' + b.div +
+                ' first=' + fmt(b.first);
+            t.diagnostic(line);
+            console.log('[sibling] ' + line);
+            assert.ok(b.div > 0, 'M1P shows no divergence from ' + name + ' at U=' + U);
+        }
+    });
+}
+
+test('M1P partition: the mutant diverges from exactly PRED_ORACLES', T, async () => {
+    for (const U of CONTROL_US) {
+        const r = await expectResult(CTRLP.get(U));
+        for (const name of ORACLES) {
+            const b = r.oracles[name];
+            assert.equal(b !== null && b.div > 0, PRED_ORACLES.includes(name), name + ' at U=' + U);
+        }
+    }
+});
 
 test('hang rule control: a worker that never returns is terminated and reported as a FAIL', T, async () => {
     const r = await runWorker('for (;;) {}', { eval: true }, 300, 'spin');

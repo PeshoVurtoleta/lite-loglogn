@@ -6,6 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mulberry32 } from './helpers/tierStream.mjs';
+import { readFileSync } from 'node:fs';
 
 // V15 first: a fresh evaluation via a cache-busting query, before the static import below
 // is observed by any other test (static imports are hoisted, so the cache-bust is what
@@ -241,6 +242,70 @@ test('V13 hostDrift calibration vectors and validation', () => {
         const s = flat(); s[10] = bad;
         assert.throws(() => hostDrift(s), badInput(PFX_D), String(bad));
     }
+});
+
+// N4 run-of-three vectors (maintainer ruling 2026-10-22): v[30..32] = 400 (SPIKES3) or 10 (DIPS3)
+function run3(val) { const v = flat(); v[30] = val; v[31] = val; v[32] = val; return v; }
+
+// A SOURCE mutant of witness.mjs: `from` replaced by `to` (pinned to exactly one match), the
+// relative and bare import specifiers rewritten to absolute URLs, loaded as a data: URL. The
+// mutant's hostDrift uses the mutated module constant, exactly as a shipped edit would.
+async function witnessMutant(from, to) {
+    const src = readFileSync(new URL('./witness.mjs', import.meta.url), 'utf8');
+    assert.equal(src.split(from).length - 1, 1, 'mutation site pinned: ' + from);
+    let n = 0;
+    const out = src.replace(from, to).replace(/^(import [^\n]* from ')([^']+)(';)$/gm, (m, a, spec, b) => {
+        if (spec.startsWith('node:')) return m;
+        n++;
+        return a + import.meta.resolve(spec) + b;
+    });
+    assert.equal(n, 6, 'six non-node imports rewritten');
+    return import('data:text/javascript;base64,' + Buffer.from(out, 'utf8').toString('base64'));
+}
+
+test('V18 SPIKES3 / DIPS3 stay quiet under the shipped clamp [2/3, 1.5]', () => {
+    // vectors first, so a loosened clamp fails on the vector, not on the constant pin
+    assert.deepEqual(hostDrift(run3(400)), { drift: false, index: -1 }, 'SPIKES3');
+    assert.deepEqual(hostDrift(run3(10)), { drift: false, index: -1 }, 'DIPS3');
+    assert.equal(W.DRIFT_CLAMP_LO, 2 / 3);
+    assert.equal(W.DRIFT_CLAMP_HI, 1.5);
+});
+
+test('V18a upper clamp loosened (DRIFT_CLAMP_HI 1.5 -> 3): SPIKES3 FIRES', async () => {
+    const M = await witnessMutant('export const DRIFT_CLAMP_HI = 1.5;', 'export const DRIFT_CLAMP_HI = 3;');
+    assert.equal(M.DRIFT_CLAMP_HI, 3);
+    assert.equal(M.hostDrift(run3(400)).drift, true, 'SPIKES3 must fire with the upper clamp loosened');
+    assert.equal(M.hostDrift(flat()).drift, false, 'FLAT stays quiet in the mutant');
+});
+
+test('V18b lower clamp removed (DRIFT_CLAMP_LO 2/3 -> 0): DIPS3 FIRES', async () => {
+    const M = await witnessMutant('export const DRIFT_CLAMP_LO = 2 / 3;', 'export const DRIFT_CLAMP_LO = 0;');
+    assert.equal(M.DRIFT_CLAMP_LO, 0);
+    assert.equal(M.hostDrift(run3(10)).drift, true, 'DIPS3 must fire with the lower clamp removed');
+    assert.equal(M.hostDrift(flat()).drift, false, 'FLAT stays quiet in the mutant');
+});
+
+test('V19 own keys only (N5): inherited or unknown keys throw; valid input unchanged', () => {
+    const ok = witnessVerdict(base());
+    assert.equal(ok.exit, 0);
+    const isType = (e) => e instanceof TypeError && PFX_V.test(e.message);
+    assert.throws(() => witnessVerdict(Object.create(base())), isType, 'inherited top level');
+    const half = Object.create({ K: 15 }); Object.assign(half, base()); delete half.K;
+    assert.throws(() => witnessVerdict(half), (e) => isType(e) && e.message.includes('input.K'), 'inherited K');
+    const typo = base(); typo.contro1 = { wins: 0, losses: 15 };
+    assert.throws(() => witnessVerdict(typo), (e) => isType(e) && e.message.includes('"contro1"') &&
+        e.message.includes('did you mean "control"'), 'unknown top-level key');
+    const sym = base(); sym[Symbol('k')] = 1;
+    assert.throws(() => witnessVerdict(sym), isType, 'Symbol key');
+    const inhA = base(); inhA.aa = Object.create({ wins: 7, losses: 8 });
+    assert.throws(() => witnessVerdict(inhA), isType, 'inherited tally');
+    const extA = base(); extA.control = { wins: 0, losses: 15, ties: 0 };
+    assert.throws(() => witnessVerdict(extA), isType, 'unknown tally key');
+    const inhP = base(); inhP.nSweep[1] = Object.create(pt(1e4, 13, 0));
+    assert.throws(() => witnessVerdict(inhP), isType, 'inherited sweep point');
+    const extP = base(); extP.uSweep = [{ x: 16, wins: 0, losses: 0, w: 16 }];
+    assert.throws(() => witnessVerdict(extP), isType, 'unknown sweep-point key');
+    assert.deepEqual(witnessVerdict(base()), ok, 'valid input still returns its old verdict');
 });
 
 test('V14 witnessWidths', () => {

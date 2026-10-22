@@ -98,12 +98,12 @@ pointer-compressed engine) may box as a HeapNumber when the call is not inlined.
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 151 tests, 0 fail, 2026-10-22, Node v26.8.2; also
+- DETERMINISTIC (npm test = 162 tests, 0 fail, 2026-10-22, Node v26.8.2; also
   npm run verify = test + test:types + torture + test:perf): exact counts, seeded
   oracle fuzz, sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat +
   SortedArray; 0 divergences), space pins, tier parity, bytecode-size gate.
   `npm run torture`: 2,000,000 ops at U = 2^20 -> 0 B/op, gc major 0 / minor 0.
-  `npm run test:perf`: 7 zero-alloc scenarios + 2 must-fail teeth = 10/10.
+  `npm run test:perf`: 7 zero-alloc scenarios + 3 must-fail teeth + flag pin (2) + arrayBuffers attribution (1) = 14/14.
 - STATISTICAL (release-time, NOT in verify, 1 run each, exit 0 pass / 1 fail /
   2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node
   26.8.2, load1 3.66): member successor vs a local Uint32Array binary search at

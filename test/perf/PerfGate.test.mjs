@@ -14,14 +14,24 @@
  * Instances and query rings are built in setup (cold), never in hot. Each hot
  * keeps its integer sink in a local and writes it to an Int32Array slot once.
  *
- * Teeth: `mustFail` carries a fresh-array loop (the scavenge lane) and a
+ * Teeth: `mustFail` carries a fresh-array loop (the scavenge lane), a
  * member-shaped GrowingBitset successor scenario -- the successor scenario's
  * own hot / statsOf over a subclass whose successor reallocates `_bits` +1
- * word -- that the counter and arrayBuffers lanes MUST flag. Never widen a
- * budget to make this pass.
+ * word -- that the counter and arrayBuffers lanes MUST flag, and a
+ * SideBufferBitset successor scenario that grows ArrayBuffer memory OFF
+ * `_bits` (identity and byteLength unchanged, so `grows` is blind): its
+ * failure MUST be attributed to the arrayBuffers lane alone (own test, via
+ * measure + verdict with the suite's thresholds). Never widen a budget to
+ * make this pass.
+ *
+ * FLAG PIN: the scavenge budgets are calibrated under --max-semi-space-size=4.
+ * A run whose execArgv lacks it (or that carries any other semi-space / young-generation
+ * flag) is a FAILING test, never a skip; the pin check has its own control.
  */
 
-import { zgcSuite } from '@zakkster/lite-perf-gate';
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { zgcSuite, measure, verdict, formatResult } from '@zakkster/lite-perf-gate';
 import { StratifiedBitset } from '../../LogLogN.js';
 
 const U = 1 << 20;          // 4 levels, 135,300 B
@@ -39,6 +49,45 @@ function keyRing(seed) {
     return k;
 }
 const QRING = keyRing(0x9e3779b9);
+
+// Returns null when the ONLY semi-space / young-generation flag in argv is exactly
+// `--max-semi-space-size=4`, else a failure string (absent, another value, or
+// the two-token form all fail closed).
+const SEMI_PIN = '--max-semi-space-size=4';
+function semiPinErr(argv) {
+    if (!Array.isArray(argv)) return 'execArgv is not an array';
+    let last = null;
+    for (const a of argv) {
+        if (typeof a === 'string' && /semi[-_]space|young[-_]generation/.test(a)) { if (last !== null) return 'more than one semi-space flag: ' + last + ', ' + a; last = a; }
+    }
+    if (last === null) return 'execArgv ' + JSON.stringify(argv) + ' lacks ' + SEMI_PIN;
+    if (last !== SEMI_PIN) return 'last semi-space flag is ' + last + ', need ' + SEMI_PIN;
+    return null;
+}
+
+test('flag pin: PerfGate runs under --max-semi-space-size=4 (its calibration flag)', () => {
+    assert.equal(semiPinErr(process.execArgv), null,
+        'run: node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs');
+});
+
+test('control: the flag pin fails on every bad execArgv', () => {
+    assert.equal(semiPinErr(['--expose-gc', SEMI_PIN]), null, 'good argv must pass');
+    const bad = [
+        null,
+        [],
+        ['--expose-gc'],
+        ['--expose-gc', '--max-semi-space-size=8'],
+        ['--expose-gc', '--max-semi-space-size=40'],
+        ['--expose-gc', '--max-semi-space-size', '4'],
+        ['--expose-gc', SEMI_PIN, '--max-semi-space-size=16'],
+        ['--expose-gc', '--min-semi-space-size=4'],
+        ['--expose-gc', SEMI_PIN, '--min-semi-space-size=4'],
+        ['--expose-gc', SEMI_PIN, '--semi-space-growth-factor=2'],
+    ];
+    for (let i = 0; i < bad.length; i++) {
+        assert.notEqual(semiPinErr(bad[i]), null, 'bad argv[' + i + '] passed the pin');
+    }
+});
 
 // Population = the EVEN ring keys of every 4th slot (~16,384 keys, ~1/64);
 // add+delete uses odd keys only, so every add inserts and every delete removes
@@ -196,7 +245,40 @@ const teethMustFailGrow = {
     statsOf: grows,
 };
 
-zgcSuite({
+/**
+ * Teeth 3: arrayBuffers lane ALONE. A subclass whose successor, every 65,536th
+ * call, allocates a fresh 1 KB Uint32Array (off-heap backing store) into a
+ * preallocated 64-slot side table, never touching `_bits`: identity and
+ * byteLength are unchanged, so `grows` reads 0. k*N = 1.6M calls retain 24
+ * buffers (24 KB arrayBuffers, nominal); the heap side is 24 small wrappers in
+ * a slot table built in the constructor (cold), so retained and scavenges stay
+ * under budget and the only lane that can see it is arrayBuffers.
+ */
+class SideBufferBitset extends StratifiedBitset {
+    constructor(u) {
+        super(u);
+        this._calls = 0;
+        this._sideN = 0;
+        this._side = new Array(64).fill(null);
+    }
+    successor(x) {
+        if ((++this._calls & 65535) === 0) {
+            this._side[this._sideN & 63] = new Uint32Array(256);
+            this._sideN++;
+        }
+        return super.successor(x);
+    }
+}
+
+const teethMustFailSide = {
+    name: 'teeth: SideBufferBitset successor grows ArrayBuffer memory off _bits (MUST fail arrayBuffers)',
+    setup() { return build(SideBufferBitset); },
+    hot: successorHot,
+    statsOf: grows,
+};
+
+// The suite's thresholds, shared by zgcSuite and the attribution test below.
+const GATE = {
     N: 200000,
     k: 8,
     maxScavenges: 0,
@@ -204,6 +286,31 @@ zgcSuite({
     maxArrayBuffersKB: 0,
     counters: { grows: 0 },
     maxRetainedKB: 64,
+};
+
+zgcSuite({
+    ...GATE,
     scenarios,
-    mustFail: [teethMustFailAlloc, teethMustFailGrow],
+    mustFail: [teethMustFailAlloc, teethMustFailGrow, teethMustFailSide],
+});
+
+// Registered AFTER zgcSuite: node:test runs in registration order, so this
+// control (like mustFail) cannot pollute successorHot feedback the real
+// scenarios were measured on.
+test('teeth attribution: SideBufferBitset fails ONLY on the arrayBuffers lane (grows blind)', async () => {
+    const r = await measure(teethMustFailSide, { N: GATE.N, k: GATE.k });
+    const v = verdict(r, {
+        maxScavenges: GATE.maxScavenges,
+        maxRetainedKB: GATE.maxRetainedKB,
+        maxOldGen: GATE.maxOldGen,
+        maxArrayBuffersKB: GATE.maxArrayBuffersKB,
+        counters: GATE.counters,
+    });
+    const line = formatResult(r) + ' | reasons=' + JSON.stringify(v.reasons);
+    console.log('[perf] ' + line);
+    assert.equal(v.pass, false, 'SideBufferBitset passed the gate: ' + line);
+    assert.ok(v.reasons.length > 0 && v.reasons.every((s) => s.startsWith('arrayBuffers: ')),
+        'failure not attributed to the arrayBuffers lane alone: ' + line);
+    assert.equal(r.counters_hi.grows, 0, 'grows must be blind to the side buffers: ' + line);
+    assert.ok(r.arrayBuffersKB_hi > 0, 'arrayBuffers lane read no growth: ' + line);
 });

@@ -31,12 +31,47 @@
  * ENTRY CONTRACT: --expose-gc is mandatory (the GC gate is meaningless without
  * it); the devDeps are imported AFTER the guard so a fresh clone that skipped
  * `npm install` fails with a remedy, not a stack trace.
+ *
+ * SEMI-SPACE PIN: the transient lane (window size NS_K, the scavenge-discard
+ * rule, the C2 control's one-array-per-op window) is calibrated under V8's
+ * DEFAULT new space -- `npm run torture` passes no semi-space flag. Any
+ * semi-space / young-generation flag in execArgv or NODE_OPTIONS changes when
+ * a window scavenges (and is discarded), so it is a FAIL at entry, never a
+ * silent re-scale; the check runs its own must-fail control first. The T0
+ * line prints `semi=default`.
  */
+
+// Returns null when no semi-space / young-generation flag is present in argv
+// or the NODE_OPTIONS string, else a failure string. Cold.
+const SEMI_FLAG = /semi[-_]space|young[-_]generation/;
+function semiFlagErr(argv, nodeOptions) {
+    if (!Array.isArray(argv)) return 'execArgv is not an array';
+    const opts = typeof nodeOptions === 'string' ? nodeOptions.split(/\s+/) : [];
+    for (const a of argv.concat(opts)) {
+        if (typeof a === 'string' && SEMI_FLAG.test(a)) return 'semi-space flag ' + a;
+    }
+    return null;
+}
 
 async function main() {
     if (typeof globalThis.gc !== 'function') {
         process.stderr.write(
             'torture: FAIL -- run with --expose-gc: node --expose-gc test/torture.mjs\n');
+        process.exit(1);
+    }
+    // must-fail control of the pin check, then the pin itself
+    if (semiFlagErr(['--expose-gc'], '') !== null ||
+        semiFlagErr(['--expose-gc', '--max-semi-space-size=4'], '') === null ||
+        semiFlagErr(['--expose-gc', '--min-semi-space-size=1'], '') === null ||
+        semiFlagErr(['--expose-gc'], '--max-semi-space-size=16') === null ||
+        semiFlagErr(['--expose-gc'], '--semi-space-growth-factor=2') === null) {
+        process.stderr.write('torture: FAIL -- semi-space pin control: the check is blind\n');
+        process.exit(1);
+    }
+    const semiErr = semiFlagErr(process.execArgv, process.env.NODE_OPTIONS);
+    if (semiErr !== null) {
+        process.stderr.write('torture: FAIL -- ' + semiErr + ': the transient lane is calibrated ' +
+            'under the default new space; run: node --expose-gc test/torture.mjs\n');
         process.exit(1);
     }
     for (const pkg of ['@zakkster/lite-gc-profiler', '@zakkster/lite-leak']) {
@@ -214,10 +249,12 @@ async function main() {
         ' alloc=' + (bpc === null ? 'null' : Math.round(bpc)) + ' B/op' +
         ' allocRaw=' + fmt(bpc, 4) +
         ' transient=' + fmt(tBpo, 3) + ' B/op' +
+        ' (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
         ' nsExcess=' + (ns0 === null ? 'null' : ns0.excess) +
         ' nsWin0=' + (ns0 === null ? 'null' : ns0.first) +
         ' gcMajor=' + s0.gc.major + ' gcMinor=' + s0.gc.minor +
         ' maxPauseMs=' + s0.gc.maxMs.toFixed(2) +
+        ' semi=default' +
         ' | ' + (t0Ok ? 'ok' : 'FAIL'));
 
     // ---- T1: arrayBuffers growth at U = 2^24 --------------------------------

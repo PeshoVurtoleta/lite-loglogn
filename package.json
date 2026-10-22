@@ -30,9 +30,8 @@
     "torture": "node --expose-gc test/torture.mjs",
     "witness": "node test/witness.mjs",
     "witness:w32": "node test/witness.mjs --w32",
+    "witness:tier": "node test/witness.mjs --tier",
     "test:perf": "node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs",
-    "bench": "node benchmark/Bench.mjs",
-    "bench:report": "node benchmark/Bench.mjs && node benchmark/Report.mjs",
     "verify": "npm test && npm run test:types && npm run torture && npm run test:perf"
   },
   "keywords": [

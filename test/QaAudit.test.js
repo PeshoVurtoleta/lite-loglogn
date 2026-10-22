@@ -9,7 +9,11 @@
  *   - the six-file pack discipline (files[] exact; repo-only dirs absent);
  *   - no "Karadjov" anywhere in the shipped source / docs;
  *   - ASCII-only source in LogLogN.js (this family needs NO Unicode exception --
- *     even U+00D7 / U+00B5 are spelled out as "x" / "mu").
+ *     even U+00D7 / U+00B5 are spelled out as "x" / "mu");
+ *   - the gate flag pins in package.json scripts: test:perf carries
+ *     --expose-gc and --max-semi-space-size=4 (PerfGate's calibration flag),
+ *     torture carries --expose-gc and NO semi-space flag (its transient lane is
+ *     calibrated under the default new space).
  * Each member session appends its coercion / boundary block below.
  */
 
@@ -95,6 +99,63 @@ test('LogLogN.js is ASCII-only (this family spells out x / mu; no Unicode except
         }
     }
     assert.equal(bad, 0, 'LogLogN.js contains ' + bad + ' non-ASCII code unit(s)');
+});
+
+// --- gate flag pins in package.json scripts --------------------------------
+// Returns null when the scripts pin holds, else a failure string. Tokens are
+// whitespace-split, so `--max-semi-space-size=40` or a two-token
+// `--max-semi-space-size 4` do not satisfy the pin.
+
+const SEMI_FLAG = /semi[-_]space|young[-_]generation/;
+
+function scriptsPinErr(scripts) {
+    if (scripts === null || typeof scripts !== 'object' || Array.isArray(scripts)) {
+        return 'scripts is not a plain object';
+    }
+    const perf = Object.hasOwn(scripts, 'test:perf') ? scripts['test:perf'] : undefined;
+    if (typeof perf !== 'string') return 'scripts["test:perf"] missing';
+    const pt = perf.split(/\s+/);
+    if (!pt.includes('--expose-gc')) return 'test:perf lacks --expose-gc';
+    const pSemi = pt.filter((t) => SEMI_FLAG.test(t));
+    if (pSemi.length !== 1 || pSemi[0] !== '--max-semi-space-size=4') {
+        return 'test:perf semi-space flags ' + JSON.stringify(pSemi) + ', need exactly ["--max-semi-space-size=4"]';
+    }
+    const tor = Object.hasOwn(scripts, 'torture') ? scripts.torture : undefined;
+    if (typeof tor !== 'string') return 'scripts.torture missing';
+    const tt = tor.split(/\s+/);
+    if (!tt.includes('--expose-gc')) return 'torture lacks --expose-gc';
+    const tSemi = tt.filter((t) => SEMI_FLAG.test(t));
+    if (tSemi.length !== 0) return 'torture carries semi-space flag(s) ' + JSON.stringify(tSemi);
+    return null;
+}
+
+test('package.json scripts pin the gate flags (test:perf --max-semi-space-size=4, torture --expose-gc)', () => {
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+    assert.equal(scriptsPinErr(pkg.scripts), null);
+});
+
+test('control: the scripts pin check fails on every bad scripts object', () => {
+    const PERF = 'node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs';
+    const TOR = 'node --expose-gc test/torture.mjs';
+    assert.equal(scriptsPinErr({ 'test:perf': PERF, torture: TOR }), null, 'good scripts must pass');
+    const bad = [
+        null,
+        [],
+        { torture: TOR },
+        { 'test:perf': 'node --expose-gc --test test/perf/PerfGate.test.mjs', torture: TOR },
+        { 'test:perf': 'node --expose-gc --max-semi-space-size=8 --test x', torture: TOR },
+        { 'test:perf': 'node --expose-gc --max-semi-space-size=40 --test x', torture: TOR },
+        { 'test:perf': 'node --expose-gc --max-semi-space-size 4 --test x', torture: TOR },
+        { 'test:perf': 'node --max-semi-space-size=4 --test x', torture: TOR },
+        { 'test:perf': PERF + ' --min-semi-space-size=1', torture: TOR },
+        { 'test:perf': PERF },
+        { 'test:perf': PERF, torture: 'node test/torture.mjs' },
+        { 'test:perf': PERF, torture: 'node --expose-gc --max-semi-space-size=4 test/torture.mjs' },
+        Object.create({ 'test:perf': PERF, torture: TOR }),
+    ];
+    for (let i = 0; i < bad.length; i++) {
+        assert.notEqual(scriptsPinErr(bad[i]), null, 'bad scripts[' + i + '] passed the pin');
+    }
 });
 
 // --- member coercion / boundary blocks land below (one per member) ----------

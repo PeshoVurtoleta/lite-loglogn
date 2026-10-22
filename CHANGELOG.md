@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Package scripts.** Added `witness:tier` (`node test/witness.mjs --tier`).
+  Removed `bench` and `bench:report`: they pointed at a `benchmark/` directory
+  that does not exist yet (it lands with the Bench-ADOPT session).
+
+### Tests
+
+- Repo-only harness fixes (nothing shipped changes behavior; `LogLogN.js` is
+  byte-identical to 0.2.0). `witnessVerdict` / `tierVerdict` reject inherited
+  and unknown keys (TypeError). New drift controls SPIKES3 / DIPS3 gate both
+  clamp bounds. The `--tier` pre-pass control now covers each of its three
+  checks. Latency lines report the clock granularity instead of a clock-floor
+  p50; the w = 32 lane prints a key-boxing caveat. SiblingOracle gains a
+  predecessor mutant control; torture prints its transient limit and refuses a
+  semi-space flag; PerfGate requires `--max-semi-space-size=4` and proves its
+  arrayBuffers lane with a side-buffer mutant; QaAudit pins the `test:perf` /
+  `torture` script flags.
+
 ## [0.2.0] - 2026-10-22
 
 ### Added

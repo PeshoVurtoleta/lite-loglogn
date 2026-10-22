@@ -215,7 +215,7 @@ Keys are integers in [0, U): map timestamps to slots (`Math.floor((ms - origin) 
 DETERMINISTIC numbers (2026-10-22, Node v26.8.2, every run of the named script):
 
 - `npm run torture` (`node --expose-gc test/torture.mjs`): T0 runs 2,000,000 ops at U = 2^20 -> retained 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; T1-T2 ok; T3's four must-fail controls (one per T0-T2 check) each flip.
-- `npm run test:perf` (`@zakkster/lite-perf-gate`): 7 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20) + 2 must-fail teeth = 10/10.
+- `npm run test:perf` (`@zakkster/lite-perf-gate`): 7 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20) + 3 must-fail teeth + flag pin (2) + arrayBuffers attribution (1) = 14/14.
 
 </details>
 
@@ -282,19 +282,19 @@ See [`decisions/`](./decisions) for the full records.
 
 ## Testing
 
-`node:test` only, zero runtime deps. `npm test`: 151 tests, 0 fail (2026-10-22, Node v26.8.2). It covers exact counts (Count), a seeded oracle fuzz (Oracle), sibling oracles (lite-o1 BitSet.nextSet for U <= 2^25, lite-o1 EliasFano.nextGEQ, lite-logn Scapegoat + SortedArray; 0 divergences, each with a must-fail control), FastBit32Cross, Space, TierParity, the witness / tier verdict functions on injected vectors, and the `QaAudit` block (VERSION trinity, frozen export surface, six-file pack, author spelling, ASCII).
+`node:test` only, zero runtime deps. `npm test`: 162 tests, 0 fail (2026-10-22, Node v26.8.2). It covers exact counts (Count), a seeded oracle fuzz (Oracle), sibling oracles (lite-o1 BitSet.nextSet for U <= 2^25, lite-o1 EliasFano.nextGEQ, lite-logn Scapegoat + SortedArray; 0 divergences, each with a must-fail control), FastBit32Cross, Space, TierParity, the witness / tier verdict functions on injected vectors, and the `QaAudit` block (VERSION trinity, frozen export surface, six-file pack, author spelling, ASCII).
 
 | Script | What it does |
 | --- | --- |
 | `npm test` | The suite above. |
 | `npm run test:types` | `tsc` over the ambient `LogLogN.d.ts`. |
 | `npm run torture` | `node --expose-gc test/torture.mjs`: 0 B/op, gc major 0 / minor 0. |
-| `npm run test:perf` | `@zakkster/lite-perf-gate`: 7 zero-alloc scenarios + 2 teeth. |
+| `npm run test:perf` | `@zakkster/lite-perf-gate`: 7 zero-alloc scenarios + 3 teeth, flag pin, attribution. |
 | `npm run verify` | The four above in sequence (no witness). |
 | `npm run test:big` | Opt-in big-universe suite. |
 | `npm run witness` | STATISTICAL A8, release-time, quiet host. |
 | `npm run witness:w32` | Opt-in w = 32 witness (about 554 MB). |
-| `node test/witness.mjs --tier` | STATISTICAL A12, the peel A/B. |
+| `npm run witness:tier` | STATISTICAL A12, the peel A/B. |
 
 Witness exit codes: 0 pass, 1 fail, 2 inconclusive (host noise, drift, or an A/A winner).
 

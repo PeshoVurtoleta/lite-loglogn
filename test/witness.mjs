@@ -76,6 +76,9 @@ export const WITNESS_K = 15;
 /** Rounds needed to declare a winner at one point: 13 / 15, p = 0.0037 one-sided. */
 export const WITNESS_NEED = 13;
 
+/** Back-to-back performance.now() pairs per clock-granularity probe (N6, >= 1e5). */
+const CLOCK_PAIRS = 1 << 17;
+
 /** U-sweep universe bit-widths (32 is opt-in via witnessWidths). */
 export const WITNESS_W = Object.freeze([16, 20, 24, 28]);
 
@@ -105,6 +108,13 @@ export const DRIFT_THRESHOLD = 2.0;
  * FLAT with v[30] = v[90] = 400 (ruling R5): unclamped it FIRES at i = 30 (largest
  * firing threshold 2.933), clamped it stays quiet (0.476), so SPIKES gates the
  * clamp. The clamp leaves FLAT / noise / STEP / STEP-DOWN margins above unchanged.
+ * Run-of-three vectors (maintainer ruling 2026-10-22), NOMINAL, computed 2026-10-22 with
+ * the same detector settings (largest firing threshold; first firing index at 2.0):
+ *   SPIKES3 = FLAT with v[30..32] = 400: shipped clamp quiet (1.378); upper clamp
+ *     loosened to 3 FIRES at i = 31 (7.353); unclamped FIRES at i = 30 (11.593).
+ *   DIPS3 = FLAT with v[30..32] = 10: shipped clamp quiet (0.912); lower clamp removed
+ *     FIRES at i = 32 (2.774).
+ * So SPIKES3 gates DRIFT_CLAMP_HI and DIPS3 gates DRIFT_CLAMP_LO (the CONTROL drift line).
  */
 export const DRIFT_CLAMP_LO = 2 / 3;
 export const DRIFT_CLAMP_HI = 1.5;
@@ -239,8 +249,59 @@ function vInt(v, name, lo, hi, pv = PV) {
     return v;
 }
 
-function vTally(t, name, K, pv = PV) {
+// the own-key sets (N5): every key listed is REQUIRED as an own property, and an own
+// key not listed (a typo like `contro1`, a Symbol) is a TypeError -- fail closed, never
+// a prototype-chain read or a silent ignore
+const WV_KEYS = Object.freeze(['K', 'need', 'nSweep', 'uSweep', 'aa', 'control', 'drift', 'load1', 'cores']);
+const TV_KEYS = Object.freeze(['K', 'need', 'scenarios', 'aa', 'aaSparse', 'control', 'drift', 'load1', 'cores']);
+const TALLY_KEYS = Object.freeze(['wins', 'losses']);
+const POINT_KEYS = Object.freeze(['x', 'wins', 'losses']);
+const SCEN_KEYS = Object.freeze(['name', 'wins', 'losses']);
+
+// edit distance (cold; did-you-mean only)
+function editDist(a, b) {
+    const row = [];
+    for (let j = 0; j <= b.length; j++) row.push(j);
+    for (let i = 1; i <= a.length; i++) {
+        let diag = row[0];
+        row[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+            const up = row[j];
+            row[j] = Math.min(up + 1, row[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+            diag = up;
+        }
+    }
+    return row[b.length];
+}
+
+// o is already a non-array object (vObj); keys = the exact own-key set
+function vKeys(o, name, keys, pv = PV) {
+    for (let i = 0; i < keys.length; i++) {
+        if (!Object.hasOwn(o, keys[i])) {
+            throw new TypeError(pv + ': ' + name + '.' + keys[i] + ' must be an own property (missing or inherited)');
+        }
+    }
+    const own = Reflect.ownKeys(o);
+    for (let i = 0; i < own.length; i++) {
+        const k = own[i];
+        if (typeof k === 'string' && keys.includes(k)) continue;
+        let hint = '';
+        if (typeof k === 'string') {
+            let best = null, bd = 3;
+            for (let j = 0; j < keys.length; j++) {
+                const d = editDist(k, keys[j]);
+                if (d < bd) { bd = d; best = keys[j]; }
+            }
+            if (best !== null) hint = ' (did you mean ' + JSON.stringify(best) + '?)';
+        }
+        throw new TypeError(pv + ': ' + name + ' has an unknown key ' +
+            (typeof k === 'string' ? JSON.stringify(k) : String(k)) + hint + ' (known: ' + keys.join(', ') + ')');
+    }
+}
+
+function vTally(t, name, K, pv = PV, keys = TALLY_KEYS) {
     vObj(t, name, pv);
+    vKeys(t, name, keys, pv);
     const wins = vInt(t.wins, name + '.wins', 0, K, pv);
     const losses = vInt(t.losses, name + '.losses', 0, K, pv);
     if (wins + losses > K) throw new RangeError(pv + ': ' + name + ' wins + losses > K');
@@ -255,12 +316,13 @@ function vSweep(arr, name, K, allowEmpty) {
     for (let i = 0; i < arr.length; i++) {
         const p = arr[i];
         vObj(p, name + '[' + i + ']');
+        vKeys(p, name + '[' + i + ']', POINT_KEYS);
         const x = p.x;
         if (typeof x !== 'number') throw new TypeError(PV + ': ' + name + '[' + i + '].x must be a number');
         if (!Number.isFinite(x)) throw new RangeError(PV + ': ' + name + '[' + i + '].x must be finite');
         if (!(x > prev)) throw new RangeError(PV + ': ' + name + ' x must be strictly ascending');
         prev = x;
-        const t = vTally(p, name + '[' + i + ']', K);
+        const t = vTally(p, name + '[' + i + ']', K, PV, POINT_KEYS);
         out.push({ x, wins: t.wins, losses: t.losses });
     }
     return out;
@@ -292,13 +354,16 @@ function nonMonotone(pts, verdicts) {
 
 /**
  * The pure verdict. Throws (TypeError / RangeError, '[lite-loglogn] witnessVerdict')
- * on any malformed input; never returns exit 0 on bad input.
+ * on any malformed input; never returns exit 0 on bad input. Every key (top level,
+ * aa / control tallies, sweep points) must be an OWN property, and an unknown own key
+ * is a TypeError (no prototype-chain read, no silent ignore).
  * @returns {{ exit: 0|1|2, reasons: string[],
  *   n: { verdicts: string[], crossover: number|null },
  *   u: { verdicts: string[], crossover: number|null } }}
  */
 export function witnessVerdict(input) {
     vObj(input, 'input');
+    vKeys(input, 'input', WV_KEYS);
     const K = vInt(input.K, 'K', 1, Number.MAX_SAFE_INTEGER);
     const need = vInt(input.need, 'need', 1, Number.MAX_SAFE_INTEGER);
     if (!(need * 2 > K) || need > K) throw new RangeError(PV + ': need must satisfy K/2 < need <= K');
@@ -453,13 +518,15 @@ export function tierASource(b1aSrc) {
 
 /**
  * The pure A12 decision. Validation as witnessVerdict (prefix '[lite-loglogn]
- * tierVerdict'); scenarios must be exactly TIER_SCENARIOS, in order.
+ * tierVerdict'), own keys only, unknown keys rejected; scenarios must be exactly
+ * TIER_SCENARIOS, in order.
  * Precedence (first match sets exit; reasons list ALL): 2 PENDING load / drift /
  * aa (dense-succ) / aaSparse (sparse-succ); 1 FAIL control did not lose; 0 KEEP dense-succ 'win' and no 'lose'; 0 DROP.
  * @returns {{ exit: 0|1|2, decision: string, verdicts: string[], reasons: string[] }}
  */
 export function tierVerdict(input) {
     vObj(input, 'input', PT);
+    vKeys(input, 'input', TV_KEYS, PT);
     const K = vInt(input.K, 'K', 1, Number.MAX_SAFE_INTEGER, PT);
     const need = vInt(input.need, 'need', 1, Number.MAX_SAFE_INTEGER, PT);
     if (!(need * 2 > K) || need > K) throw new RangeError(PT + ': need must satisfy K/2 < need <= K');
@@ -472,6 +539,7 @@ export function tierVerdict(input) {
     for (let i = 0; i < sc.length; i++) {
         const p = sc[i];
         vObj(p, 'scenarios[' + i + ']', PT);
+        vKeys(p, 'scenarios[' + i + ']', SCEN_KEYS, PT);
         const name = p.name;
         if (typeof name !== 'string') throw new TypeError(PT + ': scenarios[' + i + '].name must be a string');
         if (name !== TIER_SCENARIOS[i]) {
@@ -479,7 +547,7 @@ export function tierVerdict(input) {
                 (TIER_SCENARIOS.includes(name) ? ' is out of order' : ' is unknown') +
                 ' (want ' + JSON.stringify(TIER_SCENARIOS[i]) + ')');
         }
-        const t = vTally(p, 'scenarios[' + i + ']', K, PT);
+        const t = vTally(p, 'scenarios[' + i + ']', K, PT, SCEN_KEYS);
         pts.push({ name, wins: t.wins, losses: t.losses });
     }
     const aa = vTally(input.aa, 'aa', K, PT);
@@ -881,13 +949,20 @@ function main(argv, env, tier) {
     vSpikes[30] = 400;
     vSpikes[90] = 400;
     const dSpikes = hostDrift(vSpikes);
+    const vSpikes3 = driftVector(1);
+    vSpikes3[30] = 400; vSpikes3[31] = 400; vSpikes3[32] = 400;
+    const dSpikes3 = hostDrift(vSpikes3);
+    const vDips3 = driftVector(1);
+    vDips3[30] = 10; vDips3[31] = 10; vDips3[32] = 10;
+    const dDips3 = hostDrift(vDips3);
     say('CONTROL drift: FLAT ' + JSON.stringify(dFlat) + ' STEP ' + JSON.stringify(dStep) +
         ' STEP-DOWN ' + JSON.stringify(dDown) + ' SPIKES ' + JSON.stringify(dSpikes) +
+        ' SPIKES3 ' + JSON.stringify(dSpikes3) + ' DIPS3 ' + JSON.stringify(dDips3) +
         ' (DRIFT_DELTA ' + DRIFT_DELTA + ' DRIFT_THRESHOLD ' + DRIFT_THRESHOLD +
         ' clamp [' + DRIFT_CLAMP_LO.toFixed(4) + ', ' + DRIFT_CLAMP_HI + '], nominal)');
     if (dFlat.drift || !dStep.drift || !(dStep.index >= 60 && dStep.index < 135) || !dDown.drift ||
-        dSpikes.drift) {
-        say('FAIL control drift: the injected step was missed, or FLAT / SPIKES fired');
+        dSpikes.drift || dSpikes3.drift || dDips3.drift) {
+        say('FAIL control drift: the injected step was missed, or FLAT / SPIKES / SPIKES3 / DIPS3 fired');
         return 1;
     }
 
@@ -938,6 +1013,7 @@ function main(argv, env, tier) {
     const QQ = Float64Array.of(0.5, 0.99);
     const QO = new Float64Array(2);
     const sketch = new DDSketch(0.01);
+    const CG = new Float64Array(3);   // clock probe: [min nonzero delta ms, zero count, delta]
 
     // the A/A config doubles as the drift probe (member, fixed config, 1 block)
     const U_AA = 2 ** W_AA;
@@ -1015,18 +1091,21 @@ function main(argv, env, tier) {
     };
 
     // LATENCY lane: per-op member successor latency, then DDSketch.addFrom. The
-    // clock floor (the same two performance.now() reads around nothing) is printed
-    // beside it: a per-op sample of a ~10 ns op is mostly clock.
+    // clock GRANULARITY (smallest nonzero delta over CLOCK_PAIRS back-to-back
+    // performance.now() pairs) and the fraction of zero deltas are printed beside
+    // it: a per-op sample of a ~10 ns op is mostly clock. REPORTED, never gated.
     const latency = (m, qs) => {
         const s = m.obj;
-        for (let i = 0; i < Q; i++) {
+        CG[0] = Infinity;
+        CG[1] = 0;
+        for (let i = 0; i < CLOCK_PAIRS; i++) {
             const t = performance.now();
-            LAT[i] = (performance.now() - t) * 1e6;
+            CG[2] = performance.now() - t;
+            if (CG[2] === 0) CG[1]++;
+            else if (CG[2] < CG[0]) CG[0] = CG[2];
         }
-        sketch.clear();
-        for (let i = 0; i < Q; i++) sketch.addFrom(LAT, i);
-        sketch.quantilesInto(QQ, QO);
-        const floor50 = QO[0];
+        const granNs = CG[0] * 1e6;
+        const zeroPct = CG[1] * 100 / CLOCK_PAIRS;
         let acc = 0;
         for (let i = 0; i < Q; i++) {
             const t = performance.now();
@@ -1038,7 +1117,7 @@ function main(argv, env, tier) {
         sketch.clear();
         for (let i = 0; i < Q; i++) sketch.addFrom(LAT, i);
         sketch.quantilesInto(QQ, QO);
-        return { count: sketch.count, p50: QO[0], p99: QO[1], max: sketch.max, floor50 };
+        return { count: sketch.count, p50: QO[0], p99: QO[1], max: sketch.max, granNs, zeroPct };
     };
 
     const tally = (name, t) => {
@@ -1072,7 +1151,8 @@ function main(argv, env, tier) {
         const L = latency(mem, qs);
         say('  REPORTED latency n=' + n + ' member per-op (ns, DDSketch alpha 0.01, ' + L.count +
             ' samples): p50 ' + fmt(L.p50) + ' p99 ' + fmt(L.p99) + ' max ' + fmt(L.max) +
-            ' | clock floor p50 ' + fmt(L.floor50));
+            ' | clock granularity ' + (Number.isFinite(L.granNs) ? fmt(L.granNs) + ' ns' : 'n/a (no nonzero delta)') +
+            ' (zero deltas ' + L.zeroPct.toFixed(2) + '%)');
         if (L.count !== Q || !Number.isFinite(L.p50) || !Number.isFinite(L.p99) || !Number.isFinite(L.max)) {
             fails.push('latency n=' + n + ': count ' + L.count + ' p50 ' + L.p50 + ' p99 ' + L.p99 + ' max ' + L.max);
         }
@@ -1082,6 +1162,10 @@ function main(argv, env, tier) {
     const uSweep = [];
     const fx = [], fl = [], fy = [];
     say('GATED U-sweep (monotone rule; fits + crossover REPORTED): member vs NaiveFlatBitset at n ' + N_U + ' (ns/op medians; wins / losses / ties of K ' + K + ')');
+    if (WS.includes(32)) {
+        say('  CAVEAT w=32: keys >= 2^31 are heap numbers in the harness key stream (harness-side boxing,' +
+            ' not the member), so w = 32 ns/op includes it (not measured separately)');
+    }
     for (let j = 0; j < WS.length; j++) {
         const w = WS[j];
         const U = 2 ** w;
@@ -1140,7 +1224,7 @@ function main(argv, env, tier) {
     for (const r of v.reasons) say('  reason ' + r);
     say('GATED n-sweep verdicts [' + v.n.verdicts.join(', ') + '] crossover ' +
         (v.n.crossover === null ? 'none in range' : 'K = ' + v.n.crossover));
-    say('REPORTED U-sweep verdicts [' + v.u.verdicts.join(', ') + '] crossover ' +
+    say('GATED U-sweep verdicts (monotone rule) [' + v.u.verdicts.join(', ') + '] REPORTED crossover ' +
         (v.u.crossover === null ? 'none in range' : 'w = ' + v.u.crossover));
     say('sink ' + SINK[0] + ' | wall ' + ((performance.now() - t0wall) / 1000).toFixed(2) + ' s');
 
@@ -1235,6 +1319,25 @@ function tierWalk(s, pred, cap) {
 
 function tierSame(x, y) { return x.ops === y.ops && x.hash === y.hash; }
 
+// The pre-pass check (N2): null when the A, B and twin walks and the key-set walk all
+// agree, else the first disagreement as an error string. ONE function serves the
+// pre-pass AND its must-fail control, so deleting any check here fails the control.
+function tierPrepassErr(name, wa, wb, wt, wk) {
+    if (!tierSame(wa, wb)) {
+        return 'pre-pass ' + name + ': A walk (ops ' + wa.ops + ' fnv1a ' + hex32(wa.hash) +
+            ') != B walk (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) + ')';
+    }
+    if (!tierSame(wb, wk)) {
+        return 'pre-pass ' + name + ': A and B walks (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) +
+            ') != the key set (ops ' + wk.ops + ' fnv1a ' + hex32(wk.hash) + ')';
+    }
+    if (!tierSame(wt, wb)) {
+        return 'pre-pass ' + name + ': twin walk (ops ' + wt.ops + ' fnv1a ' + hex32(wt.hash) +
+            ') != B walk (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) + ')';
+    }
+    return null;
+}
+
 // the true walk: the sorted key set itself, ascending (succ) or descending (pred)
 function keysWalk(keys, pred) {
     let h = FNV_OFFSET;
@@ -1254,7 +1357,9 @@ function tierLane(tier, h) {
     ];
 
     // pre-pass must-fail control: the checker MUST flag a build missing one key and the
-    // reversed key walk, else it has no teeth (BSTAT ADDENDUM S1)
+    // reversed key walk, else it has no teeth (BSTAT ADDENDUM S1); and tierPrepassErr
+    // (the pre-pass itself) MUST flag the short walk in EACH of its four slots (N2), so
+    // deleting any one of its three checks fails here
     const k0 = genKeys(cfg[0].n, cfg[0].U, 0x7E1E0000);
     const wTrue = keysWalk(k0, false);
     const wShort = tierWalk(buildWith(tier.A, k0.subarray(1), cfg[0].U), false, cfg[0].U);
@@ -1262,7 +1367,21 @@ function tierLane(tier, h) {
         say('FAIL control pre-pass: a build missing one key or the reversed walk was not flagged -- the pre-pass has no teeth');
         return 1;
     }
-    say('CONTROL pre-pass: a build missing one key and the reversed walk are both flagged -- ok');
+    const SLOTS = ['A', 'B', 'twin', 'keys'];
+    const missed = [];
+    for (let s = 0; s < SLOTS.length; s++) {
+        const w = [wTrue, wTrue, wTrue, wTrue];
+        w[s] = wShort;
+        if (tierPrepassErr('control', w[0], w[1], w[2], w[3]) === null) missed.push(SLOTS[s]);
+    }
+    const agree = tierPrepassErr('control', wTrue, wTrue, wTrue, wTrue);
+    if (missed.length > 0 || agree !== null) {
+        say('FAIL control pre-pass: tierPrepassErr ' + (missed.length > 0 ? 'missed the short walk in slot(s) ' +
+            missed.join(', ') : 'flagged four agreeing walks (' + agree + ')') + ' -- the pre-pass has no teeth');
+        return 1;
+    }
+    say('CONTROL pre-pass: a build missing one key and the reversed walk are both flagged; tierPrepassErr flags' +
+        ' the short walk in every slot (A, B, twin, keys) and passes four agreeing walks -- ok');
 
     // build + correctness pre-pass, every scenario before any timing
     const runs = [];
@@ -1278,18 +1397,8 @@ function tierLane(tier, h) {
         const wb = tierWalk(b, c.pred, c.U);
         const wt = tierWalk(t, c.pred, c.U);
         const wk = keysWalk(keys, c.pred);
-        if (!tierSame(wa, wb)) {
-            throw new WitnessFail('pre-pass ' + c.name + ': A walk (ops ' + wa.ops + ' fnv1a ' + hex32(wa.hash) +
-                ') != B walk (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) + ')');
-        }
-        if (!tierSame(wb, wk)) {
-            throw new WitnessFail('pre-pass ' + c.name + ': A and B walks (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) +
-                ') != the key set (ops ' + wk.ops + ' fnv1a ' + hex32(wk.hash) + ')');
-        }
-        if (!tierSame(wt, wb)) {
-            throw new WitnessFail('pre-pass ' + c.name + ': twin walk (ops ' + wt.ops + ' fnv1a ' + hex32(wt.hash) +
-                ') != B walk (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) + ')');
-        }
+        const err = tierPrepassErr(c.name, wa, wb, wt, wk);
+        if (err !== null) throw new WitnessFail(err);
         say('PRE-PASS ' + c.name + ': A, B and twin walks agree with each other and the key set (ops ' + wb.ops +
             ' fnv1a ' + hex32(wb.hash) + ') -- ok');
         runs.push({

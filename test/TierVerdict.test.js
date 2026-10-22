@@ -134,6 +134,7 @@ test('T6 control not losing -> 1 FAIL; PENDING outranks FAIL', () => {
     const r = tierVerdict(i);
     assert.equal(r.exit, 2);
     assert.equal(r.decision, 'PENDING');
+    for (const k of ['aa', 'aaSparse']) { const j = base(); j[k] = { wins: 13, losses: 2 }; j.control = { wins: 15, losses: 0 }; const rj = tierVerdict(j); assert.equal(rj.exit, 2, k); assert.equal(rj.decision, 'PENDING', k); }
     assert.ok(hasReason(r, 'drift:') && hasReason(r, 'control:'), 'reasons list ALL');
 });
 
@@ -174,6 +175,30 @@ test('T8b witnessVerdict keeps its own prefix after the shared-validator refacto
     const pv = (e) => e instanceof TypeError && e.message.startsWith('[lite-loglogn] witnessVerdict: ');
     assert.throws(() => W.witnessVerdict(null), pv);
     assert.throws(() => W.witnessVerdict({ K: 15, need: 13, nSweep: [null] }), pv);
+    // a full key set, so the nested nSweep[0] validator (not the own-key check) is what throws
+    assert.throws(() => W.witnessVerdict({ K: 15, need: 13, nSweep: [null], uSweep: [], aa: { wins: 0, losses: 0 },
+        control: { wins: 0, losses: 15 }, drift: false, load1: 0, cores: 1 }),
+        (e) => pv(e) && e.message.includes('nSweep[0] must be an object'));
+});
+
+test('T14 own keys only (N5, shared validators): inherited or unknown keys throw; valid input unchanged', () => {
+    const ok = tierVerdict(base());
+    assert.equal(ok.decision, 'KEEP');
+    assert.throws(() => tierVerdict(Object.create(base())), isBad, 'inherited top level');
+    const extra = base(); extra.contro1 = { wins: 0, losses: 15 };
+    assert.throws(() => tierVerdict(extra), (e) => isBad(e) && e instanceof TypeError &&
+        e.message.includes('"contro1"') && e.message.includes('did you mean "control"'), 'unknown top-level key');
+    const sym = base(); sym[Symbol('x')] = 1;
+    assert.throws(() => tierVerdict(sym), isBad, 'Symbol key');
+    const inhT = base(); inhT.aaSparse = Object.create({ wins: 7, losses: 8 });
+    assert.throws(() => tierVerdict(inhT), isBad, 'inherited tally');
+    const extT = base(); extT.control = { wins: 0, losses: 15, ties: 0 };
+    assert.throws(() => tierVerdict(extT), isBad, 'unknown tally key');
+    const inhS = base(); inhS.scenarios[1] = Object.create({ name: 'sparse-succ', wins: 15, losses: 0 });
+    assert.throws(() => tierVerdict(inhS), isBad, 'inherited scenario');
+    const extS = base(); extS.scenarios[2].x = 1;
+    assert.throws(() => tierVerdict(extS), isBad, 'unknown scenario key');
+    assert.deepEqual(tierVerdict(base()), ok, 'valid input still returns its old verdict');
 });
 
 test('T9 purity: deterministic and input unchanged', () => {

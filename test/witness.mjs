@@ -5,6 +5,10 @@
  *     node test/witness.mjs --smoke    wiring smoke, < ~5 s, never gates timing
  *     node test/witness.mjs --w32      also sweep w = 32 in the U-sweep lane
  *                                      (or env LOGLOGN_W32=1)
+ *     node test/witness.mjs --tier     the A12 lane ONLY (BSTAT-SPEC.md): live
+ *                                      LogLogN.js (B) vs B1a + 3 ` | 0` reads (A),
+ *                                      4 walk scenarios; combinable with --smoke;
+ *                                      --tier --w32 is exit 1 (not applicable)
  *
  * Every timed run goes through the shared-host lock:
  *     node ~/.claude/hooks/quiet-lock.mjs run "lite-loglogn witness" -- node test/witness.mjs
@@ -54,14 +58,16 @@
  */
 
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
-import { realpathSync } from 'node:fs';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { realpathSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { BitSet, EliasFano } from '@zakkster/lite-o1';
 import { SortedArray, Treap, SkipList } from '@zakkster/lite-logn';
 import { DDSketch } from '@zakkster/lite-sketch';
 import { DriftDetector, DRIFT_PH } from '@zakkster/lite-adaptive';
 import { StratifiedBitset } from '../LogLogN.js';
-import { mulberry32 } from './helpers/tierStream.mjs';
+import { mulberry32, FNV_OFFSET, fnvWord, hex32 } from './helpers/tierStream.mjs';
 
 // --- run constants ------------------------------------------------------------
 
@@ -106,6 +112,8 @@ export const DRIFT_CLAMP_HI = 1.5;
 const PFX = '[lite-loglogn] ';
 const PV = PFX + 'witnessVerdict';
 const PD = PFX + 'hostDrift';
+const PT = PFX + 'tierVerdict';
+const PA = PFX + 'tierASource';
 
 // --- least-squares fit: y = intercept + slope * x -----------------------------
 // x is the chosen axis (log2(w), or w for the impostor axis); y is nsPerOp.
@@ -216,25 +224,26 @@ export class NaiveFlatBitset {
 
 // --- witnessVerdict (pure) --------------------------------------------------------
 
-function vObj(v, name) {
+// pv = the message prefix (PV for witnessVerdict, PT for tierVerdict)
+function vObj(v, name, pv = PV) {
     if (v === null || typeof v !== 'object' || Array.isArray(v)) {
-        throw new TypeError(PV + ': ' + name + ' must be an object');
+        throw new TypeError(pv + ': ' + name + ' must be an object');
     }
 }
 
-function vInt(v, name, lo, hi) {
-    if (typeof v !== 'number') throw new TypeError(PV + ': ' + name + ' must be a number');
+function vInt(v, name, lo, hi, pv = PV) {
+    if (typeof v !== 'number') throw new TypeError(pv + ': ' + name + ' must be a number');
     if (!Number.isInteger(v) || v < lo || v > hi) {
-        throw new RangeError(PV + ': ' + name + ' must be an integer in [' + lo + ', ' + hi + ']');
+        throw new RangeError(pv + ': ' + name + ' must be an integer in [' + lo + ', ' + hi + ']');
     }
     return v;
 }
 
-function vTally(t, name, K) {
-    vObj(t, name);
-    const wins = vInt(t.wins, name + '.wins', 0, K);
-    const losses = vInt(t.losses, name + '.losses', 0, K);
-    if (wins + losses > K) throw new RangeError(PV + ': ' + name + ' wins + losses > K');
+function vTally(t, name, K, pv = PV) {
+    vObj(t, name, pv);
+    const wins = vInt(t.wins, name + '.wins', 0, K, pv);
+    const losses = vInt(t.losses, name + '.losses', 0, K, pv);
+    if (wins + losses > K) throw new RangeError(pv + ': ' + name + ' wins + losses > K');
     return { wins, losses };
 }
 
@@ -377,6 +386,146 @@ export function hostDrift(series) {
     return { drift: false, index: -1 };
 }
 
+// --- the A12 tier lane: pure parts (BSTAT-SPEC.md) -------------------------------------
+
+/** The four A12 scenarios, in verdict order (maintainer ruling: dense + sparse). */
+export const TIER_SCENARIOS = Object.freeze(['dense-succ', 'sparse-succ', 'dense-pred', 'sparse-pred']);
+
+/** The B1a commit the A side (foil) is built from, and its LogLogN.js git blob id. */
+export const TIER_B1A_REV = '00ba7e1';
+export const TIER_B1A_BLOB = 'ca75e5e579e650e20322b856988acae1b6295f4b';
+
+/** sha256 of tierASource(B1a LogLogN.js): B1a + the three ` | 0` reads, nothing else. */
+export const TIER_A_SHA256 = '34687989cba6d99a3975bbfe951a2e4347d04fd85fde5e590165784d0bee4a53';
+
+// the three edits: [method signature line, target line], each target exactly once
+// inside its own method body (the line ending `;` becomes ` | 0;`)
+const TIER_EDITS = Object.freeze([
+    Object.freeze(['    predecessor(x) {', '            v = b[o[L] + i];']),   // predecessor descend
+    Object.freeze(['    max() {', '        let v = b[o[L]];']),                 // max top
+    Object.freeze(['    max() {', '            v = b[o[L] + i];']),            // max descend
+]);
+
+/**
+ * The A side's source: B1a LogLogN.js with EXACTLY the three ` | 0` reads of the
+ * live file (predecessor descend, max top, max descend), each located inside its
+ * own method body (from the 4-space signature line to the first 4-space `}`).
+ * Pure. Throws '[lite-loglogn] tierASource' unless every method occurs once and
+ * every target occurs exactly once in its method slice.
+ * @param {string} b1aSrc @returns {string}
+ */
+export function tierASource(b1aSrc) {
+    if (typeof b1aSrc !== 'string') throw new TypeError(PA + ': source must be a string');
+    const lines = b1aSrc.split('\n');
+    const at = [];
+    for (let e = 0; e < TIER_EDITS.length; e++) {
+        const sig = TIER_EDITS[e][0];
+        const target = TIER_EDITS[e][1];
+        let start = -1;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i] !== sig) continue;
+            if (start !== -1) throw new RangeError(PA + ': method ' + JSON.stringify(sig.trim()) + ' occurs more than once');
+            start = i;
+        }
+        if (start === -1) throw new RangeError(PA + ': method ' + JSON.stringify(sig.trim()) + ' not found');
+        let end = -1;
+        for (let i = start + 1; i < lines.length; i++) {
+            if (lines[i] === '    }') { end = i; break; }
+        }
+        if (end === -1) throw new RangeError(PA + ': method ' + JSON.stringify(sig.trim()) + ' has no closing line');
+        let hit = -1;
+        let count = 0;
+        for (let i = start + 1; i < end; i++) {
+            if (lines[i] === target) { hit = i; count++; }
+        }
+        if (count !== 1) {
+            throw new RangeError(PA + ': target ' + JSON.stringify(target.trim()) + ' occurs ' + count +
+                ' times in ' + sig.trim() + ' (need exactly 1)');
+        }
+        at.push(hit);
+    }
+    for (let e = 0; e < at.length; e++) {
+        const t = TIER_EDITS[e][1];
+        lines[at[e]] = t.slice(0, t.length - 1) + ' | 0;';
+    }
+    return lines.join('\n');
+}
+
+/**
+ * The pure A12 decision. Validation as witnessVerdict (prefix '[lite-loglogn]
+ * tierVerdict'); scenarios must be exactly TIER_SCENARIOS, in order.
+ * Precedence (first match sets exit; reasons list ALL): 2 PENDING load / drift /
+ * aa (dense-succ) / aaSparse (sparse-succ); 1 FAIL control did not lose; 0 KEEP dense-succ 'win' and no 'lose'; 0 DROP.
+ * @returns {{ exit: 0|1|2, decision: string, verdicts: string[], reasons: string[] }}
+ */
+export function tierVerdict(input) {
+    vObj(input, 'input', PT);
+    const K = vInt(input.K, 'K', 1, Number.MAX_SAFE_INTEGER, PT);
+    const need = vInt(input.need, 'need', 1, Number.MAX_SAFE_INTEGER, PT);
+    if (!(need * 2 > K) || need > K) throw new RangeError(PT + ': need must satisfy K/2 < need <= K');
+    const sc = input.scenarios;
+    if (!Array.isArray(sc)) throw new TypeError(PT + ': scenarios must be an array');
+    if (sc.length !== TIER_SCENARIOS.length) {
+        throw new RangeError(PT + ': scenarios must have exactly ' + TIER_SCENARIOS.length + ' entries, got ' + sc.length);
+    }
+    const pts = [];
+    for (let i = 0; i < sc.length; i++) {
+        const p = sc[i];
+        vObj(p, 'scenarios[' + i + ']', PT);
+        const name = p.name;
+        if (typeof name !== 'string') throw new TypeError(PT + ': scenarios[' + i + '].name must be a string');
+        if (name !== TIER_SCENARIOS[i]) {
+            throw new RangeError(PT + ': scenarios[' + i + '].name ' + JSON.stringify(name) +
+                (TIER_SCENARIOS.includes(name) ? ' is out of order' : ' is unknown') +
+                ' (want ' + JSON.stringify(TIER_SCENARIOS[i]) + ')');
+        }
+        const t = vTally(p, 'scenarios[' + i + ']', K, PT);
+        pts.push({ name, wins: t.wins, losses: t.losses });
+    }
+    const aa = vTally(input.aa, 'aa', K, PT);
+    const aaSparse = vTally(input.aaSparse, 'aaSparse', K, PT);
+    const control = vTally(input.control, 'control', K, PT);
+    const drift = input.drift;
+    if (typeof drift !== 'boolean') throw new TypeError(PT + ': drift must be a boolean');
+    const load1 = input.load1;
+    if (typeof load1 !== 'number') throw new TypeError(PT + ': load1 must be a number');
+    if (!Number.isFinite(load1) || load1 < 0) throw new RangeError(PT + ': load1 must be finite and >= 0');
+    const cores = vInt(input.cores, 'cores', 1, Number.MAX_SAFE_INTEGER, PT);
+
+    const verdicts = pts.map((p) => pointVerdict(p, need));
+    const reasons = [];
+    let exit = -1;
+    const hit = (code, why) => { reasons.push(why); if (exit === -1) exit = code; };
+    if (load1 > 0.5 * cores) {
+        hit(2, 'load: load1 ' + load1 + ' > 0.5 x ' + cores + ' cores (host busy; inconclusive)');
+    }
+    if (drift) hit(2, 'drift: host drift detected in the probe series (inconclusive)');
+    if (aa.wins >= need || aa.losses >= need) {
+        hit(2, 'aa: the ' + TIER_SCENARIOS[0] + ' A/A control (B vs its twin) declared a winner (wins ' + aa.wins +
+            ', losses ' + aa.losses + ' of K ' + K + ', need ' + need + '; inconclusive)');
+    }
+    if (aaSparse.wins >= need || aaSparse.losses >= need) {
+        hit(2, 'aa: the ' + TIER_SCENARIOS[1] + ' A/A control (B vs its twin) declared a winner (wins ' +
+            aaSparse.wins + ', losses ' + aaSparse.losses + ' of K ' + K + ', need ' + need + '; inconclusive)');
+    }
+    if (control.losses < need) {
+        hit(1, 'control: the double-work candidate did not lose (losses ' + control.losses +
+            ' < need ' + need + ' of K ' + K + ') -- the gate has no teeth');
+    }
+    const lost = [];
+    for (let i = 0; i < verdicts.length; i++) if (verdicts[i] === 'lose') lost.push(pts[i].name);
+    const keep = verdicts[0] === 'win' && lost.length === 0;
+    if (!keep) {
+        reasons.push('keep: ' + (verdicts[0] !== 'win'
+            ? TIER_SCENARIOS[0] + ' is ' + verdicts[0] + ', not a win (wins ' + pts[0].wins + ' < need ' + need + ')'
+            : '') + (verdicts[0] !== 'win' && lost.length > 0 ? '; ' : '') +
+            (lost.length > 0 ? 'lost: ' + lost.join(', ') : '') + ' -> DROP');
+    }
+    if (exit === -1) exit = 0;
+    const decision = exit === 2 ? 'PENDING' : exit === 1 ? 'FAIL' : keep ? 'KEEP' : 'DROP';
+    return { exit, decision, verdicts, reasons };
+}
+
 // --- calibration vectors (the ADDENDUM 31 must-fail control) -------------------------
 
 function driftVector(step) {
@@ -401,6 +550,14 @@ const R_SKIP = 5;
 const R_BITSET = 6;
 const R_EF = 7;
 const R_WRONG = 8;   // non-strict (>= x) foil: the pre-pass must-fail control only
+// the --tier lane (A12): r.obj = a StratifiedBitset of one build, r.n = walks per block
+const R_TS_B = 9;    // B (candidate, live text) successor walk
+const R_TS_A = 10;   // A (foil, B1a + 3 reads) successor walk
+const R_TS_T = 11;   // B's A/A twin successor walk
+const R_TP_B = 12;   // B predecessor walk
+const R_TP_A = 13;   // A predecessor walk
+const R_TS_A2 = 14;  // control: the A successor walk block done TWICE, counted as one block
+const R_TP_T = 15;   // B's A/A twin predecessor walk
 
 // One block function per structure, so every successor call site stays
 // monomorphic. Each returns an int32 fold of its answers (the sink), so nothing
@@ -461,6 +618,59 @@ function blkEF(s, qs, len) {
     return acc;
 }
 
+// --tier walk blocks: one function per build (A, B, twin are distinct classes), so
+// every min / max / successor / predecessor call site stays monomorphic. A walk is
+// min() then successor() until undefined (or max() then predecessor()); every
+// returned key is folded into an int32 sum (the sink); keys < 2^20 stay Smi.
+function walkSuccB(s, walks) {
+    let acc = 0;
+    for (let w = 0; w < walks; w++) {
+        let r = s.min();
+        while (r !== undefined) { acc = (acc + r) | 0; r = s.successor(r); }
+    }
+    return acc;
+}
+function walkSuccA(s, walks) {
+    let acc = 0;
+    for (let w = 0; w < walks; w++) {
+        let r = s.min();
+        while (r !== undefined) { acc = (acc + r) | 0; r = s.successor(r); }
+    }
+    return acc;
+}
+function walkSuccT(s, walks) {
+    let acc = 0;
+    for (let w = 0; w < walks; w++) {
+        let r = s.min();
+        while (r !== undefined) { acc = (acc + r) | 0; r = s.successor(r); }
+    }
+    return acc;
+}
+function walkPredB(s, walks) {
+    let acc = 0;
+    for (let w = 0; w < walks; w++) {
+        let r = s.max();
+        while (r !== undefined) { acc = (acc + r) | 0; r = s.predecessor(r); }
+    }
+    return acc;
+}
+function walkPredA(s, walks) {
+    let acc = 0;
+    for (let w = 0; w < walks; w++) {
+        let r = s.max();
+        while (r !== undefined) { acc = (acc + r) | 0; r = s.predecessor(r); }
+    }
+    return acc;
+}
+function walkPredT(s, walks) {
+    let acc = 0;
+    for (let w = 0; w < walks; w++) {
+        let r = s.max();
+        while (r !== undefined) { acc = (acc + r) | 0; r = s.predecessor(r); }
+    }
+    return acc;
+}
+
 function runBlock(r, qs, len) {
     switch (r.kind) {
         case R_MEMBER: return blkMember(r.obj, qs, len);
@@ -471,6 +681,13 @@ function runBlock(r, qs, len) {
         case R_SKIP: return blkSkip(r.obj, qs, len);
         case R_BITSET: return blkBitSet(r.obj, qs, len);
         case R_EF: return blkEF(r.obj, qs, len);
+        case R_TS_B: return walkSuccB(r.obj, r.n);
+        case R_TS_A: return walkSuccA(r.obj, r.n);
+        case R_TS_T: return walkSuccT(r.obj, r.n);
+        case R_TP_B: return walkPredB(r.obj, r.n);
+        case R_TP_A: return walkPredA(r.obj, r.n);
+        case R_TS_A2: return (walkSuccA(r.obj, r.n) + walkSuccA(r.obj, r.n)) | 0;
+        case R_TP_T: return walkPredT(r.obj, r.n);
         default: throw new Error(PFX + 'witness: runner ' + r.name + ' is not timed');
     }
 }
@@ -599,8 +816,10 @@ function fmt(v) {
 
 class WitnessFail extends Error {}
 
-function main(argv, env) {
-    const KNOWN = ['--smoke', '--w32'];
+// tier = undefined (the B2b lanes) or the prepared --tier builds from tierPrepare()
+function main(argv, env, tier) {
+    const TIER = tier !== undefined;
+    const KNOWN = TIER ? ['--tier', '--smoke'] : ['--smoke', '--w32'];
     for (const a of argv) {
         if (!KNOWN.includes(a)) {
             process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) +
@@ -612,7 +831,7 @@ function main(argv, env) {
     const widthsAll = witnessWidths(argv, env);
     const K = SMOKE ? 3 : WITNESS_K;
     const NEED = SMOKE ? 2 : WITNESS_NEED;
-    const Q = SMOKE ? 1 << 10 : 1 << 16;
+    const Q = SMOKE && !TIER ? 1 << 10 : 1 << 16;   // --tier: a block is always 2^16 walk ops
     const NS = SMOKE ? [1e3, 1e4] : WITNESS_NS.slice();
     const WS = SMOKE ? [widthsAll[0], widthsAll[widthsAll.length - 1]] : widthsAll;
     const W_N = 28;
@@ -629,17 +848,28 @@ function main(argv, env) {
     const cores = os.availableParallelism();
     const loadStart = os.loadavg();
     const cpus = os.cpus();
-    say('lite-loglogn STATISTICAL witness -- mode ' + (SMOKE ? 'SMOKE' : 'FULL'));
+    say('lite-loglogn STATISTICAL witness -- mode ' + (TIER ? 'TIER ' : '') + (SMOKE ? 'SMOKE' : 'FULL'));
     say('provenance: date ' + new Date().toISOString() + ' host ' + os.hostname());
     say('provenance: cpu ' + (cpus.length > 0 ? cpus[0].model : 'unknown') +
         ' availableParallelism ' + cores);
     say('provenance: loadavg start ' + loadStart.map((x) => x.toFixed(2)).join(' '));
     say('provenance: node ' + process.version + ' v8 ' + process.versions.v8 + ' ' +
         process.platform + '/' + process.arch);
-    say('provenance: K ' + K + ' need ' + NEED + ' queries/block ' + Q +
-        ' n-sweep ' + NS.length + ' points [' + NS.join(', ') + '] at w ' + W_N +
-        ' | U-sweep ' + WS.length + ' widths [' + WS.join(', ') + '] at n ' + N_U +
-        ' | control n ' + N_CTRL + ' w ' + W_N + ' | A/A n ' + N_AA + ' w ' + W_AA);
+    if (TIER) {
+        say('provenance: K ' + K + ' need ' + NEED + ' walk ops/block ' + Q + ' scenarios [' +
+            TIER_SCENARIOS.join(', ') + '] (dense U 2^16 n ' + TIER_N_DENSE + ', sparse U 2^20 n ' +
+            TIER_N_SPARSE + ') | A/A B vs twin on ' + TIER_SCENARIOS[0] + ' and ' + TIER_SCENARIOS[1] + ' | control A x2 vs A on ' +
+            TIER_SCENARIOS[0] + ' | drift probe member n ' + N_AA + ' w ' + W_AA + ' queries/block ' + Q);
+        say('provenance: B (candidate) live LogLogN.js ' + tier.bBytes + ' B sha256 ' + tier.bSha);
+        say('provenance: A (foil) B1a rev ' + TIER_B1A_REV + ' blob ' + tier.aBlob + ' + 3 x " | 0" reads, ' +
+            tier.aBytes + ' B sha256 ' + tier.aSha + ' (TIER_A_SHA256 match)');
+        say('provenance: builds loaded as data: URLs (A, B, B twin + "// aa-twin")');
+    } else {
+        say('provenance: K ' + K + ' need ' + NEED + ' queries/block ' + Q +
+            ' n-sweep ' + NS.length + ' points [' + NS.join(', ') + '] at w ' + W_N +
+            ' | U-sweep ' + WS.length + ' widths [' + WS.join(', ') + '] at n ' + N_U +
+            ' | control n ' + N_CTRL + ' w ' + W_N + ' | A/A n ' + N_AA + ' w ' + W_AA);
+    }
     say('provenance: flags [' + argv.join(' ') + '] LOGLOGN_W32=' +
         (env !== null && typeof env === 'object' && env.LOGLOGN_W32 !== undefined ? env.LOGLOGN_W32 : '(unset)'));
 
@@ -674,9 +904,29 @@ function main(argv, env) {
         return 1;
     }
     say('CONTROL verdict self-check: base exit 0 crossover 1e4; control-not-failing exit 1 -- ok');
+    if (TIER) {
+        const tb = {
+            K: 15, need: 13, aa: { wins: 7, losses: 8 }, aaSparse: { wins: 7, losses: 8 },
+            control: { wins: 0, losses: 15 },
+            scenarios: TIER_SCENARIOS.map((name) => ({ name, wins: 15, losses: 0 })),
+            drift: false, load1: 1, cores: 12,
+        };
+        const t0 = tierVerdict(tb);
+        const t1 = tierVerdict({ ...tb, control: { wins: 15, losses: 0 } });
+        const t2 = tierVerdict({ ...tb, scenarios: tb.scenarios.map((p, i) => (i === 0 ? { ...p, wins: 12 } : p)) });
+        const t3 = tierVerdict({ ...tb, aaSparse: { wins: 13, losses: 2 } });
+        if (t0.exit !== 0 || t0.decision !== 'KEEP' || t1.exit !== 1 || t1.decision !== 'FAIL' ||
+            t2.exit !== 0 || t2.decision !== 'DROP' || t3.exit !== 2 || t3.decision !== 'PENDING') {
+            say('FAIL control tierVerdict: self-check read ' + t0.decision + ' / ' + t1.decision + ' / ' +
+                t2.decision + ' / ' + t3.decision);
+            return 1;
+        }
+        say('CONTROL tierVerdict self-check: base KEEP exit 0; control-not-losing FAIL exit 1; dense-succ 12/15 DROP;' +
+            ' sparse A/A winner PENDING exit 2 -- ok');
+    }
 
     // per-run state, allocated ONCE before any round
-    const totalPoints = NS.length + WS.length + 2;
+    const totalPoints = TIER ? TIER_SCENARIOS.length + 3 : NS.length + WS.length + 2;   // tier: + 2 A/A + control
     const series = new Float64Array(K * totalPoints);
     const ST = { pos: 0 };
     const TM = new Float64Array(4);
@@ -699,15 +949,17 @@ function main(argv, env) {
     const probe = memA;
     for (let i = 0; i < 16; i++) SINK[0] ^= runBlock(probe, qAA, Q);   // tier the probe up before round 1
 
-    // 2b. pre-pass must-fail control: a non-strict foil MUST disagree
-    const wrong = runner(R_WRONG, 'wrong(>=x)', keysAA, N_AA);
-    const wrongHit = prepassFirst(memA, wrong, [qAA, xAA]);
-    if (wrongHit === null) {
-        say('FAIL control pre-pass: the non-strict foil was not flagged -- the pre-pass has no teeth');
-        return 1;
+    // 2b. pre-pass must-fail control: a non-strict foil MUST disagree (B2b lanes only)
+    if (!TIER) {
+        const wrong = runner(R_WRONG, 'wrong(>=x)', keysAA, N_AA);
+        const wrongHit = prepassFirst(memA, wrong, [qAA, xAA]);
+        if (wrongHit === null) {
+            say('FAIL control pre-pass: the non-strict foil was not flagged -- the pre-pass has no teeth');
+            return 1;
+        }
+        say('CONTROL pre-pass: non-strict foil flagged at x=' + wrongHit.x + ' (got ' + wrongHit.got +
+            ', want ' + wrongHit.want + ') -- ok');
     }
-    say('CONTROL pre-pass: non-strict foil flagged at x=' + wrongHit.x + ' (got ' + wrongHit.got +
-        ', want ' + wrongHit.want + ') -- ok');
 
     const prepass = (cfg, member, foils, streams) => {
         for (const f of foils) {
@@ -793,6 +1045,10 @@ function main(argv, env) {
         if (!(t.wins + t.losses <= K)) fails.push(name + ': wins + losses > K');
         return t.wins + ' / ' + t.losses + ' / ' + (K - t.wins - t.losses);
     };
+
+    if (TIER) {
+        return tierLane(tier, { K, NEED, SMOKE, Q, say, fails, abba, tally, series, ST, SINK, loadStart, cores, t0wall });
+    }
 
     // 3. GATED n-sweep (+ REPORTED foils + LATENCY at each point)
     const nSweep = [];
@@ -912,6 +1168,241 @@ function main(argv, env) {
     return v.exit;
 }
 
+// --- the A12 --tier lane (BSTAT-SPEC.md; main only) ---------------------------------------
+
+const TIER_N_DENSE = 32768;    // dense scenarios: U 2^16
+const TIER_N_SPARSE = 4096;    // sparse scenarios: U 2^20
+const TIER_OPS = 1 << 16;      // walk ops (returned keys) per timed block
+const TIER_WARM = 16;          // untimed tier-up blocks per runner before round 1
+
+function sha256Hex(bytes) {
+    return createHash('sha256').update(bytes).digest('hex');
+}
+
+function dataUrl(src) {
+    return 'data:text/javascript;base64,' + Buffer.from(src, 'utf8').toString('base64');
+}
+
+// The two builds (+ B's A/A twin), all loaded the same way: a data: URL import of
+// the source text. Fails closed (WitnessFail) on a wrong B1a blob or A sha256.
+async function tierPrepare() {
+    const root = fileURLToPath(new URL('..', import.meta.url));
+    const raw = execFileSync('git', ['show', TIER_B1A_REV + ':LogLogN.js'],
+        { cwd: root, maxBuffer: 1 << 26, stdio: ['ignore', 'pipe', 'pipe'] });
+    const aBlob = createHash('sha1').update('blob ' + raw.length + '\0').update(raw).digest('hex');
+    if (aBlob !== TIER_B1A_BLOB) {
+        throw new WitnessFail('tier: git show ' + TIER_B1A_REV + ':LogLogN.js blob ' + aBlob + ' != ' + TIER_B1A_BLOB);
+    }
+    const aSrc = tierASource(raw.toString('utf8'));
+    const aBuf = Buffer.from(aSrc, 'utf8');
+    const aSha = sha256Hex(aBuf);
+    if (aSha !== TIER_A_SHA256) {
+        throw new WitnessFail('tier: A side sha256 ' + aSha + ' != TIER_A_SHA256 ' + TIER_A_SHA256);
+    }
+    const bBuf = readFileSync(fileURLToPath(new URL('../LogLogN.js', import.meta.url)));
+    const bSrc = bBuf.toString('utf8');
+    const mA = await import(dataUrl(aSrc));
+    const mB = await import(dataUrl(bSrc));
+    const mT = await import(dataUrl(bSrc + '\n// aa-twin\n'));
+    const A = mA.StratifiedBitset, B = mB.StratifiedBitset, T = mT.StratifiedBitset;
+    if (typeof A !== 'function' || typeof B !== 'function' || typeof T !== 'function' ||
+        A === B || B === T || A === T) {
+        throw new WitnessFail('tier: the A / B / twin builds must export three distinct StratifiedBitset classes');
+    }
+    return { A, B, T, aBlob, aSha, aBytes: aBuf.length, bSha: sha256Hex(bBuf), bBytes: bBuf.length };
+}
+
+function buildWith(Cls, keys, U) {
+    const s = new Cls(U);
+    for (let i = 0; i < keys.length; i++) s.add(keys[i]);
+    return s;
+}
+
+// pre-pass (cold, generic): one walk -> { ops, hash } (FNV-1a of the key sequence);
+// a walk longer than cap fails closed (a non-advancing successor never ends)
+function tierWalk(s, pred, cap) {
+    let h = FNV_OFFSET;
+    let ops = 0;
+    let r = pred ? s.max() : s.min();
+    while (r !== undefined) {
+        if (ops >= cap) return { ops: -1, hash: h };
+        h = fnvWord(h, r);
+        ops++;
+        r = pred ? s.predecessor(r) : s.successor(r);
+    }
+    return { ops, hash: h };
+}
+
+function tierSame(x, y) { return x.ops === y.ops && x.hash === y.hash; }
+
+// the true walk: the sorted key set itself, ascending (succ) or descending (pred)
+function keysWalk(keys, pred) {
+    let h = FNV_OFFSET;
+    const n = keys.length;
+    for (let i = 0; i < n; i++) h = fnvWord(h, keys[pred ? n - 1 - i : i]);
+    return { ops: n, hash: h };
+}
+
+function tierLane(tier, h) {
+    const { K, NEED, SMOKE, Q, say, fails, abba, tally, series, ST, SINK, loadStart, cores, t0wall } = h;
+    if (Q !== TIER_OPS) throw new WitnessFail('tier: block size ' + Q + ' != ' + TIER_OPS);
+    const cfg = [
+        { name: TIER_SCENARIOS[0], U: 1 << 16, n: TIER_N_DENSE, pred: false },
+        { name: TIER_SCENARIOS[1], U: 1 << 20, n: TIER_N_SPARSE, pred: false },
+        { name: TIER_SCENARIOS[2], U: 1 << 16, n: TIER_N_DENSE, pred: true },
+        { name: TIER_SCENARIOS[3], U: 1 << 20, n: TIER_N_SPARSE, pred: true },
+    ];
+
+    // pre-pass must-fail control: the checker MUST flag a build missing one key and the
+    // reversed key walk, else it has no teeth (BSTAT ADDENDUM S1)
+    const k0 = genKeys(cfg[0].n, cfg[0].U, 0x7E1E0000);
+    const wTrue = keysWalk(k0, false);
+    const wShort = tierWalk(buildWith(tier.A, k0.subarray(1), cfg[0].U), false, cfg[0].U);
+    if (tierSame(wShort, wTrue) || tierSame(keysWalk(k0, true), wTrue)) {
+        say('FAIL control pre-pass: a build missing one key or the reversed walk was not flagged -- the pre-pass has no teeth');
+        return 1;
+    }
+    say('CONTROL pre-pass: a build missing one key and the reversed walk are both flagged -- ok');
+
+    // build + correctness pre-pass, every scenario before any timing
+    const runs = [];
+    for (let j = 0; j < cfg.length; j++) {
+        const c = cfg[j];
+        const walks = Math.ceil(TIER_OPS / c.n);
+        if (walks * c.n !== TIER_OPS) throw new WitnessFail('tier ' + c.name + ': ' + walks + ' walks x ' + c.n + ' != ' + TIER_OPS);
+        const keys = genKeys(c.n, c.U, 0x7E1E0000 + j);   // ONE key set, same order into every build
+        const a = buildWith(tier.A, keys, c.U);
+        const b = buildWith(tier.B, keys, c.U);
+        const t = buildWith(tier.T, keys, c.U);           // B's history-matched A/A twin (S2)
+        const wa = tierWalk(a, c.pred, c.U);
+        const wb = tierWalk(b, c.pred, c.U);
+        const wt = tierWalk(t, c.pred, c.U);
+        const wk = keysWalk(keys, c.pred);
+        if (!tierSame(wa, wb)) {
+            throw new WitnessFail('pre-pass ' + c.name + ': A walk (ops ' + wa.ops + ' fnv1a ' + hex32(wa.hash) +
+                ') != B walk (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) + ')');
+        }
+        if (!tierSame(wb, wk)) {
+            throw new WitnessFail('pre-pass ' + c.name + ': A and B walks (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) +
+                ') != the key set (ops ' + wk.ops + ' fnv1a ' + hex32(wk.hash) + ')');
+        }
+        if (!tierSame(wt, wb)) {
+            throw new WitnessFail('pre-pass ' + c.name + ': twin walk (ops ' + wt.ops + ' fnv1a ' + hex32(wt.hash) +
+                ') != B walk (ops ' + wb.ops + ' fnv1a ' + hex32(wb.hash) + ')');
+        }
+        say('PRE-PASS ' + c.name + ': A, B and twin walks agree with each other and the key set (ops ' + wb.ops +
+            ' fnv1a ' + hex32(wb.hash) + ') -- ok');
+        runs.push({
+            c, walks,
+            b: runner(c.pred ? R_TP_B : R_TS_B, 'B ' + c.name, b, walks),
+            a: runner(c.pred ? R_TP_A : R_TS_A, 'A ' + c.name, a, walks),
+            t: runner(c.pred ? R_TP_T : R_TS_T, 'T ' + c.name, t, walks),
+        });
+    }
+    const d0 = runs[0];
+    const s1 = runs[1];
+
+    // tier-up (untimed, interleaved): every walk function is a separate function per
+    // build, so each starts cold; without this the first timed rounds compare a
+    // tiered-up B against a cold A / twin (the B2b probe tier-up, for every runner).
+    // Every twin shares its B's history: same scenarios, same tier-up blocks (S2).
+    for (let i = 0; i < TIER_WARM; i++) {
+        for (let j = 0; j < runs.length; j++) {
+            SINK[0] ^= runBlock(runs[j].b, null, TIER_OPS);
+            SINK[0] ^= runBlock(runs[j].a, null, TIER_OPS);
+            SINK[0] ^= runBlock(runs[j].t, null, TIER_OPS);
+        }
+    }
+    say('TIER tier-up: ' + TIER_WARM + ' untimed interleaved blocks of every B / A / twin runner -- done');
+
+    // A/A (S2 / S3): B vs its twin on dense-succ, then on sparse-succ, before the scenarios
+    const ta = abba(d0.b, null, d0.t, null);
+    const aa = { wins: ta.wins, losses: ta.losses };
+    say('GATED A/A: B ' + fmt(ta.candMed) + ' vs B twin ' + fmt(ta.foilMed) + ' on ' + d0.c.name + ' | ' +
+        tally('aa', ta) + ' (must not declare a winner)');
+    const ts = abba(s1.b, null, s1.t, null);
+    const aaSparse = { wins: ts.wins, losses: ts.losses };
+    say('GATED A/A: B ' + fmt(ts.candMed) + ' vs B twin ' + fmt(ts.foilMed) + ' on ' + s1.c.name + ' | ' +
+        tally('aaSparse', ts) + ' (must not declare a winner)');
+
+    // GATED: K ABBA rounds of B (candidate) vs A (foil), the B2b protocol (R3a re-warm)
+    const scenarios = [];
+    say('GATED tier: B (candidate, live LogLogN.js) vs A (foil, B1a + 3 reads), ' + TIER_OPS +
+        ' walk ops/block (ns/op medians; wins / losses / ties of K ' + K + ')');
+    for (let j = 0; j < runs.length; j++) {
+        const R = runs[j];
+        const t = abba(R.b, null, R.a, null);
+        const tl = tally(R.c.name, t);
+        scenarios.push({ name: R.c.name, wins: t.wins, losses: t.losses });
+        say('  ' + R.c.name + ' (U 2^' + Math.log2(R.c.U) + ' n ' + R.c.n + ', ' + R.walks + ' walks/block) B ' +
+            fmt(t.candMed) + ' | A ' + fmt(t.foilMed) + ' | ' + tl + ' -> ' + pointVerdict(t, NEED));
+    }
+
+    // control: A doing exactly 2 full blocks per timed block vs A, on dense-succ
+    const tc = abba(runner(R_TS_A2, 'A x2 ' + d0.c.name, d0.a.obj, d0.walks), null, d0.a, null);
+    const control = { wins: tc.wins, losses: tc.losses };
+    say('GATED control: A x2 (candidate, double work) ' + fmt(tc.candMed) + ' vs A ' + fmt(tc.foilMed) +
+        ' on ' + d0.c.name + ' | ' + tally('control', tc) + ' (must lose)');
+
+    // drift + load
+    if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
+    const hd = hostDrift(series.subarray(0, ST.pos));
+    const loadEnd = os.loadavg();
+    const load1 = Math.max(loadStart[0], loadEnd[0]);
+    say('GATED host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
+        fmt(median(series, ST.pos)) + ' ns/op) | loadavg end ' + loadEnd.map((x) => x.toFixed(2)).join(' ') +
+        ' load1 ' + load1.toFixed(2) + ' vs 0.5 x ' + cores);
+
+    const v = tierVerdict({ K, need: NEED, scenarios, aa, aaSparse, control, drift: hd.drift, load1, cores });
+    for (const r of v.reasons) say('  reason ' + r);
+    say('GATED tier verdicts [' + TIER_SCENARIOS.map((nm, i) => nm + ' ' + v.verdicts[i]).join(', ') +
+        '] decision ' + v.decision);
+    if (v.decision === 'PENDING') {
+        say('  PENDING: the B1a body ships unless the maintainer waives A12 (ADDENDUM 27)');
+    }
+    say('sink ' + SINK[0] + ' | wall ' + ((performance.now() - t0wall) / 1000).toFixed(2) + ' s');
+
+    const shapeOk = (v.exit === 0 || v.exit === 1 || v.exit === 2) && Array.isArray(v.reasons) &&
+        v.reasons.every((r) => typeof r === 'string') && Array.isArray(v.verdicts) &&
+        v.verdicts.length === TIER_SCENARIOS.length &&
+        ['KEEP', 'DROP', 'FAIL', 'PENDING'].includes(v.decision);
+    if (!shapeOk) fails.push('tierVerdict returned a malformed result');
+
+    if (SMOKE) {
+        say('decision exit (printed, not used in smoke): ' + v.exit + ' ' + v.decision);
+        if (fails.length > 0) {
+            for (const f of fails) say('FAIL ' + f);
+            return 1;
+        }
+        say('TIER SMOKE ok (untimed: decision not gated)');
+        return 0;
+    }
+    if (fails.length > 0) {
+        for (const f of fails) say('FAIL ' + f);
+        return 1;
+    }
+    say('TIER exit ' + v.exit + ' ' + v.decision + ' -- reported to the maintainer, who rules keep / drop' +
+        ' (this harness never edits LogLogN.js)');
+    return v.exit;
+}
+
+// --tier entry: flag check, then the async build prep, then main()
+async function tierMain(argv, env) {
+    const KNOWN = ['--tier', '--smoke', '--w32'];
+    for (const a of argv) {
+        if (!KNOWN.includes(a)) {
+            process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) +
+                ' (known with --tier: --smoke)\n');
+            return 1;
+        }
+    }
+    if (argv.includes('--w32') || (env !== null && typeof env === 'object' && env.LOGLOGN_W32 === '1')) {
+        process.stdout.write(PFX + 'witness: --w32 / LOGLOGN_W32=1 is not applicable to --tier\n');
+        return 1;
+    }
+    return main(argv, env, await tierPrepare());
+}
+
 // realpath the entry: a symlinked path (macOS /tmp -> /private/tmp) must still run main()
 function isEntry() {
     if (typeof process.argv[1] !== 'string') return false;
@@ -923,14 +1414,24 @@ function isEntry() {
 }
 const IS_MAIN = isEntry();
 
+function failOut(e) {
+    process.stdout.write((e instanceof WitnessFail ? 'FAIL ' + e.message : PFX + 'witness: uncaught ' +
+        (e && e.stack ? e.stack : String(e))) + '\n');
+    return 1;
+}
+
 if (IS_MAIN) {
-    let code;
-    try {
-        code = main(process.argv.slice(2), process.env);
-    } catch (e) {
-        process.stdout.write((e instanceof WitnessFail ? 'FAIL ' + e.message : PFX + 'witness: uncaught ' +
-            (e && e.stack ? e.stack : String(e))) + '\n');
-        code = 1;
+    if (process.argv.slice(2).includes('--tier')) {
+        tierMain(process.argv.slice(2), process.env).then(
+            (c) => { process.exitCode = c; },
+            (e) => { process.exitCode = failOut(e); });
+    } else {
+        let code;
+        try {
+            code = main(process.argv.slice(2), process.env);
+        } catch (e) {
+            code = failOut(e);
+        }
+        process.exitCode = code;
     }
-    process.exitCode = code;
 }

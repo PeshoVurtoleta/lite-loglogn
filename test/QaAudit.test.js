@@ -23,7 +23,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as LogLogNModule from '../LogLogN.js';
-import { VERSION, StratifiedBitset } from '../LogLogN.js';
+import { VERSION, StratifiedBitset, XFastTrie } from '../LogLogN.js';
 import { startFn, expectFn } from './_worker-run.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,6 +120,10 @@ function scriptsPinErr(scripts) {
     if (pSemi.length !== 1 || pSemi[0] !== '--max-semi-space-size=4') {
         return 'test:perf semi-space flags ' + JSON.stringify(pSemi) + ', need exactly ["--max-semi-space-size=4"]';
     }
+    const conc = pt.filter((t) => /test-concurrency/.test(t));
+    if (conc.length !== 1 || conc[0] !== '--test-concurrency=1') {
+        return 'test:perf concurrency flags ' + JSON.stringify(conc) + ', need exactly ["--test-concurrency=1"]';
+    }
     const tgt = pt.slice(pt.indexOf('--test') + 1);
     if (tgt.length !== 1 || tgt[0] !== 'test/perf/*.test.mjs') return 'test:perf must run test/perf/*.test.mjs, got ' + JSON.stringify(tgt);
     const tor = Object.hasOwn(scripts, 'torture') ? scripts.torture : undefined;
@@ -151,6 +155,10 @@ test('control: the scripts pin check fails on every bad scripts object', () => {
         { 'test:perf': 'node --max-semi-space-size=4 --test x', torture: TOR },
         { 'test:perf': PERF + ' --min-semi-space-size=1', torture: TOR },
         { 'test:perf': PERF },
+        { 'test:perf': PERF.replace('--test-concurrency=1', '--test-concurrency=2'), torture: TOR },
+        { 'test:perf': PERF.replace('--test-concurrency=1 ', ''), torture: TOR },
+        { 'test:perf': PERF.replace('--test-concurrency=1', '--test-concurrency 1'), torture: TOR },
+        { 'test:perf': PERF + ' --test-concurrency=1', torture: TOR },
         { 'test:perf': PERF, torture: 'node test/torture.mjs' },
         { 'test:perf': PERF, torture: 'node --expose-gc --max-semi-space-size=4 test/torture.mjs' },
         Object.create({ 'test:perf': PERF, torture: TOR }),
@@ -266,4 +274,166 @@ test('A6 constructor rejects 0, -1, 1.5, 2^32+1, NaN, \'16\', 16n, null with a R
 
 test('A6 bit 0 and bit 31 of a word are correct for min, max, successor, predecessor', T, async () => {
     await expectFn(BIT_EDGES);
+});
+
+// --- XFastTrie coercion / boundary block (A6, G-B5) --------------------------
+// Expected outcomes are hand-written literals (spec: bad key -> has / delete
+// false, successor / predecessor undefined, add RangeError, no state change).
+// xftRowErr is the ONE checker; it runs on the real class and on hand-made
+// fakes that must each be flagged (must-fail controls).
+
+const XFT_BAD = (U) => [Symbol('k'), 1n, { valueOf() { return 1; } }, new Number(1), NaN, null,
+    undefined, '1', -1, 1.5, U, 2 ** 32,
+    { toString() { throw new Error('user'); }, valueOf() { throw new Error('user'); } }];
+
+// Returns { rows, errs }: rows = checks made, errs = failure strings.
+function xftRowErr(Cls, U, C) {
+    const errs = [];
+    let rows = 0;
+    const s = new Cls(U, C);
+    s.add(0);
+    s.add(U - 1);
+    const before = JSON.stringify(s.dump());
+    const bytes = s.byteLength;
+    const keys = XFT_BAD(U);
+    for (let j = 0; j < keys.length; j++) {
+        const k = keys[j];
+        const tag = 'U=' + U + ' bad[' + j + '] ';
+        rows++; if (s.has(k) !== false) errs.push(tag + 'has');
+        rows++; if (s.delete(k) !== false) errs.push(tag + 'delete');
+        rows++; if (s.successor(k) !== undefined) errs.push(tag + 'successor');
+        rows++; if (s.predecessor(k) !== undefined) errs.push(tag + 'predecessor');
+        rows++;
+        try { s.add(k); errs.push(tag + 'add did not throw'); } catch (e) {
+            if (!(e instanceof RangeError && LITE.test(e.message))) errs.push(tag + 'add threw wrong error');
+        }
+    }
+    if (JSON.stringify(s.dump()) !== before) errs.push('U=' + U + ' dump changed');
+    if (s.byteLength !== bytes) errs.push('U=' + U + ' byteLength changed');
+    return { rows, errs };
+}
+
+// ctor rows: [universe, capacity-or-MISSING]; returns failure strings.
+const MISSING = Symbol('missing');
+function xftCtorErr(Cls, rejects, accepts) {
+    const errs = [];
+    for (const [u, c] of rejects) {
+        try {
+            if (c === MISSING) new Cls(u); else new Cls(u, c);
+            errs.push('accepted bad ctor ' + String(typeof u === 'bigint' ? 'big' : typeof u === 'symbol' ? 'sym' : u) + ',' + (typeof c === 'bigint' ? 'big' : typeof c === 'symbol' ? 'sym' : String(c)));
+        } catch (e) {
+            if (!(e instanceof RangeError && LITE.test(e.message))) errs.push('wrong error for ' + String(u) + ',' + String(c));
+        }
+    }
+    for (const [u, c, wu, wc, wb] of accepts) {
+        const s = new Cls(u, c);
+        if (s.universe !== wu) errs.push('universe ' + u + ' -> ' + s.universe);
+        if (s.capacity !== wc) errs.push('capacity ' + c + ' -> ' + s.capacity);
+        if (s.bits !== wb) errs.push('bits ' + u + ' -> ' + s.bits);
+        if (s.size !== 0) errs.push('size not 0');
+    }
+    return errs;
+}
+
+// legal (U, C): U = 2 is the minimum; 33 and 1025 are non-pow2; 2^32 is w = 32.
+const XFT_ROWS = [[2, 2], [33, 8], [1025, 16], [2 ** 32, 4]];
+
+test('A6 XFastTrie bad keys: has / delete false, succ / pred undefined, add throws; no state change', T, () => {
+    let rows = 0;
+    for (const [U, C] of XFT_ROWS) {
+        const r = xftRowErr(XFastTrie, U, C);
+        assert.deepEqual(r.errs, [], 'U=' + U);
+        rows += r.rows;
+    }
+    // 4 universes x 13 tokens x 5 methods = 260 (hand count)
+    assert.equal(rows, 260);
+});
+
+test('A6 XFastTrie: a bad key leaves the instance live and valid keys still work', T, () => {
+    const s = new XFastTrie(33, 8);
+    s.add(0); s.add(32);
+    for (const k of XFT_BAD(33)) { try { s.add(k); } catch (e) { /* expected */ } }
+    assert.equal(s.size, 2);
+    assert.equal(s.successor(0), 32);
+    assert.equal(s.predecessor(32), 0);
+    assert.equal(s.min(), 0);
+    assert.equal(s.max(), 32);
+});
+
+test('A6 XFastTrie -0 aliases 0 (add(-0) -> has(0), size 1; add(0) no-op; delete(-0) true)', T, () => {
+    const s = new XFastTrie(8, 4);
+    assert.equal(s.has(-0), false);
+    s.add(-0);
+    assert.equal(s.size, 1);
+    assert.equal(s.has(0), true);
+    assert.equal(s.has(-0), true);
+    s.add(0);
+    assert.equal(s.size, 1);
+    assert.equal(s.delete(-0), true);
+    assert.equal(s.has(0), false);
+    assert.equal(s.size, 0);
+});
+
+const XFT_REJECT = [
+    [2 ** 32, 0], [2 ** 32, 2 ** 24 + 1], [33, 34], [2, 3], [33, 1.5], [33, NaN], [33, '16'], [33, 16n],
+    [33, null], [33, undefined], [33, MISSING], [33, -1], [33, Infinity],
+    [1, 1], [0, 1], [-1, 1], [2 ** 32 + 1, 1], [33.5, 4], [NaN, 4], ['16', 4], [16n, 4], [null, 4], [undefined, 4],
+];
+const XFT_ACCEPT = [
+    // [U, C, universe, capacity, bits]
+    [2, 1, 2, 1, 1], [2, 2, 2, 2, 1], [33, 33, 33, 33, 6], [1025, 1, 1025, 1, 11],
+    [2 ** 32, 16, 2 ** 32, 16, 32], [2 ** 32, 2 ** 24, 2 ** 32, 2 ** 24, 32],
+];
+
+test('A6 XFastTrie constructor rejects bad (U, C) with a RangeError and accepts legal ones', T, () => {
+    assert.equal(XFT_REJECT.length, 23);
+    assert.equal(XFT_ACCEPT.length, 6);
+    assert.deepEqual(xftCtorErr(XFastTrie, XFT_REJECT, XFT_ACCEPT), []);
+});
+
+// --- must-fail controls: the SAME checkers must flag each wrong answer -------
+
+const isNaNKey = (k) => typeof k === 'number' && k !== k;
+class FakeHas extends XFastTrie { has(k) { return typeof k === 'symbol' ? true : super.has(k); } }
+class FakeAddNoThrow extends XFastTrie { add(k) { return isNaNKey(k) ? this : super.add(k); } }
+class FakeDelete extends XFastTrie { delete(k) { return k === null ? true : super.delete(k); } }
+class FakeSucc extends XFastTrie { successor(k) { return k === '1' ? 0 : super.successor(k); } }
+class FakePred extends XFastTrie { predecessor(k) { return k === -1 ? 0 : super.predecessor(k); } }
+class FakeUserErr extends XFastTrie {
+    add(k) { if (typeof k === 'object' && k !== null && k.toString !== Object.prototype.toString) throw new Error('user'); return super.add(k); }
+}
+class FakeMutates extends XFastTrie {
+    delete(k) { if (isNaNKey(k)) { super.delete(0); return false; } return super.delete(k); }
+}
+class FakeCtorLax { constructor() { this.universe = 0; this.capacity = 0; this.bits = 0; this.size = 0; } }
+class FakeWrongBits extends XFastTrie { get bits() { return 0; } }
+class FakeNoPrefix extends XFastTrie { add(k) { if (k === '1') throw new RangeError('bad key'); return super.add(k); } }
+class FakeGrows extends XFastTrie { add(k) { if (k === '1') this._grew = 8; return super.add(k); } get byteLength() { return super.byteLength + (this._grew === 8 ? 8 : 0); } }
+class FakeWrongCap extends XFastTrie { get capacity() { return 0; } }
+class FakeNonEmpty extends XFastTrie { get size() { return 1; } }
+class FakeCtorNoPrefix { constructor() { throw new RangeError('bad ctor'); } }
+
+test('control: xftRowErr flags every wrong answer kind (has / add / delete / succ / pred / user error / state change)', T, () => {
+    const fakes = [FakeHas, FakeAddNoThrow, FakeDelete, FakeSucc, FakePred, FakeUserErr, FakeMutates, FakeNoPrefix, FakeGrows];
+    assert.equal(fakes.length, 9);
+    for (const F of fakes) {
+        const r = xftRowErr(F, 33, 8);
+        assert.ok(r.errs.length > 0, F.name + ' was not flagged');
+    }
+    // FakeMutates at U = 33 changes dump: key 0 gone
+    assert.ok(xftRowErr(FakeMutates, 33, 8).errs.some((e) => /dump changed/.test(e)));
+    assert.ok(xftRowErr(FakeNoPrefix, 33, 8).errs.some((e) => /add threw wrong error/.test(e)));
+    assert.ok(xftRowErr(FakeGrows, 33, 8).errs.some((e) => /byteLength changed/.test(e)));
+});
+
+test('control: xftCtorErr flags a ctor that accepts bad input and one that misreports universe / bits', T, () => {
+    assert.ok(xftCtorErr(FakeCtorLax, XFT_REJECT, []).length > 0, 'lax ctor not flagged (reject rows)');
+    assert.equal(xftCtorErr(FakeCtorLax, [], XFT_ACCEPT).length > 0, true, 'lax ctor not flagged (accept rows)');
+    assert.ok(xftCtorErr(FakeWrongBits, [], [[33, 8, 33, 8, 6]]).length > 0, 'wrong bits not flagged');
+    assert.deepEqual(xftCtorErr(FakeWrongCap, [], [[33, 8, 33, 8, 6]]), ['capacity 8 -> 0']);
+    assert.deepEqual(xftCtorErr(FakeNonEmpty, [], [[33, 8, 33, 8, 6]]), ['size not 0']);
+    assert.ok(xftCtorErr(FakeCtorNoPrefix, [[1, 1]], []).length > 0, 'unprefixed RangeError not flagged');
+    // a ctor that throws a plain Error instead of RangeError is flagged
+    class FakeTypeErr { constructor() { throw new TypeError('x'); } }
+    assert.ok(xftCtorErr(FakeTypeErr, [[1, 1]], []).length > 0, 'wrong error class not flagged');
 });

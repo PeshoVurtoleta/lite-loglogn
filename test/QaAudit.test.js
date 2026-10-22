@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as LogLogNModule from '../LogLogN.js';
@@ -120,6 +120,8 @@ function scriptsPinErr(scripts) {
     if (pSemi.length !== 1 || pSemi[0] !== '--max-semi-space-size=4') {
         return 'test:perf semi-space flags ' + JSON.stringify(pSemi) + ', need exactly ["--max-semi-space-size=4"]';
     }
+    const tgt = pt.slice(pt.indexOf('--test') + 1);
+    if (tgt.length !== 1 || tgt[0] !== 'test/perf/*.test.mjs') return 'test:perf must run test/perf/*.test.mjs, got ' + JSON.stringify(tgt);
     const tor = Object.hasOwn(scripts, 'torture') ? scripts.torture : undefined;
     if (typeof tor !== 'string') return 'scripts.torture missing';
     const tt = tor.split(/\s+/);
@@ -135,7 +137,7 @@ test('package.json scripts pin the gate flags (test:perf --max-semi-space-size=4
 });
 
 test('control: the scripts pin check fails on every bad scripts object', () => {
-    const PERF = 'node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs';
+    const PERF = 'node --expose-gc --max-semi-space-size=4 --test-concurrency=1 --test test/perf/*.test.mjs';
     const TOR = 'node --expose-gc test/torture.mjs';
     assert.equal(scriptsPinErr({ 'test:perf': PERF, torture: TOR }), null, 'good scripts must pass');
     const bad = [
@@ -152,10 +154,17 @@ test('control: the scripts pin check fails on every bad scripts object', () => {
         { 'test:perf': PERF, torture: 'node test/torture.mjs' },
         { 'test:perf': PERF, torture: 'node --expose-gc --max-semi-space-size=4 test/torture.mjs' },
         Object.create({ 'test:perf': PERF, torture: TOR }),
+        { 'test:perf': 'node --expose-gc --max-semi-space-size=4 --test test/perf/PerfGate.test.mjs', torture: TOR },
     ];
     for (let i = 0; i < bad.length; i++) {
         assert.notEqual(scriptsPinErr(bad[i]), null, 'bad scripts[' + i + '] passed the pin');
     }
+});
+
+test('test/perf holds both perf gates the test:perf glob must run', () => {
+    const files = readdirSync(join(ROOT, 'test', 'perf')).filter((f) => f.endsWith('.test.mjs'));
+    assert.ok(files.includes('PerfGate.test.mjs'), 'PerfGate.test.mjs missing: ' + JSON.stringify(files));
+    assert.ok(files.includes('XFastTriePerf.test.mjs'), 'XFastTriePerf.test.mjs missing: ' + JSON.stringify(files));
 });
 
 // --- member coercion / boundary blocks land below (one per member) ----------

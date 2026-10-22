@@ -304,3 +304,590 @@ export class StratifiedBitset {
         return { universe: this._u, size: this._size, words };
     }
 }
+
+// --- XFastTrie (0.3.0) -------------------------------------------------------
+
+/**
+ * MurmurHash3 32-bit finalizer (fmix32), lite-o1 CuckooMap parity. The result is
+ * a SIGNED int32 (`| 0`), so it never boxes at a call boundary; every consumer
+ * masks it. @param {number} h an int32 @returns {number} a signed int32
+ */
+function fmix32(h) {
+    h = h ^ (h >>> 16);
+    h = Math.imul(h, 0x85ebca6b);
+    h = h ^ (h >>> 13);
+    h = Math.imul(h, 0xc2b2ae35);
+    h = h ^ (h >>> 16);
+    return h | 0;
+}
+
+/**
+ * Cold. Throws the RangeError for an add() of a NEW key at size === capacity.
+ * Kept out of add's body so the error-string bytes never sit in the hot method.
+ * @param {number} c
+ */
+function throwFull(c) {
+    throw new RangeError('[lite-loglogn] XFastTrie is full (capacity ' + c +
+        '); delete a key first -- capacity is fixed at construction');
+}
+
+/**
+ * XFastTrie -- O(log log U) successor / predecessor over a FIXED universe
+ * [0, U), 2 <= U <= 2^32, holding at most `capacity` keys (fixed, fail closed).
+ *
+ * Layout (every typed array preallocated in the constructor, never replaced):
+ * one LevelTable per level L = 1..w (w = ceil(log2 U); level w = the keys), all
+ * back to back in shared columns `_occ` U8 / `_tk` I32 (prefix | 0) / `_tmin` /
+ * `_tmax` I32 (leaf index of the prefix subtree's min / max key). A LevelTable is
+ * an in-file bucketized cuckoo table (lite-o1 CuckooMap design parity: 2 tables x
+ * B_L buckets x 4 slots, occupancy byte, no tombstones, load <= 0.90, in-place
+ * reseed of up to 32 tries). capL = min(C, 2^L), B_L = pow2 >= ceil(capL*10/72),
+ * S_L = 8 B_L. `_lv` I32[4(w+1)] holds base, mask, s1, s2 per level. The keys
+ * live in a sorted doubly linked leaf thread `_key` U32 / `_next` / `_prev` I32
+ * (length C+1; slot 0 = the circular sentinel: next[0] = min leaf, prev[0] = max
+ * leaf; free leaves form a LIFO list through `_next`). `_q` I32[4] = scratch x|0,
+ * then the REPORTED counters kicks, reseedOps, tries (cumulative; clear() keeps
+ * them). byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16, TS = sum S_L.
+ *
+ * Cost (1 touch = 1 level-table probe = 4 `_lv` reads, <= 8 `_occ` reads, = 8 on
+ * a miss; T = binary-search steps over w prefix lengths, = log2(w) for w = 2^j):
+ * has 1; successor / predecessor 1 (x present) or 1+T (absent); min / max 0;
+ * add of a new key 1+T+(w-m) touches (m = the shorter common prefix with its
+ * neighbours: the update walk stops early); delete of a present key w-m. Queries
+ * are O(log log U); updates are honestly O(w). Hot methods allocate 0 bytes; a
+ * returned key >= 2^31 may box when the call is not inlined.
+ * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
+ * touches nothing: has / delete -> false, successor / predecessor -> undefined,
+ * add -> RangeError. add of a NEW key at size === capacity -> RangeError, nothing
+ * written. A cuckoo stall reseeds that level in place from the leaf thread (0 B);
+ * if 32 tries fail the add is rolled back (logical restore) and throws
+ * RangeError; if even the rollback cannot re-place a level, the instance is
+ * POISONED (`_q = null`, loud Error; every hot method then throws TypeError) and
+ * only clear() revives it.
+ */
+export class XFastTrie {
+    /**
+     * @param {number} universe integer in [2, 2^32]
+     * @param {number} capacity integer in [1, min(universe, 2^24)]
+     */
+    constructor(universe, capacity) {
+        if (typeof universe !== 'number' || !Number.isInteger(universe) ||
+            universe < 2 || universe > 4294967296) {
+            throw new RangeError('[lite-loglogn] XFastTrie universe must be an integer in [2, 2^32]; got ' +
+                (typeof universe === 'number' ? String(universe) : typeof universe));
+        }
+        const lim = universe < 16777216 ? universe : 16777216;
+        if (typeof capacity !== 'number' || !Number.isInteger(capacity) ||
+            capacity < 1 || capacity > lim) {
+            throw new RangeError('[lite-loglogn] XFastTrie capacity must be an integer in [1, ' + lim +
+                '] (min(universe, 2^24)); got ' +
+                (typeof capacity === 'number' ? String(capacity) : typeof capacity));
+        }
+        const w = 32 - Math.clz32(universe - 1);
+        const lv = new Int32Array(4 * (w + 1));
+        let ts = 0;
+        for (let L = 1; L <= w; L++) {
+            const capL = Math.min(capacity, 2 ** L);
+            const need = Math.ceil(capL * 10 / 72);
+            let b = 1;
+            while (b < need) b *= 2;
+            lv[4 * L] = ts;
+            lv[4 * L + 1] = b - 1;
+            ts += 8 * b;
+        }
+        this._u = universe;
+        this._w = w;
+        this._c = capacity;
+        this._size = 0;
+        this._free = 1;
+        this._lv = lv;
+        this._occ = new Uint8Array(ts);
+        this._tk = new Int32Array(ts);
+        this._tmin = new Int32Array(ts);
+        this._tmax = new Int32Array(ts);
+        this._key = new Uint32Array(capacity + 1);
+        this._next = new Int32Array(capacity + 1);
+        this._prev = new Int32Array(capacity + 1);
+        this._q = new Int32Array(4);
+        this._init();
+    }
+
+    /** Number of keys present. */
+    get size() { return this._size; }
+
+    /** The fixed universe U (keys are integers in [0, U)). */
+    get universe() { return this._u; }
+
+    /** The fixed capacity (most keys held at once). */
+    get capacity() { return this._c; }
+
+    /** Key bit-width w = ceil(log2 U) (the number of trie levels). */
+    get bits() { return this._w; }
+
+    /** Bytes of every typed array the instance owns (13 TS + 12 (C+1) + 16 (w+1) + 16). */
+    get byteLength() {
+        return this._lv.byteLength + this._occ.byteLength + this._tk.byteLength +
+            this._tmin.byteLength + this._tmax.byteLength + this._key.byteLength +
+            this._next.byteLength + this._prev.byteLength + 16;
+    }
+
+    /**
+     * Hot helper. Probes level L for the prefix of x (x|0 in `_q[0]`): 4 `_lv`
+     * reads, occupancy first on each of <= 8 slots. @returns {number} slot or -1
+     */
+    _slot(L) {
+        const lv = this._lv;
+        const occ = this._occ;
+        const tk = this._tk;
+        const j = L << 2;
+        const base = lv[j];
+        const mask = lv[j + 1];
+        const s1 = lv[j + 2];
+        const s2 = lv[j + 3];
+        const p = (this._q[0] >>> (this._w - L)) | 0;
+        let i = base + ((fmix32(p ^ s1) & mask) << 2);
+        let e = i + 4;
+        for (; i < e; i++) if (occ[i] !== 0 && tk[i] === p) return i;
+        i = base + ((mask + 1) << 2) + ((fmix32(p ^ s2) & mask) << 2);
+        e = i + 4;
+        for (; i < e; i++) if (occ[i] !== 0 && tk[i] === p) return i;
+        return -1;
+    }
+
+    /**
+     * Hot helper. Inserts the (absent) level-L prefix of x as a subtree holding
+     * only leaf f: first empty slot of its two buckets, else the cold kick chain.
+     */
+    _put(L, f) {
+        const lv = this._lv;
+        const occ = this._occ;
+        const j = L << 2;
+        const base = lv[j];
+        const mask = lv[j + 1];
+        const s1 = lv[j + 2];
+        const s2 = lv[j + 3];
+        const p = (this._q[0] >>> (this._w - L)) | 0;
+        let i = base + ((fmix32(p ^ s1) & mask) << 2);
+        let e = i + 4;
+        for (; i < e; i++) if (occ[i] === 0) break;
+        if (i === e) {
+            i = base + ((mask + 1) << 2) + ((fmix32(p ^ s2) & mask) << 2);
+            e = i + 4;
+            for (; i < e; i++) if (occ[i] === 0) break;
+            if (i === e) {
+                this._kick(L, f);
+                return;
+            }
+        }
+        occ[i] = 1;
+        this._tk[i] = p;
+        this._tmin[i] = f;
+        this._tmax[i] = f;
+    }
+
+    /**
+     * Hot helper, x (in `_q[0]`) absent. Binary search over prefix lengths
+     * 0..w-1 for the longest present prefix, then one thread hop.
+     * @returns {number} the successor leaf of x (0 = none); prev of it = predecessor
+     */
+    _near() {
+        const q0 = this._q[0];
+        const w = this._w;
+        let lo = 0;
+        let hi = w - 1;
+        let hs = 0;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >>> 1;
+            const s = this._slot(mid);
+            if (s >= 0) {
+                lo = mid;
+                hs = s;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if (((q0 >>> (w - 1 - lo)) & 1) !== 0) {
+            return this._next[lo === 0 ? this._prev[0] : this._tmax[hs]];
+        }
+        return lo === 0 ? this._next[0] : this._tmin[hs];
+    }
+
+    /** @param {number} x @returns {boolean} */
+    has(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        this._q[0] = x;
+        return this._slot(this._w) >= 0;
+    }
+
+    /** @param {number} x @returns {this} throws RangeError on a bad key or when full (no state touched) */
+    add(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) throwKey(x, this._u);
+        const q = this._q;
+        q[0] = x;
+        const w = this._w;
+        if (this._slot(w) >= 0) return this;
+        if (this._size === this._c) throwFull(this._c);
+        const sl = this._near();
+        const nx = this._next;
+        const pv = this._prev;
+        const ky = this._key;
+        const pl = pv[sl];
+        const f = this._free;
+        this._free = nx[f];
+        ky[f] = x;
+        nx[f] = sl;
+        pv[f] = pl;
+        nx[pl] = f;
+        pv[sl] = f;
+        this._size++;
+        const xi = q[0];
+        const cp = pl === 0 ? 0 : w - 32 + Math.clz32(xi ^ ky[pl]);
+        const cs = sl === 0 ? 0 : w - 32 + Math.clz32(xi ^ ky[sl]);
+        const l = cp > cs ? cp : cs;
+        const m = cp < cs ? cp : cs;
+        for (let L = w; L > m; L--) {
+            if (L > l) {
+                this._put(L, f);
+            } else if (L > cp) {
+                this._tmin[this._slot(L)] = f;
+            } else {
+                this._tmax[this._slot(L)] = f;
+            }
+        }
+        return this;
+    }
+
+    /** @param {number} x @returns {boolean} true if x was present */
+    delete(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        const q = this._q;
+        q[0] = x;
+        const w = this._w;
+        let s = this._slot(w);
+        if (s < 0) return false;
+        const occ = this._occ;
+        const tmin = this._tmin;
+        const tmax = this._tmax;
+        const nx = this._next;
+        const pv = this._prev;
+        const ky = this._key;
+        const f = tmin[s];
+        const pl = pv[f];
+        const sl = nx[f];
+        const xi = q[0];
+        const cp = pl === 0 ? 0 : w - 32 + Math.clz32(xi ^ ky[pl]);
+        const cs = sl === 0 ? 0 : w - 32 + Math.clz32(xi ^ ky[sl]);
+        const l = cp > cs ? cp : cs;
+        const m = cp < cs ? cp : cs;
+        let L = w;
+        for (;;) {
+            if (L > l) occ[s] = 0;
+            else if (L > cp) tmin[s] = sl;
+            else tmax[s] = pl;
+            if (--L <= m) break;
+            s = this._slot(L);
+        }
+        nx[pl] = sl;
+        pv[sl] = pl;
+        nx[f] = this._free;
+        this._free = f;
+        this._size--;
+        return true;
+    }
+
+    /** Smallest key > x, or undefined. @param {number} x @returns {number|undefined} */
+    successor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        this._q[0] = x;
+        const s = this._slot(this._w);
+        const sl = s >= 0 ? this._next[this._tmin[s]] : this._near();
+        return sl === 0 ? undefined : this._key[sl];
+    }
+
+    /** Largest key < x, or undefined. @param {number} x @returns {number|undefined} */
+    predecessor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        this._q[0] = x;
+        const s = this._slot(this._w);
+        const pl = this._prev[s >= 0 ? this._tmin[s] : this._near()];
+        return pl === 0 ? undefined : this._key[pl];
+    }
+
+    /** Smallest key, or undefined if empty. @returns {number|undefined} */
+    min() {
+        void this._q[0]; // poisoned (_q === null) -> TypeError, as in every hot method
+        const f = this._next[0];
+        return f === 0 ? undefined : this._key[f];
+    }
+
+    /** Largest key, or undefined if empty. @returns {number|undefined} */
+    max() {
+        void this._q[0]; // poisoned (_q === null) -> TypeError, as in every hot method
+        const f = this._prev[0];
+        return f === 0 ? undefined : this._key[f];
+    }
+
+    /**
+     * Cold. Removes every key and restores the default seeds (the constructed
+     * state; the `_q` counters are kept). Revives a poisoned instance (a fresh
+     * `_q`, counters zero).
+     */
+    clear() {
+        if (this._q === null) this._q = new Int32Array(4);
+        else this._q[0] = 0;
+        const lv = this._lv;
+        const occ = this._occ;
+        const j = this._w << 2;
+        const ts = lv[j] + ((lv[j + 1] + 1) << 3);
+        for (let i = 0; i < ts; i++) occ[i] = 0;
+        this._init();
+    }
+
+    /**
+     * Cold, allocating. A fresh snapshot: `keys` (U32, ascending, walked from the
+     * leaf thread) and `levels[L - 1]` for L = 1..w (level w = the keys), read
+     * from the level table itself: `capacity` = usable slots floor(0.9 S_L)
+     * (CuckooMap parity), `prefix` (U32, ascending) with the subtree `min` /
+     * `max` KEY of each prefix.
+     * @returns {{universe: number, capacity: number, size: number, bits: number,
+     *   keys: Uint32Array, levels: {capacity: number, prefix: Uint32Array,
+     *   min: Uint32Array, max: Uint32Array}[]}}
+     */
+    dump() {
+        const w = this._w;
+        const n = this._size;
+        const lv = this._lv;
+        const occ = this._occ;
+        const tk = this._tk;
+        const tmin = this._tmin;
+        const tmax = this._tmax;
+        const ky = this._key;
+        const nx = this._next;
+        const keys = new Uint32Array(n);
+        let k = 0;
+        for (let i = nx[0]; i !== 0; i = nx[i]) {
+            if (k === n) {
+                throw new Error('[lite-loglogn] XFastTrie invariant: the leaf thread holds more than size ' +
+                    n + ' keys');
+            }
+            keys[k++] = ky[i];
+        }
+        if (k !== n) {
+            throw new Error('[lite-loglogn] XFastTrie invariant: the leaf thread holds ' + k +
+                ' keys, size is ' + n);
+        }
+        const levels = new Array(w);
+        for (let L = 1; L <= w; L++) {
+            const j = L << 2;
+            const base = lv[j];
+            const sz = (lv[j + 1] + 1) << 3;
+            const idx = [];
+            for (let i = base; i < base + sz; i++) if (occ[i] !== 0) idx.push(i);
+            idx.sort((a, b) => (tk[a] >>> 0) - (tk[b] >>> 0));
+            const prefix = new Uint32Array(idx.length);
+            const min = new Uint32Array(idx.length);
+            const max = new Uint32Array(idx.length);
+            for (let t = 0; t < idx.length; t++) {
+                prefix[t] = tk[idx[t]];
+                min[t] = ky[tmin[idx[t]]];
+                max[t] = ky[tmax[idx[t]]];
+            }
+            levels[L - 1] = { capacity: Math.floor(sz * 9 / 10), prefix, min, max };
+        }
+        return { universe: this._u, capacity: this._c, size: n, bits: w, keys, levels };
+    }
+
+    // ---- cold path: seeds, kick chain, reseed, rollback, poison -----------------
+
+    /** Cold. Default seeds per level, empty thread, free list 1..C, size 0. */
+    _init() {
+        const lv = this._lv;
+        const nx = this._next;
+        const pv = this._prev;
+        const w = this._w;
+        const c = this._c;
+        for (let L = 1; L <= w; L++) {
+            const j = L << 2;
+            const s1 = fmix32(Math.imul(L, 0x9e3779b1) ^ ((lv[j + 1] + 1) << 3));
+            lv[j + 2] = s1;
+            lv[j + 3] = fmix32(s1 ^ 0x85ebca6b);
+        }
+        nx[0] = 0;
+        pv[0] = 0;
+        for (let i = 1; i < c; i++) nx[i] = i + 1;
+        nx[c] = 0;
+        this._free = 1;
+        this._size = 0;
+    }
+
+    /** Cold. Both home buckets of x's level-L prefix are full: kick chain, else reseed L. */
+    _kick(L, f) {
+        if (!this._chain(L, f, f, f)) this._rebuild(L, f);
+    }
+
+    /**
+     * Cold. The cuckoo eviction chain (CuckooMap `_evict` parity) for the level-L
+     * prefix of leaf lf's key with subtree leaves (mn, mx), starting at its
+     * table-0 bucket; at most 8 max(1, ceil(log2(floor(0.9 S_L) + 1))) steps,
+     * kicking slot n & 3. On a stall the carried entry is dropped (the reseed
+     * re-places the whole level from the leaf thread). @returns {boolean} placed
+     */
+    _chain(L, lf, mn, mx) {
+        const lv = this._lv;
+        const occ = this._occ;
+        const tk = this._tk;
+        const tmin = this._tmin;
+        const tmax = this._tmax;
+        const q = this._q;
+        const j = L << 2;
+        const base = lv[j];
+        const mask = lv[j + 1];
+        const s1 = lv[j + 2];
+        const s2 = lv[j + 3];
+        const four = (mask + 1) << 2;
+        const loops = 8 * Math.max(1, 32 - Math.clz32(Math.floor(four * 2 * 9 / 10)));
+        let ck = (this._key[lf] >>> (this._w - L)) | 0;
+        let cn = mn;
+        let cx = mx;
+        let ti = 0;
+        let bb = fmix32(ck ^ s1) & mask;
+        for (let n = 0; n < loops; n++) {
+            const b0 = base + (ti === 0 ? 0 : four) + (bb << 2);
+            for (let i = b0; i < b0 + 4; i++) {
+                if (occ[i] === 0) {
+                    occ[i] = 1;
+                    tk[i] = ck;
+                    tmin[i] = cn;
+                    tmax[i] = cx;
+                    return true;
+                }
+            }
+            const v = b0 + (n & 3);
+            const t0 = tk[v];
+            const t1 = tmin[v];
+            const t2 = tmax[v];
+            tk[v] = ck;
+            tmin[v] = cn;
+            tmax[v] = cx;
+            ck = t0;
+            cn = t1;
+            cx = t2;
+            q[1]++;
+            ti ^= 1;
+            bb = fmix32(ck ^ (ti === 0 ? s1 : s2)) & mask;
+        }
+        return false;
+    }
+
+    /** Cold. Places one prefix group (CuckooMap `_place` parity): empty slot, else the chain. */
+    _place(L, lf, mn, mx) {
+        const lv = this._lv;
+        const occ = this._occ;
+        const j = L << 2;
+        const base = lv[j];
+        const mask = lv[j + 1];
+        const p = (this._key[lf] >>> (this._w - L)) | 0;
+        let i = base + ((fmix32(p ^ lv[j + 2]) & mask) << 2);
+        for (let t = 0; t < 8; t++, i++) {
+            if (t === 4) i = base + ((mask + 1) << 2) + ((fmix32(p ^ lv[j + 3]) & mask) << 2);
+            if (occ[i] === 0) {
+                occ[i] = 1;
+                this._tk[i] = p;
+                this._tmin[i] = mn;
+                this._tmax[i] = mx;
+                return true;
+            }
+        }
+        return this._chain(L, lf, mn, mx);
+    }
+
+    /**
+     * Cold. Clears level L and re-places every prefix group from the sorted leaf
+     * thread (the thread IS the snapshot: 0 B) under the current seeds.
+     * @returns {boolean} every group placed
+     */
+    _fill(L) {
+        const lv = this._lv;
+        const occ = this._occ;
+        const ky = this._key;
+        const nx = this._next;
+        const j = L << 2;
+        const base = lv[j];
+        const end = base + ((lv[j + 1] + 1) << 3);
+        for (let i = base; i < end; i++) occ[i] = 0;
+        const sh = this._w - L;
+        let i = nx[0];
+        while (i !== 0) {
+            const p = ky[i] >>> sh;
+            let e = i;
+            let k = nx[i];
+            while (k !== 0 && (ky[k] >>> sh) === p) {
+                e = k;
+                k = nx[k];
+            }
+            if (!this._place(L, i, i, e)) return false;
+            i = k;
+        }
+        return true;
+    }
+
+    /**
+     * Cold. ONE in-place reseed operation of level L (leaf f = the key being
+     * added, already spliced): up to 32 tries, try a deriving from the seed the
+     * level held when the rebuild began (lite-o1 CuckooMap parity):
+     * s1 = fmix32(s1_start + imul(a, 0x9e3779b1)), s2 = fmix32(s1 ^ 0x85ebca6b).
+     * All 32 fail -> the start seeds are restored and the add is rolled back.
+     */
+    _rebuild(L, f) {
+        const lv = this._lv;
+        const q = this._q;
+        const j = L << 2;
+        const s1 = lv[j + 2];
+        const s2 = lv[j + 3];
+        q[2]++;
+        for (let a = 1; a <= 32; a++) {
+            q[3]++;
+            const t = fmix32((s1 + Math.imul(a, 0x9e3779b1)) | 0);
+            lv[j + 2] = t;
+            lv[j + 3] = fmix32(t ^ 0x85ebca6b);
+            if (this._fill(L)) return;
+        }
+        lv[j + 2] = s1;
+        lv[j + 3] = s2;
+        this._undo(L, f);
+    }
+
+    /**
+     * Cold. Logical restore of a failed add (x in `_q[0]`, leaf f): removes x's
+     * prefixes at levels w..L+1 (each was inserted for x alone), unsplices x,
+     * frees its leaf, rebuilds level L under its start seeds, then throws
+     * RangeError. A restore that cannot re-place a level poisons the instance.
+     */
+    _undo(L, f) {
+        const occ = this._occ;
+        for (let k = this._w; k > L; k--) {
+            const s = this._slot(k);
+            if (s < 0) this._poison('a level ' + k + ' prefix of the rolled-back key is missing');
+            occ[s] = 0;
+        }
+        const nx = this._next;
+        const pv = this._prev;
+        const pl = pv[f];
+        const sl = nx[f];
+        nx[pl] = sl;
+        pv[sl] = pl;
+        nx[f] = this._free;
+        this._free = f;
+        this._size--;
+        if (!this._fill(L)) this._poison('level ' + L + ' could not be re-placed under its start seeds');
+        throw new RangeError('[lite-loglogn] XFastTrie: level ' + L +
+            ' could not place the key after 32 reseed tries; add rolled back (size ' + this._size + ')');
+    }
+
+    /** Cold. Poisons the instance (A3): `_q = null`, loud Error; clear() revives it. */
+    _poison(why) {
+        this._q = null;
+        throw new Error('[lite-loglogn] XFastTrie invariant: rollback failed (' + why +
+            '); the instance is POISONED -- every hot method throws until clear()');
+    }
+}

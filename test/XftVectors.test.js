@@ -1,6 +1,7 @@
 /**
- * @zakkster/lite-loglogn -- XFastTrie pre-engine VECTORS gate (B0b E3,
- * DETERMINISTIC). XFastTrie does not exist yet: this file pins the oracle side.
+ * @zakkster/lite-loglogn -- XFastTrie VECTORS gate (B0b E3 + B1 E1 / E9,
+ * DETERMINISTIC). The oracle side is pinned first; the shipped XFastTrie then
+ * replays every stream (see the B1 section below).
  *
  * - test/vectors/xft-b0.json regenerates byte for byte from
  *   test/helpers/xftStream.mjs (15 (U, C) streams x 20,000 ops, the boundary
@@ -14,11 +15,15 @@
  * - The count model (PLAN SPEC (3)) gives the planner's touch rows and R^2.
  * - collide() keys really share h1 AND h2 at level w under the default seeds,
  *   recomputed here from an independent copy of the SPEC (1) formulas.
+ * - B1: the shipped XFastTrie replays all 15 streams with 0 divergences and answers
+ *   the boundary table, in workers under a kill timer; must-fail controls M-dir and
+ *   M-i32key (in-memory mutants through a data: URL) diverge.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import {
     STREAMS, N_OPS, EVERY, FULL_THROWS, SB_CROSS_MAX_U, ROW_NAMES,
     ROW_BAD, ROW_HAS, ROW_Q_PRESENT, ROW_Q_ABSENT, ROW_MINMAX, ROW_ADD_PRESENT,
@@ -196,10 +201,145 @@ test('SPEC (1) hash: fmix32 vector, default seeds, TS formula, collide() keys', 
     }
 });
 
-// B1 replays these streams on XFastTrie: replay(new XFastTrie(U, C), U, genStream(U, C,
-// N_OPS, streamSeed(i))) must equal VEC.streams[i] (resultsHash, checkpoints, finalSize,
-// sortedHash) for all 15 streams, in a worker with a kill timer (TierParity HANG RULE);
-// VEC.boundary answers the boundary table per state; VEC.collide feeds E5.
+// --- B1: XFastTrie replays every stream (E1 / E9) ---------------------------------
+// replay(new XFastTrie(U, C), U, genStream(U, C, N_OPS, streamSeed(i))) must equal
+// VEC.streams[i] (resultsHash, checkpoints, finalSize, sortedHash) for all 15 streams,
+// and XFastTrie answers every VEC.boundary state. HANG RULE (TierParity / Count
+// pattern): every replay runs in a worker_threads Worker (test/_xftvec-worker.mjs)
+// under a KILL_MS timer; a hang, a worker error, a nonzero exit or a missing result
+// is a FAIL. All jobs start at module load, in parallel; each test awaits its own.
+// Must-fail controls (in-memory mutants of the real source, each anchor replaced
+// exactly once, loaded through a data: URL): M-dir (the binary-search direction bit
+// inverted) diverges on every stream; M-i32key (`_key` as Int32Array) diverges on
+// exactly the w = 32 streams. VEC.collide feeds E5 (B3).
+
+const KILL_MS = 100000;
+const XWORKER = new URL('./_xftvec-worker.mjs', import.meta.url);
+const SRC = readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
+const ALL = STREAMS.map((_, i) => i);
+const M_DIR = ['if (((q0 >>> (w - 1 - lo)) & 1) !== 0) {', 'if (((q0 >>> (w - 1 - lo)) & 1) === 0) {'];
+const M_I32KEY = ['this._key = new Uint32Array(capacity + 1);', 'this._key = new Int32Array(capacity + 1);'];
+
+/** Occurrences of needle in hay. */
+function count(hay, needle) {
+    let n = 0;
+    for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) n++;
+    return n;
+}
+
+/** data: URL of SRC with [from, to] replaced, or null unless `from` occurs exactly once. */
+function mutant([from, to]) {
+    if (count(SRC, from) !== 1) return null;
+    return 'data:text/javascript;base64,' + Buffer.from(SRC.replace(from, to), 'utf8').toString('base64');
+}
+
+/** Starts one replay worker; NEVER rejects: resolves { result, error }. */
+function xftJob(src, streams, boundary, label, ms = KILL_MS) {
+    return new Promise((resolve) => {
+        let result = null;
+        let done = false;
+        const w = new Worker(XWORKER, {
+            workerData: { xftVecJob: true, src, streams, boundary }, stdout: true, stderr: true,
+        });
+        let errText = '';
+        w.stdout.resume();
+        w.stderr.setEncoding('utf8');
+        w.stderr.on('data', (d) => {
+            if (errText.length < 4096) errText += d;
+        });
+        const finish = (error) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve({ result, error: error === null ? null : error + (errText ? ' | stderr: ' + errText : '') });
+        };
+        const timer = setTimeout(() => {
+            w.terminate();
+            finish('hang > ' + ms + ' ms: ' + label + ' worker terminated');
+        }, ms);
+        w.on('message', (m) => {
+            result = m;
+        });
+        w.on('error', (e) => finish(label + ' worker error: ' + (e && e.stack ? e.stack : String(e))));
+        w.on('exit', (code) => finish(code === 0 ? null : label + ' worker exit code ' + code));
+    });
+}
+
+async function expectJob(job) {
+    const r = await job;
+    assert.equal(r.error, null, String(r.error));
+    assert.ok(r.result !== null && typeof r.result === 'object', 'worker posted no result');
+    assert.equal(r.result.ok, true, String(r.result.message));
+    return r.result.result;
+}
+
+/** Stream indices whose replay differs from the JSON in any field. */
+function diverging(res) {
+    const out = [];
+    for (const r of res.streams) {
+        const s = VEC.streams[r.i];
+        if (r.resultsHash !== s.resultsHash || r.finalSize !== s.finalSize || r.sortedHash !== s.sortedHash ||
+            JSON.stringify(r.checkpoints) !== JSON.stringify(s.checkpoints)) out.push(r.i);
+    }
+    return out;
+}
+
+const XJOBS = ALL.map((i) => xftJob(null, [i], null, 'stream ' + i));
+const XBOUND = xftJob(null, [], VEC.boundary, 'boundary');
+const DIR_SRC = mutant(M_DIR);
+const I32_SRC = mutant(M_I32KEY);
+const XDIR = DIR_SRC === null ? null : xftJob(DIR_SRC, ALL, null, 'M-dir');
+const XI32 = I32_SRC === null ? null : xftJob(I32_SRC, ALL, null, 'M-i32key');
+
+for (const i of ALL) {
+    const [U, C] = STREAMS[i];
+    test('XFastTrie replays stream ' + i + ' (U=' + U + ', C=' + C + ') with 0 divergences', OPTS, async () => {
+        const res = await expectJob(XJOBS[i]);
+        assert.equal(res.streams.length, 1);
+        const r = res.streams[0];
+        const s = VEC.streams[i];
+        assert.equal(r.U, s.U);
+        assert.equal(r.C, s.C);
+        assert.deepEqual(r.checkpoints, s.checkpoints, 'checkpoints');
+        assert.equal(r.resultsHash, s.resultsHash, 'resultsHash');
+        assert.equal(r.finalSize, s.finalSize, 'finalSize');
+        assert.equal(r.sortedHash, s.sortedHash, 'sortedHash');
+    });
+}
+
+test('XFastTrie answers every boundary-table state (all 15 (U, C))', OPTS, async () => {
+    const res = await expectJob(XBOUND);
+    assert.deepEqual(res.boundary, []);
+    let n = 0;
+    for (const row of VEC.boundary) n += row.states.length;
+    assert.equal(res.states, n);
+    assert.ok(n >= 60, 'states checked: ' + n);
+});
+
+test('control M-dir: the binary-search direction bit inverted diverges on every stream', OPTS, async () => {
+    assert.equal(count(SRC, M_DIR[0]), 1, 'M-dir anchor must occur exactly once in LogLogN.js');
+    assert.notEqual(XDIR, null);
+    const res = await expectJob(XDIR);
+    assert.equal(res.streams.length, 15);
+    assert.deepEqual(diverging(res), ALL);
+});
+
+test('control M-i32key: `_key` as Int32Array diverges on exactly the w = 32 streams', OPTS, async () => {
+    assert.equal(count(SRC, M_I32KEY[0]), 1, 'M-i32key anchor must occur exactly once in LogLogN.js');
+    assert.notEqual(XI32, null);
+    const res = await expectJob(XI32);
+    assert.equal(res.streams.length, 15);
+    const w32 = ALL.filter((i) => bitsOf(STREAMS[i][0]) === 32);
+    assert.deepEqual(w32, [12, 13, 14]);
+    assert.deepEqual(diverging(res), w32);
+});
+
+test('hang rule control: a replay worker that never returns is terminated and FAILS', OPTS, async () => {
+    const spin = 'data:text/javascript;base64,' + Buffer.from('for (;;) {}\n', 'utf8').toString('base64');
+    const r = await xftJob(spin, [], null, 'spin', 300);
+    assert.ok(r.error !== null && /^hang > 300 ms/.test(r.error), String(r.error));
+    assert.equal(r.result, null);
+});
 
 test('foldResult tagging: undefined is never 2^32-1, and -0 is not 0 (header resultsHash rule)', () => {
     assert.notEqual(foldResult(FNV_OFFSET, undefined), foldResult(FNV_OFFSET, 4294967295));

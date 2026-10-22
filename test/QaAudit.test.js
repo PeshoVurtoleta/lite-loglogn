@@ -5,7 +5,7 @@
  * must hold, independent of any one member:
  *   - the VERSION trinity (LogLogN.js const === package.json === llms.txt), the
  *     version check of record (no test pins a version literal);
- *   - the frozen export surface (exactly StratifiedBitset + VERSION);
+ *   - the frozen export surface (exactly StratifiedBitset + VERSION + XFastTrie);
  *   - the six-file pack discipline (files[] exact; repo-only dirs absent);
  *   - no "Karadjov" anywhere in the shipped source / docs;
  *   - ASCII-only source in LogLogN.js (this family needs NO Unicode exception --
@@ -40,12 +40,12 @@ test('VERSION trinity: LogLogN.js const, package.json, and llms.txt agree byte-f
     assert.equal(m[1], VERSION, 'llms.txt Version header !== LogLogN.js VERSION const');
 });
 
-// --- frozen export surface: StratifiedBitset + VERSION ---------------------
+// --- frozen export surface: StratifiedBitset + VERSION + XFastTrie ---------
 
-test('LogLogN.js exports exactly StratifiedBitset and VERSION -- nothing else has leaked in', () => {
+test('LogLogN.js exports exactly StratifiedBitset, VERSION and XFastTrie -- nothing else has leaked in', () => {
     const exportedNames = Object.keys(LogLogNModule).sort();
-    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION'],
-        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION)');
+    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION', 'XFastTrie'],
+        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION, XFastTrie)');
     assert.equal(typeof VERSION, 'string');
     assert.equal(typeof LogLogNModule.StratifiedBitset, 'function');
 });

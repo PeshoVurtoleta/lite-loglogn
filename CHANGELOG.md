@@ -6,8 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-Not yet released: `VERSION`, `package.json` and `llms.txt` stay at 0.1.0 until the
-`/release 0.2.0` step syncs them.
+## [0.2.0] - 2026-10-22
 
 ### Added
 
@@ -128,5 +127,6 @@ Not yet released: `VERSION`, `package.json` and `llms.txt` stay at 0.1.0 until t
   / cross-linked recipe, never a drifting reimplementation). Each carries the
   "Recommended resolution -- PENDING USER RATIFICATION at review" stamp.
 
-[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PeshoVurtoleta/lite-loglogn/releases/tag/v0.1.0

@@ -25,26 +25,32 @@
  *
  * The family delta: lite-o1 proves a FLAT ops/ms line on a log-x axis (the
  * constant, slope ~ 0); lite-logn proves a STRAIGHT line vs log2(n) (one added
- * level per doubling of n); lite-loglogn proves a straight, nearly-flat line vs
- * log2(w) -- one constant additive step per doubling of the universe BIT-WIDTH,
- * the double-logarithm made visible -- AND reports the n-sweep crossover over an
- * O(log n) foil (the "when does this beat a BST" answer as a number). Keys are
- * w-bit integers in [0, U), U = 2^w, with w <= 32 in JS (bitwise ops are 32-bit);
- * wider keys are a labeled SegmentedU variant, never a silent BigInt hot path.
+ * level per doubling of n); lite-loglogn's bound is in the UNIVERSE, not n.
+ * StratifiedBitset is O(log_32 U): levels = max(1, ceil(w/5)), linear in the
+ * bit-width w. The planned strict members target O(log log U), one step per
+ * doubling of w. The HARD proof is deterministic COUNTS (exact words read /
+ * written per op, gated in `npm test`; decisions/0004 Amendment 1, 0006).
+ * Timing is a release-time statistical witness that reports the n-sweep
+ * crossover over an O(log n) foil (the "when does this beat a binary search"
+ * answer as a number).
+ * Keys are w-bit integers in [0, U), U = 2^w, with w <= 32 in JS (bitwise ops
+ * are 32-bit); wider keys are a labeled SegmentedU variant, never a silent
+ * BigInt hot path.
  * Every hot op each member ships is O(log log U) worst-case (or O(log_w U) /
  * expected / amortized where stated) and allocates ZERO bytes after construction.
  *
  * The SPACE price is a co-headline, stated on every member with the same
  * prominence as the time bound (vEB O(U), x-fast O(n*w), y-fast O(n),
  * StratifiedBitset O(U/w)) -- this family's defining honesty hook. The witness
- * harness (never imported here) fits both axes and asserts the log2(w) fit WINS
- * over the O(log U)/w impostor axis -- that line is the theorem made visible.
+ * harness (never imported here) REPORTS fits on both the log2(w) and the w axis
+ * and gates on neither: the w axis fit StratifiedBitset better in the 2026-10-22
+ * run (R^2 0.7293 vs 0.6589), as its O(log_32 U) label predicts.
  *
  * @license MIT
  */
 
 /** Package version. One of the three version sites (package.json / VERSION / llms.txt). */
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';
 
 // --- members land here, append-only, one tree-shakeable class each -----------
 // StratifiedBitset (v0.2.0)         -- array-embedded O(log_w U) successor / predecessor

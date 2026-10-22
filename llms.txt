@@ -1,6 +1,6 @@
 # @zakkster/lite-loglogn
 
-Version: 0.1.0
+Version: 0.2.0
 License: MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
 Runtime dependencies: none. ESM only. ASCII-only source. sideEffects: false.
 Node: >= 18.
@@ -24,8 +24,8 @@ Keys are w-bit integers in [0, U), U <= 2^32 (bitwise ops are 32-bit); wider key
 are a labeled SegmentedU variant, never a silent BigInt hot path. The SPACE price
 is a co-headline on every member, stated with the same prominence as the time bound.
 
-Roster (one member per release, append-only). StratifiedBitset ships in 0.2.0
-(unreleased until the release step); everything after it is PLANNED:
+Roster (one member per release, append-only). StratifiedBitset ships in 0.2.0;
+everything after it is PLANNED:
 
 - StratifiedBitset (0.2.0) -- array-embedded 32-ary bit pyramid. O(log_32 U)
   successor / predecessor; min / max read Lc words (Lc = levels <= 7);

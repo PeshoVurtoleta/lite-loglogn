@@ -2,7 +2,7 @@
 
 A repo-only decision guide for the sub-logarithmic family: which member, which
 bitset, reach-for / avoid, and how to measure the bound and the space price
-yourself. StratifiedBitset (0.2.0, unreleased until the release step) is the
+yourself. StratifiedBitset (0.2.0) is the
 first member; XFastTrie, YFastTrie and vEBTree are PLANNED. It is NOT an API
 encyclopedia (that is the README + `LogLogN.d.ts`); it answers "which member,
 is my bound real, and what does it cost in space?"

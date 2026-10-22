@@ -1,6 +1,6 @@
 # @zakkster/lite-loglogn
 
-> Zero-GC, sub-logarithmic bounded-integer predecessor / successor structures that PROVE their bound. StratifiedBitset ships in 0.2.0 (unreleased until the release step): an array-embedded 32-ary bit pyramid with O(log_32 U) successor / predecessor, O(U/w) space, 0 B/op on every hot method, and the bound gated by exact word-read COUNTS. XFastTrie, YFastTrie and vEBTree are planned.
+> Zero-GC, sub-logarithmic bounded-integer predecessor / successor structures that PROVE their bound. StratifiedBitset ships in 0.2.0: an array-embedded 32-ary bit pyramid with O(log_32 U) successor / predecessor, O(U/w) space, 0 B/op on every hot method, and the bound gated by exact word-read COUNTS. XFastTrie, YFastTrie and vEBTree are planned.
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-loglogn.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-loglogn)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
@@ -167,7 +167,7 @@ One member per release, each landing append-only (prior members stay byte-identi
 
 | Member | Slot | Time (query) | Space | Shape |
 | --- | --- | --- | --- | --- |
-| **StratifiedBitset** | 0.2.0 (unreleased until the release step) | O(log_32 U) successor / predecessor; min / max read Lc words (Lc = levels <= 7) | O(U/w) | array-embedded hierarchical bit tree |
+| **StratifiedBitset** | 0.2.0 | O(log_32 U) successor / predecessor; min / max read Lc words (Lc = levels <= 7) | O(U/w) | array-embedded hierarchical bit tree |
 | **XFastTrie** | 0.3.0 (planned) | O(log log U) | O(n*w) | binary search over w pointer-free LevelTables |
 | **YFastTrie** | 0.4.0 (planned) | expected O(log log U) | O(n) | x-fast trie over ~n/w representatives + buckets |
 | **vEBTree** | 0.5.0 (planned) | O(log log U) worst-case | O(U) | flattened van Emde Boas |

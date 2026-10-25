@@ -11,9 +11,30 @@
  * CONSTRUCTED where it can be built here (U <= 2^24) and checked against its
  * formula; at U = 2^32 its cell is formula-only and marked `(not built)`.
  * The XFastTrie formula is the one test/XFastTrieSpace.test.js gates.
+ *
+ * YFastTrie column (PLAN-yfasttrie G2-3, C-12): bytes from the test-owned model
+ * test/helpers/yftSpace.mjs (yftBytes, O(n): the inner trie holds Cr ~ C / h
+ * reps), on the same 16 rows and capacities, with Y/X and Y/SB ratios. Every
+ * cell <= 64 MB is CONSTRUCTED and checked against the model (coverage floor:
+ * exactly 16 cells). A mismatch or a missed floor exits 1.
+ *
+ * Run:  node test/space-table.mjs --mutant repAtC
+ * swaps the model for the must-fail control repAtC (inner trie sized at C):
+ * every cell it constructs mismatches (13; the other 3 exceed 64 MB under the
+ * mutant and miss the coverage floor) and the run MUST exit 1. Any other
+ * argument is an error (exit 1).
  */
 
-import { StratifiedBitset, XFastTrie } from '../LogLogN.js';
+import { StratifiedBitset, XFastTrie, YFastTrie } from '../LogLogN.js';
+import { yftBytes, repAtC } from './helpers/yftSpace.mjs';
+
+const ARGV = process.argv.slice(2);
+let yModel = yftBytes;
+if (ARGV.length === 2 && ARGV[0] === '--mutant' && ARGV[1] === 'repAtC') yModel = repAtC;
+else if (ARGV.length !== 0) {
+    console.log('FAIL space-table: unknown arguments ' + JSON.stringify(ARGV) + ' (only --mutant repAtC)');
+    process.exit(1);
+}
 
 const US = [[16, 65536], [20, 1048576], [24, 16777216], [32, 4294967296]];
 const NS = [1000, 10000, 100000, 1000000];
@@ -59,6 +80,7 @@ function pad(s, n) {
 }
 
 const XFT_BUILD_MAX = 64 * 1048576;
+const YFT_BUILD_MAX = 64 * 1048576;
 const sbCell = [];
 for (const [k, U] of US) {
     const f = sbBytes(U);
@@ -71,11 +93,13 @@ for (const [k, U] of US) {
     }
 }
 
-console.log('space-table (REPORTED): XFastTrie (formula) vs StratifiedBitset bytes; node ' +
-    process.version + ', ' + new Date().toISOString());
-console.log(pad('U', 6) + pad('n', 9) + pad('C (cap)', 18) + pad('XFastTrie', 30) + pad('StratifiedBitset', 42) + 'XFT / SB');
+console.log('space-table (REPORTED): XFastTrie / YFastTrie (formula) vs StratifiedBitset bytes; node ' +
+    process.version + ', ' + new Date().toISOString() + (yModel === repAtC ? ' -- MUTANT repAtC' : ''));
+console.log(pad('U', 6) + pad('n', 9) + pad('C (cap)', 18) + pad('XFastTrie', 30) + pad('StratifiedBitset', 42) +
+    pad('XFT / SB', 10) + pad('YFastTrie', 28) + pad('Y / X', 8) + 'Y / SB');
 let rows = 0;
 let checked = 0;
+let yChecked = 0;
 for (let i = 0; i < US.length; i++) {
     const [k, U] = US[i];
     const sb = sbBytes(U);
@@ -91,9 +115,19 @@ for (let i = 0; i < US.length; i++) {
             }
             checked++;
         }
+        const y = yModel(U, C);
+        if (y <= YFT_BUILD_MAX) {
+            const real = new YFastTrie(U, C).byteLength;
+            if (real !== y) {
+                console.log('FAIL yftBytes(' + U + ', ' + C + ') = ' + y + ' != constructed byteLength ' + real);
+                process.exitCode = 1;
+            }
+            yChecked++;
+        }
         const cTxt = C === n ? String(C) : C + ' (capped)';
         console.log(pad('2^' + k, 6) + pad(String(n), 9) + pad(cTxt, 18) +
-            pad(x + ' B (' + mb(x) + ')', 30) + pad(sbCell[i], 42) + (x / sb).toFixed(3));
+            pad(x + ' B (' + mb(x) + ')', 30) + pad(sbCell[i], 42) + pad((x / sb).toFixed(3), 10) +
+            pad(y + ' B (' + mb(y) + ')', 28) + pad((y / x).toFixed(3), 8) + (y / sb).toFixed(3));
         rows++;
     }
 }
@@ -101,5 +135,10 @@ if (rows !== US.length * NS.length) throw new Error('space-table printed ' + row
 console.log('xftBytes self-check: ' + checked + ' cells constructed (<= 64 MB) and compared to byteLength');
 if (checked !== 14) {
     console.log('FAIL xftBytes self-check covered ' + checked + ' cells, expected exactly 14 (coverage floor)');
+    process.exitCode = 1;
+}
+console.log('yftBytes self-check: ' + yChecked + ' cells constructed (<= 64 MB) and compared to byteLength');
+if (yChecked !== 16) {
+    console.log('FAIL yftBytes self-check covered ' + yChecked + ' cells, expected exactly 16 (coverage floor)');
     process.exitCode = 1;
 }

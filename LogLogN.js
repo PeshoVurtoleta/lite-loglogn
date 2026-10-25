@@ -348,7 +348,9 @@ function throwFull(c) {
  * XFastTrie -- O(log log U) successor / predecessor over a FIXED universe
  * [0, U), 2 <= U <= 2^32, holding at most `capacity` keys (fixed, fail closed).
  *
- * Layout (every typed array preallocated in the constructor, never replaced):
+ * Layout (every typed array preallocated in the constructor and never replaced,
+ * except `_q`: _poison() sets it to null and clear() of a poisoned instance
+ * allocates a fresh Int32Array(4)):
  * one LevelTable per level L = 1..w (w = ceil(log2 U); level w = the keys), all
  * back to back in shared columns `_occ` U8 / `_tk` I32 (prefix | 0) / `_tmin` /
  * `_tmax` I32 (leaf index of the prefix subtree's min / max key). A LevelTable is
@@ -361,9 +363,10 @@ function throwFull(c) {
  * leaf; free leaves form a LIFO list through `_next`). `_q` I32[4] = scratch x|0,
  * then the REPORTED counters kicks, reseedOps, tries (cumulative; clear() keeps
  * them). The counters are Int32 and WRAP at 2^31 (to -2^31, no saturation);
- * they are REPORTED diagnostics and the engine never reads them. byteLength (every typed array
- * plus the 16 B of `_q`) = 13 TS + 12 (C+1) + 16 (w+1) + 16, TS = sum S_L
- * (13 = occ 1 + tk 4 + tmin 4 + tmax 4 B per slot; 12 = key + next + prev).
+ * they are REPORTED diagnostics and the engine never reads them. byteLength
+ * (every typed array plus the 16 B of `_q`) = 13 TS + 12 (C+1) + 16 (w+1) + 16,
+ * TS = sum S_L (13 = occ 1 + tk 4 + tmin 4 + tmax 4 B per slot; 12 = key +
+ * next + prev).
  *
  * Cost in level-table TOUCHES (1 touch = 1 probe = 4 `_lv` reads, <= 8 `_occ`
  * reads, = 8 on a miss; T = binary-search steps over the w prefix lengths,
@@ -379,7 +382,8 @@ function throwFull(c) {
  *   delete, key present             w - m
  *   delete, key absent              1
  *   any op, bad key                 0
- * Rows are exact when no kick / reseed fires (add only; kicks / tries are REPORTED in _q).
+ * Rows are exact when no kick / reseed fires (add only; kicks / tries are
+ * REPORTED in _q).
  *
  * Queries are O(log log U); delete is O(w) worst-case, add expected O(w) (a stall
  * reseeds one level: up to 32 passes, O(C) each). Hot methods allocate 0

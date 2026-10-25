@@ -24,7 +24,9 @@
  * (`_near` linear walk), M-cachedOcc (`_slot` reads a cached occ reference ->
  * the Proxy sees 0 reads), M-fullwalk (update walk to L > 0), M-fullLate (the
  * capacity check after the leaf pop; the replay cannot see it, only the E4
- * read / write rows can), and a worker that never returns.
+ * read / write rows can), M-keyInSearch (a `_key` read during the search),
+ * M-badQ (a bad key that writes the shared `_q` scratch), and a worker that
+ * never returns.
  *
  * HANG SAFETY: every body runs in a Worker (test/_xft-count-worker.mjs) under a
  * hang timer; a hang, a nonzero exit or a missing phase is a FAIL.

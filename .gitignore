@@ -7,3 +7,6 @@
 
 # burst handoff (session state, never shipped)
 /.handoff/
+
+# a SIGKILLed XftWitness run leaves its mutant copy behind
+/test/_xftw-mutant-*

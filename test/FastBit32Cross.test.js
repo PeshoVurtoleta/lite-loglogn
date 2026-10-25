@@ -20,11 +20,11 @@ import assert from 'node:assert/strict';
 import { FastBit32 } from '@zakkster/lite-fastbit32';
 import { StratifiedBitset } from '../LogLogN.js';
 import { mulberry32 } from './helpers/tierStream.mjs';
+import { parseSeed } from './helpers/seed.mjs';
 
 const T = { timeout: 120000 };
 const N_WORDS = 10000;
-const SEED = ((process.env.LOGLOGN_SEED !== undefined
-    ? Number(process.env.LOGLOGN_SEED) : 0x1badf00d) ^ 0x0fb32a07) >>> 0;
+const SEED = (parseSeed(process.env.LOGLOGN_SEED, 0x1badf00d) ^ 0x0fb32a07) >>> 0;
 
 /** 32 single-bit words, then N_WORDS seeded nonzero words (uint32). */
 function makeWords() {

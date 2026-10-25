@@ -117,10 +117,13 @@ Do not feed XFastTrie untrusted keys without bounding that.
   YFastTrie decision.
 - **Growth on demand / hidden rehash (R3, maintainer).** Rejected: capacity is fixed
   at construction; the only rebuild is the labelled in-place reseed.
-- **Per-instance random seeds.** Not shipped, and not ruled on either way: it would need an
-  entropy source in a zero-dependency file and would make stream replay and
-  torture non-reproducible. Open for a later release if the flood caveat bites a
-  real user.
+- **Per-instance random seeds.** Not shipped (maintainer ruling, 2026-10-23). 0.3.0 keeps
+  the fixed default seeds plus the hash-flood caveat above. Never random-by-default: it
+  would make the deterministic count, replay and reseed-census gates non-reproducible.
+  Planned for 0.4.0 with YFastTrie: an OPTIONAL caller-supplied ctor seed, CuckooMap-style
+  (a uint32 validated fail-closed, RangeError; omitted = today's deterministic defaults).
+  XFastTrie gains the same optional argument additively (maintainer ruling 2026-10-25; an additive exception to 'prior members BYTE-IDENTICAL').
+  (This decisions/ folder is not shipped: it is not in package.json files[].)
 
 ## Amendment
 

@@ -347,17 +347,30 @@ test('A6 XFastTrie bad keys: has / delete false, succ / pred undefined, add thro
     }
     // 4 universes x 13 tokens x 5 methods = 260 (hand count)
     assert.equal(rows, 260);
+    // xftLiveBody must be self-contained, so its bad list is a copy: pin it to XFT_BAD
+    const norm = (f) => String(f).replace(/\s+/g, ' ');
+    const lit = norm(XFT_BAD);
+    assert.ok(norm(xftLiveBody).includes(lit.slice(lit.indexOf('['))), 'xftLiveBody bad list === XFT_BAD');
 });
 
-test('A6 XFastTrie: a bad key leaves the instance live and valid keys still work', T, () => {
-    const s = new XFastTrie(33, 8);
+// valid-key successor / predecessor / min / max could loop: Worker (A6)
+function xftLiveBody({ XFastTrie, assert }) {
+    const U = 33;
+    const bad = [Symbol('k'), 1n, { valueOf() { return 1; } }, new Number(1), NaN, null,
+        undefined, '1', -1, 1.5, U, 2 ** 32,
+        { toString() { throw new Error('user'); }, valueOf() { throw new Error('user'); } }];
+    const s = new XFastTrie(U, 8);
     s.add(0); s.add(32);
-    for (const k of XFT_BAD(33)) { try { s.add(k); } catch (e) { /* expected */ } }
+    for (const k of bad) { try { s.add(k); } catch (e) { /* expected */ } }
     assert.equal(s.size, 2);
     assert.equal(s.successor(0), 32);
     assert.equal(s.predecessor(32), 0);
     assert.equal(s.min(), 0);
     assert.equal(s.max(), 32);
+}
+
+test('A6 XFastTrie: a bad key leaves the instance live and valid keys still work', T, async () => {
+    await expectFn(startFn(xftLiveBody, 'xft-live'));
 });
 
 test('A6 XFastTrie -0 aliases 0 (add(-0) -> has(0), size 1; add(0) no-op; delete(-0) true)', T, () => {

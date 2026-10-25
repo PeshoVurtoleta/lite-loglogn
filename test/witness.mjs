@@ -1915,7 +1915,7 @@ async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, GcProfiler, gcFn)
     say('GC window: ' + GWN[0] + ' untimed XFastTrie successor probe blocks of ' + Q + ' queries (the tier-up before' +
         ' round 1): gc.major ' + wW.major + ' minor ' + wW.minor + ' arrayBuffers growth ' + wW.growth +
         ' B (tolerance: major 0, growth 0 B) -- ' + (wW.majorBad || wW.abBad ? 'FAIL' : 'ok'));
-    if (wW.majorBad) fails.push('gc window: gc.major ' + wW.major + ' > 0 (observed ' + wW.observed + ')');
+    if (wW.majorBad) fails.push(wW.observed ? 'gc window: gc.major ' + wW.major + ' > 0 (observed ' + wW.observed + ')' : 'gc window: gc.major unobserved');
     if (wW.abBad) fails.push('gc window: arrayBuffers growth ' + wW.growth + ' B > 0');
 
     // time one block of runner r: ns/op, written into TM[slot]

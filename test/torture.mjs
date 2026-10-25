@@ -27,7 +27,11 @@
  *       retained array (size > 0), a gc kick (forced globalThis.gc() inside
  *       T0's gc window: the T0 gc verdict not-ok, gcMajor > 0). Any control
  *       passing is exit 1.
- * KNOWN GAP: maxPauseMs has no must-fail control (a pause is host timing); the gc kick pins maxMajor only.
+ * KNOWN GAP (narrowed): a real >4 ms pause is host timing and cannot be forced, so the
+ * gc kick (a forced major) pins maxMajor only. The maxPauseMs THRESHOLD AND WIRING are
+ * pinned deterministically by the separate `T3w` line: the exact gcVerdict() gcLane
+ * uses is fed a synthetic summary (gc.maxMs 4 -> pass; 4.01 -> not ok, with exactly
+ * one violation, metric gc.maxMs). It is not one of T3's five controls.
  * Exit 0 only if every tier passes and every control flips. Never widen a
  * budget to make this pass -- a budget that moves is not a gate.
  *
@@ -209,6 +213,10 @@ async function main() {
     // [] = pass. The real lanes and their must-fail gc controls (T3 gcKick, X4
     // xGcKick) run through this ONE code path, so a control that flips proves
     // this window and verdict can fail. Cold wrapper.
+    function gcVerdict(summary) {
+        return checkNoGc(summary, { maxMajor: 0, maxPauseMs: 4 });
+    }
+
     async function gcLane(tag, fn, ops) {
         globalThis.gc();
         await settle(50);
@@ -221,7 +229,7 @@ async function main() {
         }
         await settle(50);
         const s = g.summary();
-        const rep = checkNoGc(s, { maxMajor: 0, maxPauseMs: 4 });
+        const rep = gcVerdict(s);
         g.stop();
         const errs = [];
         let majorHit = false;
@@ -457,6 +465,28 @@ async function main() {
         fails.push('control gcKick PASSED its check (gcMajor ' + c5.s.gc.major + ', kicks ' +
             kick0[0] + '/' + GC_KICKS + ', violations ' + c5.errs.length + '): T0 gc lane is blind');
     }
+
+    // T3w pause-threshold wiring (deterministic; NOT a T3 control, so "T3's
+    // five" stays five). gcVerdict is the exact call gcLane makes. Synthetic
+    // summaries are copies of T0's real one with only gc.major / gc.maxMs set:
+    // maxMs 4 must pass (limit is inclusive), 4.01 must fail with ONE violation
+    // on gc.maxMs, and a major-only summary (maxMs 0) must fail on gc.major
+    // alone -- the pause rule flips on the pause lane only.
+    const synth = (major, maxMs) => ({ ...s0, gc: { ...s0.gc, major, maxMs } });
+    const w4 = gcVerdict(synth(0, 4));
+    const w401 = gcVerdict(synth(0, 4.01));
+    const wMaj = gcVerdict(synth(1, 0));
+    const laneSrc = String(gcLane);
+    const wired = laneSrc.split('gcVerdict(s)').length === 2 && !laneSrc.includes('checkNoGc');
+    const wOk = wired && w4.ok === true && w4.violations.length === 0 &&
+        w401.ok === false && w401.violations.length === 1 && w401.violations[0].metric === 'gc.maxMs' &&
+        w401.violations[0].limit === 4 && w401.violations[0].actual === 4.01 &&
+        wMaj.ok === false && wMaj.violations.length === 1 && wMaj.violations[0].metric === 'gc.major';
+    console.log('T3w pause wiring gcLane->gcVerdict ' + (wired ? 'wired' : 'UNWIRED') + ' maxMs=4 ' + (w4.ok ? 'pass' : 'FAIL') +
+        ' maxMs=4.01 ' + (w401.ok ? 'PASSED' : 'flipped') + ' (' + w401.violations.length + ' violation)' +
+        ' major=1 ' + (wMaj.ok ? 'PASSED' : 'flipped') + ' (' + wMaj.violations.length + ' violation)' +
+        ' | ' + (wOk ? 'ok' : 'FAIL'));
+    if (!wOk) fails.push('T3w pause wiring: gcLane must call gcVerdict(s) once and not checkNoGc; maxMs 4 / 4.01 / major verdicts wrong (T0 pause threshold unpinned)');
 
     // ==== X-tiers: XFastTrie (PLAN-xfasttrie G4 / G5, tasks G0b + G7) ========
     // Run after T0-T3 so the StratifiedBitset tiers keep their own feedback; the

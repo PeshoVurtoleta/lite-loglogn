@@ -10,7 +10,7 @@
  * FAIL, never a stuck run.
  *
  * Body contract: `startFn(fn, label)` ships `fn.toString()` to the worker, which
- * evaluates it and calls it as `fn({ StratifiedBitset, assert })` (assert =
+ * evaluates it and calls it as `fn({ StratifiedBitset, XFastTrie, assert })` (assert =
  * node:assert/strict). The body must be SELF-CONTAINED: a `function` expression
  * that uses only its parameter and globals. A reference to anything outside it
  * is a ReferenceError in the worker, i.e. a FAIL (fail closed, never skipped).
@@ -62,12 +62,12 @@ export async function expectFn(job) {
 
 if (!isMainThread && workerData !== null && typeof workerData === 'object' &&
     workerData.workerRunBody === true) {
-    const { StratifiedBitset } = await import('../LogLogN.js');
+    const { StratifiedBitset, XFastTrie } = await import('../LogLogN.js');
     let msg;
     try {
         const fn = (0, eval)('"use strict"; (' + workerData.src + ')');
         if (typeof fn !== 'function') throw new TypeError('worker body is not a function');
-        const ret = fn({ StratifiedBitset, assert });
+        const ret = fn({ StratifiedBitset, XFastTrie, assert });
         if (ret !== undefined) throw new TypeError('worker body must return undefined (no async / generator body)');
         msg = { ok: true };
     } catch (e) {

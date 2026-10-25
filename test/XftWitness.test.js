@@ -55,7 +55,7 @@ test('source pins on witness.mjs', () => {
     const src = readFileSync(WIT, 'utf8');
     const all = src.match(/^(import [^\n]* from ')([^']+)(';)$/gm) || [];
     assert.equal(all.length, 11);
-    assert.equal((src.match(/^import\b/gm) || []).length, 11, "every top-level import statement, any form");
+    assert.equal((src.match(/^import\b/gm) || []).length, 11, 'every top-level import statement, any form');
     const nonNode = all.filter((l) => !/from 'node:/.test(l));
     assert.equal(nonNode.length, 6);
     assert.equal(src.split("import('../LogLogN.js')").length - 1, 1);
@@ -67,7 +67,7 @@ test('source pins on witness.mjs', () => {
 
 // must-fail control (c): the GC check disabled, one metric at a time, or a dirty real window.
 // Each mutant leaves the other metric live, so the run must FAIL on the row it names, alone.
-test('must-fail control (c): mutants with a disabled GC metric exit 1 with FAIL on that row', { timeout: T }, () => {
+test('must-fail control (c): mutants with a disabled GC metric, a non-finite growth or an unobserved metric, or a dirty real window, exit 1 with FAIL on that row', { timeout: T }, () => {
     const src = readFileSync(WIT, 'utf8');
     const cases = [
         ['w.abBad = !Number.isFinite(w.growth) || !(w.growth <= 0);', 'w.abBad = false;',
@@ -76,6 +76,14 @@ test('must-fail control (c): mutants with a disabled GC metric exit 1 with FAIL 
             'FAIL control gc-window: forced gc() did not flip gc.major ('],
         ['{ SINK[0] ^= xRun(probe, qAA, Q); GWN[0]++; }', '{ SINK[0] ^= xRun(probe, qAA, Q); GWN[0]++; GKEEP.push(new ArrayBuffer(4096)); }', 'FAIL gc window: arrayBuffers growth '],
         ['{ SINK[0] ^= xRun(probe, qAA, Q); GWN[0]++; }', '{ SINK[0] ^= xRun(probe, qAA, Q); GWN[0]++; if (i === 0) gcFn(); }', 'FAIL gc window: gc.major '],
+        // guard-clause pins (each row is flagged ONLY by the clause named): growth NaN on the retain step (GCC 2)
+        // makes abBad true with growth > 0 false -> only `!(wR.growth > 0)` can flag it.
+        ['growth: ab1 - ab0,', 'growth: GCC[0] === 2 ? NaN : ab1 - ab0,',
+            'FAIL control gc-window: retain did not flip arrayBuffers ('],
+        // observed false on the forced-gc step (GCC 3) makes majorBad true with a real major > 0 -> only
+        // `!(wK.observed && wK.major > 0)` can flag it.
+        ['observed: s.gc.observed === true,', 'observed: GCC[0] === 3 ? false : s.gc.observed === true,',
+            'FAIL control gc-window: forced gc() did not flip gc.major ('],
     ];
     for (const [site, to, want] of cases) {
         assert.equal(src.split(site).length - 1, 1, 'replacement site occurs once: ' + site);
@@ -121,7 +129,7 @@ test('must-fail control (b): each matcher rejects a doctored string', () => {
     assert.ok(RE_ABV.test('abVerdict exit (printed, not used in smoke): 2 PENDING'));
     assert.ok(!RE_ABV.test('abVerdict exit (printed, not used in smoke): 3 PENDING'));
     assert.ok(!RE_ABV.test('abVerdict exit (printed, not used in smoke): 1 MAYBE'));
-    assert.ok(!RE_ABV.test("abVerdict exit (printed, not used in smoke): 0 FAIL"));
+    assert.ok(!RE_ABV.test('abVerdict exit (printed, not used in smoke): 0 FAIL'));
     assert.ok(RE_OK.test('XFT SMOKE ok (x)') && !RE_OK.test('XFT SMOKE failed'));
     assert.ok(RE_FAIL.test('a\nFAIL x\nb') && !RE_FAIL.test('a\nPASS x\nb'));
     assert.equal(count(RE_CTRL_NAMES[1], 'CONTROL abVerdict self-check: a -- ok'), 1);

@@ -40,28 +40,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { KILL_MS } from './_worker-run.mjs';
 import { ORACLES, runXft } from './_xft-worker.mjs';
 import { XFastTrie } from '../LogLogN.js';
 import { genStream, badKeys, keyAt } from './helpers/xftStream.mjs';
+import { parseSeed } from './helpers/seed.mjs';
 
 const T = { timeout: 120000 };
 const WORKER_URL = new URL('./_xft-worker.mjs', import.meta.url);
-// Fail closed: a SET but unparseable / non-integer / out-of-uint32 value throws.
-// Accepted: decimal digits only, or 0x + hex digits, value in [0, 2^32 - 1].
-export function parseSeed(raw) {
-    if (raw === undefined) return 0x7c15a3d9;
-    if (typeof raw !== 'string' || !/^(0|[1-9][0-9]*|0[xX][0-9a-fA-F]+)$/.test(raw)) {
-        throw new RangeError('LOGLOGN_SEED=' + JSON.stringify(raw) + ' is not an integer in [0, 2^32 - 1]');
-    }
-    const v = Number(raw);
-    if (!(v >= 0 && v <= 0xFFFFFFFF)) {
-        throw new RangeError('LOGLOGN_SEED=' + JSON.stringify(raw) + ' is not an integer in [0, 2^32 - 1]');
-    }
-    return v >>> 0;
-}
-const BASE_SEED = parseSeed(process.env.LOGLOGN_SEED);
+const BASE_SEED = parseSeed(process.env.LOGLOGN_SEED, 0x7c15a3d9);
 // 2^31 is w = 31 (the widest universe whose keys all fit in 31 bits); 2^31 + 1 is w = 32
 // with the single key 2^31 above the int32 range (the 31 -> 32 bit boundary, F12 nit i)
 const US = [2, 3, 31, 32, 33, 1025, 65536, 65537, 999983, 1048576, 33554432, 1073741824,
@@ -366,15 +354,15 @@ test('XFastTrieOracle: control MX5 (size bumped before the full check) is caught
 const BAD_SEEDS = ['abc', '', '1.5', '-1', '4294967296', ' 7', '1e3', 'NaN', '0x', '0x100000000'];
 const GOOD_SEEDS = [['0', 0], ['123', 123], ['0x10', 16], ['4294967295', 4294967295], ['0xFFFFFFFF', 4294967295]];
 test('XFastTrieOracle: LOGLOGN_SEED parse fails closed (F8)', () => {
-    assert.equal(parseSeed(undefined), 0x7c15a3d9);
+    assert.equal(parseSeed(undefined, 0x7c15a3d9), 0x7c15a3d9);
     let threw = 0;
     for (const raw of BAD_SEEDS) {
-        assert.throws(() => parseSeed(raw), RangeError, 'seed ' + JSON.stringify(raw) + ' must throw');
+        assert.throws(() => parseSeed(raw, 0x7c15a3d9), RangeError, 'seed ' + JSON.stringify(raw) + ' must throw');
         threw++;
     }
     let good = 0;
     for (const [raw, want] of GOOD_SEEDS) {
-        assert.equal(parseSeed(raw), want, 'seed ' + raw);
+        assert.equal(parseSeed(raw, 0x7c15a3d9), want, 'seed ' + raw);
         good++;
     }
     assert.ok(threw === BAD_SEEDS.length && threw > 0 && good === GOOD_SEEDS.length && good > 0);
@@ -389,4 +377,16 @@ test('XFastTrieOracle: LOGLOGN_SEED parse fails closed (F8)', () => {
     }
     assert.equal(swallowed, BAD_SEEDS.length);
     assert.equal(old('abc'), 0, 'old parse mapped abc to seed 0');
+    // wiring: every env read in test/ goes through parseSeed (fail-open reverts are caught)
+    const ENV = 'process.env.' + 'LOGLOGN_SEED';
+    const dir = new URL('.', import.meta.url);
+    let wired = 0;
+    for (const f of readdirSync(dir)) {
+        if (!/\.m?js$/.test(f)) continue;
+        const s = readFileSync(new URL(f, dir), 'utf8');
+        const n = s.split(ENV).length - 1, ok = s.split('parseSeed(' + ENV + ', ').length - 1;
+        assert.equal(n, ok, f);
+        wired += ok;
+    }
+    assert.equal(wired, 4, 'four parseSeed consumers');
 });

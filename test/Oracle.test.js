@@ -27,9 +27,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
+import { parseSeed } from './helpers/seed.mjs';
 
-const BASE_SEED = (process.env.LOGLOGN_SEED !== undefined
-    ? Number(process.env.LOGLOGN_SEED) : 0x1badf00d) >>> 0;
+const BASE_SEED = parseSeed(process.env.LOGLOGN_SEED, 0x1badf00d);
 const TIMEOUT = { timeout: 120000 };
 const HARNESS = new URL('./_oracle-harness.mjs', import.meta.url);
 

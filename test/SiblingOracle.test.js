@@ -44,11 +44,11 @@ import { Worker } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { KILL_MS } from './_worker-run.mjs';
 import { ORACLES } from './_sibling-worker.mjs';
+import { parseSeed } from './helpers/seed.mjs';
 
 const T = { timeout: 120000 };
 const WORKER_URL = new URL('./_sibling-worker.mjs', import.meta.url);
-const BASE_SEED = (process.env.LOGLOGN_SEED !== undefined
-    ? Number(process.env.LOGLOGN_SEED) : 0x1badf00d) >>> 0;
+const BASE_SEED = parseSeed(process.env.LOGLOGN_SEED, 0x1badf00d);
 const PLAN = [
     [1, 30000], [2, 30000], [31, 60000], [32, 60000], [33, 60000],
     [1025, 100000], [32768, 60000], [65536, 60000], [65537, 150000],

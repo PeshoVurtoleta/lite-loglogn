@@ -331,13 +331,8 @@ zgcSuite({
 // scenarios were measured on.
 test('teeth attribution: SideBufferXft fails ONLY on the arrayBuffers lane (grows blind)', async () => {
     const r = await measure(teethMustFailSide, { N: GATE.N, k: GATE.k });
-    const v = verdict(r, {
-        maxScavenges: GATE.maxScavenges,
-        maxRetainedKB: GATE.maxRetainedKB,
-        maxOldGen: GATE.maxOldGen,
-        maxArrayBuffersKB: GATE.maxArrayBuffersKB,
-        counters: GATE.counters,
-    });
+    const { N: _N, k: _k, ...thresholds } = GATE;
+    const v = verdict(r, thresholds);
     const line = formatResult(r) + ' | reasons=' + JSON.stringify(v.reasons);
     console.log('[perf] ' + line);
     assert.equal(v.pass, false, 'SideBufferXft passed the gate: ' + line);
@@ -349,13 +344,8 @@ test('teeth attribution: SideBufferXft fails ONLY on the arrayBuffers lane (grow
 
 test('teeth: GrowingXft is flagged by the grows counter AND the arrayBuffers lane', async () => {
     const r = await measure(teethMustFailGrow, { N: GATE.N, k: GATE.k });
-    const v = verdict(r, {
-        maxScavenges: GATE.maxScavenges,
-        maxRetainedKB: GATE.maxRetainedKB,
-        maxOldGen: GATE.maxOldGen,
-        maxArrayBuffersKB: GATE.maxArrayBuffersKB,
-        counters: GATE.counters,
-    });
+    const { N: _N, k: _k, ...thresholds } = GATE;
+    const v = verdict(r, thresholds);
     const line = formatResult(r) + ' | reasons=' + JSON.stringify(v.reasons);
     console.log('[perf] ' + line);
     assert.equal(v.pass, false, 'GrowingXft passed the gate: ' + line);
@@ -366,6 +356,13 @@ test('teeth: GrowingXft is flagged by the grows counter AND the arrayBuffers lan
 // Last: every scenario was registered, built twice and measured at N and k*N,
 // and its hot body ran (the sink moved off 0).
 test('coverage floor: 8 scenarios, each measured at N and k*N', () => {
+    // Pins the GATE key set: a new field forces an edit here AND a decision on
+    // whether it is a threshold (passed to verdict) or a non-threshold (destructured out).
+    assert.deepEqual(Object.keys(GATE).sort(),
+        ['N', 'counters', 'k', 'maxArrayBuffersKB', 'maxOldGen', 'maxRetainedKB', 'maxScavenges']);
+    const { N: _N, k: _k, ...thresholds } = GATE;
+    assert.deepEqual(Object.keys(thresholds).sort(),
+        ['counters', 'maxArrayBuffersKB', 'maxOldGen', 'maxRetainedKB', 'maxScavenges']);
     assert.equal(scenarios.length, 8, 'scenario count');
     assert.equal(RAN.length, 8, 'tracked scenario count');
     for (const rec of RAN) {

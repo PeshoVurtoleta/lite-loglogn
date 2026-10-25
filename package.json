@@ -32,6 +32,7 @@
     "witness:w32": "node test/witness.mjs --w32",
     "witness:tier": "node test/witness.mjs --tier",
     "witness:xft": "node test/witness.mjs --xft",
+    "witness:yft": "node test/witness.mjs --yft",
     "test:perf": "node --expose-gc --max-semi-space-size=4 --test-concurrency=1 --test test/perf/*.test.mjs",
     "verify": "npm test && npm run test:types && npm run torture && npm run test:perf"
   },

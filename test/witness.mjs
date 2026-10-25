@@ -16,6 +16,16 @@
  *                                      untimed probe tier-up runs in a GC window
  *                                      (gc.major 0, arrayBuffers growth 0 B; FAIL
  *                                      exit 1, also in smoke)
+ *     node test/witness.mjs --yft      the YFastTrie lane ONLY (PLAN-yfasttrie G3):
+ *                                      n-sweep YFastTrie vs XFastTrie (n <= 1e6)
+ *                                      + REPORTED foil medians + byteLength (the
+ *                                      SPACE co-headline), U-sweep successor and
+ *                                      add+delete, fits, latency with per-op kind
+ *                                      attribution, A/B via abVerdict; combinable
+ *                                      with --smoke and --w32; REPORTED (C-10 /
+ *                                      C-11: exact counts in npm test are the gate,
+ *                                      no MAX-time verdict); its probe tier-up runs
+ *                                      in the same GC window kit as --xft
  *
  * Every timed run goes through the shared-host lock:
  *     node ~/.claude/hooks/quiet-lock.mjs run "lite-loglogn witness" -- node test/witness.mjs
@@ -70,7 +80,7 @@ import { realpathSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { BitSet, EliasFano } from '@zakkster/lite-o1';
-import { SortedArray, Treap, SkipList } from '@zakkster/lite-logn';
+import { SortedArray, Treap, SkipList, Scapegoat } from '@zakkster/lite-logn';
 import { DDSketch } from '@zakkster/lite-sketch';
 import { DriftDetector, DRIFT_PH } from '@zakkster/lite-adaptive';
 import { StratifiedBitset } from '../LogLogN.js';
@@ -1675,24 +1685,88 @@ function xBuild(Cls, keys, U, cap) {
     return s;
 }
 
-// --xft entry: flag check, then the lane's modules -- LogLogN.js, abVerdict.mjs, and for the
-// GC window lite-gc-profiler + node:v8 / node:vm (dynamic: the static import list stays the
-// six that test/WitnessVerdict.test.js V18's data: URL source mutant rewrites, and the
-// default / --w32 / --tier paths load nothing new), then the lane
-async function xftMain(argv, env) {
-    const KNOWN = ['--xft', '--smoke', '--w32'];
-    for (const a of argv) {
-        if (!KNOWN.includes(a)) {
-            process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) +
-                ' (known with --xft: --smoke, --w32)\n');
-            return 1;
-        }
+// --- the GC-window kit (cold, untimed; shared by --xft and --yft) -------------------------
+//
+// GC window: gcFn() + settle, then fn inside ONE GcProfiler window with
+// process.memoryUsage().arrayBuffers read before fn and after the closing settle. Tolerance
+// ZERO per metric: gc.major <= 0, arrayBuffers growth <= 0 B (the window body allocates no
+// ArrayBuffer and writes no stdout; a concurrent free can only LOWER the reading, never raise
+// it). NaN / unobserved fails closed. Never inside timeInto / abba / latency. The startup
+// controls and every real window run through this one code path. The opening gc() and the
+// opening settle are defensive (they push back V8's memory-reducer timer and let pending
+// frees finish); no test pins them. GCK is armed ONCE by laneModules(); unarmed -> WitnessFail.
+const GCK = { GcProfiler: null, gcFn: null };
+const GKEEP = [];
+const GCC = new Int32Array(1);   // control steps run (coverage floor 3)
+
+function settle(ms) {
+    return new Promise((r) => { setTimeout(r, ms); });
+}
+
+async function gcWindow(fn) {
+    const GcProfiler = GCK.GcProfiler;
+    const gcFn = GCK.gcFn;
+    if (typeof GcProfiler !== 'function' || typeof gcFn !== 'function') {
+        throw new WitnessFail('gc window: the kit is not armed (laneModules() did not run)');
     }
-    const [lib, ab, gp, v8, vm] = await Promise.all([import('../LogLogN.js'), import('./helpers/abVerdict.mjs'),
-        import('@zakkster/lite-gc-profiler'), import('node:v8'), import('node:vm')]);
-    if (typeof lib.XFastTrie !== 'function' || lib.StratifiedBitset !== StratifiedBitset ||
-        typeof ab.abVerdict !== 'function' || typeof ab.AB_EFFECT_FLOOR !== 'number') {
-        throw new WitnessFail('xft: LogLogN.js must export XFastTrie (and the same StratifiedBitset), ' +
+    gcFn();
+    await settle(XFT_GC_SETTLE_MS);
+    const g = new GcProfiler().start();
+    const ab0 = process.memoryUsage().arrayBuffers;
+    fn();
+    await settle(XFT_GC_SETTLE_MS);
+    const ab1 = process.memoryUsage().arrayBuffers;
+    const s = g.summary();
+    g.stop();
+    const w = { observed: s.gc.observed === true, major: s.gc.major, minor: s.gc.minor, growth: ab1 - ab0,
+        majorBad: true, abBad: true };
+    w.majorBad = !w.observed || !Number.isInteger(w.major) || !(w.major <= 0);
+    w.abBad = !Number.isFinite(w.growth) || !(w.growth <= 0);
+    return w;
+}
+
+function gcs(w) {
+    return 'major ' + w.major + ' growth ' + w.growth + ' B';
+}
+
+// must-fail controls: an empty window is clean; retaining a fresh ArrayBuffer flips ONLY
+// arrayBuffers; a forced full gc() flips ONLY gc.major. Coverage floor: 3 steps ran. Prints the
+// one `CONTROL gc-window:` line (true) or the one `FAIL control gc-window:` line (false).
+async function gcControls(say) {
+    const gcFn = GCK.gcFn;
+    GCC[0] = 0;
+    GKEEP.length = 0;
+    const wE = await gcWindow(() => { GCC[0]++; });
+    const wR = await gcWindow(() => { GCC[0]++; GKEEP.push(new ArrayBuffer(XFT_GC_RETAIN)); });
+    const wK = await gcWindow(() => { GCC[0]++; gcFn(); });
+    const keptB = GKEEP.length === 1 ? GKEEP[0].byteLength : -1;
+    GKEEP.length = 0;
+    const gcBad = [];
+    if (GCC[0] !== 3 || keptB !== XFT_GC_RETAIN) gcBad.push('coverage: steps ' + GCC[0] + ' / 3, kept ' + keptB + ' B');
+    if (wE.majorBad || wE.abBad) gcBad.push('empty window not clean (' + gcs(wE) + ')');
+    if (!wR.abBad || !(wR.growth > 0)) gcBad.push('retain did not flip arrayBuffers (' + gcs(wR) + ')');
+    if (wR.majorBad) gcBad.push('retain flipped gc.major (' + gcs(wR) + ')');
+    if (!wK.majorBad || !(wK.observed && wK.major > 0)) gcBad.push('forced gc() did not flip gc.major (' + gcs(wK) + ')');
+    if (wK.abBad) gcBad.push('forced gc() flipped arrayBuffers (' + gcs(wK) + ')');
+    if (gcBad.length > 0) {
+        say('FAIL control gc-window: ' + gcBad.join('; '));
+        return false;
+    }
+    say('CONTROL gc-window: empty ' + gcs(wE) + ' clean; retained ' + keptB + ' B ArrayBuffer ' + gcs(wR) +
+        ' flips arrayBuffers only; forced gc() ' + gcs(wK) + ' flips gc.major only -- ok');
+    return true;
+}
+
+// the --xft / --yft lanes' modules, loaded ONCE here: LogLogN.js, abVerdict.mjs, and for the
+// GC window lite-gc-profiler + node:v8 / node:vm (dynamic: the static import list stays the
+// six non-node ones that test/WitnessVerdict.test.js V18's data: URL source mutant rewrites,
+// and the default / --w32 / --tier paths load nothing new). Arms the GC-window kit (GCK).
+async function laneModules() {
+    const [lib, ab, gp, v8, vm, lk] = await Promise.all([import('../LogLogN.js'), import('./helpers/abVerdict.mjs'),
+        import('@zakkster/lite-gc-profiler'), import('node:v8'), import('node:vm'), import('@zakkster/lite-leak')]);
+    if (lib.StratifiedBitset !== StratifiedBitset || typeof ab.abVerdict !== 'function' ||
+        typeof ab.AB_EFFECT_FLOOR !== 'number') {
+        throw new WitnessFail('lane: LogLogN.js must export the same StratifiedBitset, ' +
             'abVerdict.mjs must export abVerdict and AB_EFFECT_FLOOR');
     }
     // a forced full GC, deterministic: the --expose-gc global, else the flag set at run time
@@ -1702,13 +1776,32 @@ async function xftMain(argv, env) {
         v8.setFlagsFromString('--expose-gc');
         gcFn = vm.runInNewContext('gc');
     }
-    if (typeof gp.GcProfiler !== 'function' || typeof gcFn !== 'function') {
-        throw new WitnessFail('xft: lite-gc-profiler must export GcProfiler, and a gc() function must be obtainable');
+    if (typeof gp.GcProfiler !== 'function' || typeof gcFn !== 'function' || typeof lk.createLeakTracker !== 'function') {
+        throw new WitnessFail('lane: lite-gc-profiler must export GcProfiler, lite-leak createLeakTracker, and a gc() function must be obtainable');
     }
-    return xftLane(argv, env, lib.XFastTrie, ab.abVerdict, ab.AB_EFFECT_FLOOR, gp.GcProfiler, gcFn);
+    GCK.GcProfiler = gp.GcProfiler;
+    GCK.gcFn = gcFn;
+    return { lib, abVerdict: ab.abVerdict, FLOOR: ab.AB_EFFECT_FLOOR, gcFn, createLeakTracker: lk.createLeakTracker };
 }
 
-async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, GcProfiler, gcFn) {
+// --xft entry: flag check (before any banner), then laneModules(), then the lane
+async function xftMain(argv, env) {
+    const KNOWN = ['--xft', '--smoke', '--w32'];
+    for (const a of argv) {
+        if (!KNOWN.includes(a)) {
+            process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) +
+                ' (known with --xft: --smoke, --w32)\n');
+            return 1;
+        }
+    }
+    const M = await laneModules();
+    if (typeof M.lib.XFastTrie !== 'function') {
+        throw new WitnessFail('xft: LogLogN.js must export XFastTrie');
+    }
+    return xftLane(argv, env, M.lib.XFastTrie, M.abVerdict, M.FLOOR, M.gcFn);
+}
+
+async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, gcFn) {
     const SMOKE = argv.includes('--smoke');
     const widthsAll = witnessWidths(argv, env);
     const K = SMOKE ? 3 : WITNESS_K;
@@ -1784,54 +1877,8 @@ async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, GcProfiler, gcFn)
     say('CONTROL abVerdict self-check: base PASS exit 0 (win); control-not-losing FAIL exit 1;' +
         ' A/A winner above the floor PENDING exit 2 -- ok');
 
-    // GC window (cold, untimed; never inside timeInto / abba / latency): gcFn() + settle, then
-    // fn inside ONE GcProfiler window with process.memoryUsage().arrayBuffers read before fn and
-    // after the closing settle. Tolerance ZERO per metric: gc.major <= 0, arrayBuffers growth
-    // <= 0 B (the window body allocates no ArrayBuffer and writes no stdout; a concurrent free
-    // can only LOWER the reading, never raise it). NaN / unobserved fails closed. The startup
-    // controls and the real window run through this one code path. The opening gc() and the
-    // opening settle are defensive (they push back V8's memory-reducer timer and let pending
-    // frees finish); no test pins them.
-    const settle = (ms) => new Promise((r) => { setTimeout(r, ms); });
-    const gcWindow = async (fn) => {
-        gcFn();
-        await settle(XFT_GC_SETTLE_MS);
-        const g = new GcProfiler().start();
-        const ab0 = process.memoryUsage().arrayBuffers;
-        fn();
-        await settle(XFT_GC_SETTLE_MS);
-        const ab1 = process.memoryUsage().arrayBuffers;
-        const s = g.summary();
-        g.stop();
-        const w = { observed: s.gc.observed === true, major: s.gc.major, minor: s.gc.minor, growth: ab1 - ab0,
-            majorBad: true, abBad: true };
-        w.majorBad = !w.observed || !Number.isInteger(w.major) || !(w.major <= 0);
-        w.abBad = !Number.isFinite(w.growth) || !(w.growth <= 0);
-        return w;
-    };
-    const gcs = (w) => 'major ' + w.major + ' growth ' + w.growth + ' B';
-    // must-fail controls: an empty window is clean; retaining a fresh ArrayBuffer flips ONLY
-    // arrayBuffers; a forced full gc() flips ONLY gc.major. Coverage floor: 3 steps ran.
-    const GKEEP = [];
-    const GCC = new Int32Array(1);
-    const wE = await gcWindow(() => { GCC[0]++; });
-    const wR = await gcWindow(() => { GCC[0]++; GKEEP.push(new ArrayBuffer(XFT_GC_RETAIN)); });
-    const wK = await gcWindow(() => { GCC[0]++; gcFn(); });
-    const keptB = GKEEP.length === 1 ? GKEEP[0].byteLength : -1;
-    GKEEP.length = 0;
-    const gcBad = [];
-    if (GCC[0] !== 3 || keptB !== XFT_GC_RETAIN) gcBad.push('coverage: steps ' + GCC[0] + ' / 3, kept ' + keptB + ' B');
-    if (wE.majorBad || wE.abBad) gcBad.push('empty window not clean (' + gcs(wE) + ')');
-    if (!wR.abBad || !(wR.growth > 0)) gcBad.push('retain did not flip arrayBuffers (' + gcs(wR) + ')');
-    if (wR.majorBad) gcBad.push('retain flipped gc.major (' + gcs(wR) + ')');
-    if (!wK.majorBad || !(wK.observed && wK.major > 0)) gcBad.push('forced gc() did not flip gc.major (' + gcs(wK) + ')');
-    if (wK.abBad) gcBad.push('forced gc() flipped arrayBuffers (' + gcs(wK) + ')');
-    if (gcBad.length > 0) {
-        say('FAIL control gc-window: ' + gcBad.join('; '));
-        return 1;
-    }
-    say('CONTROL gc-window: empty ' + gcs(wE) + ' clean; retained ' + keptB + ' B ArrayBuffer ' + gcs(wR) +
-        ' flips arrayBuffers only; forced gc() ' + gcs(wK) + ' flips gc.major only -- ok');
+    // the GC-window kit's 3 must-fail controls (module level, shared with --yft)
+    if (!(await gcControls(say))) return 1;
 
     // per-run state, allocated ONCE before any round
     const nAbba = 2 * NS.length + 2 * WS.length + 3;   // sweeps x 2, 2 A/A, 1 control
@@ -2155,6 +2202,973 @@ async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, GcProfiler, gcFn)
     return v.exit;
 }
 
+// --- the YFastTrie lane: --yft (PLAN-yfasttrie G3) -----------------------------------------
+//
+// REPORTED only (C-11: the exact split / merge / borrow / probe COUNTS in npm test are the hard
+// gate; timing is REPORTED with quiet-lock provenance, D-host none). C-10: a MAX single-op time
+// is PRINTED with its attribution (reseed > split > merge > plain) and never gated -- no timing
+// verdict on any MAX, latency or fit. C-16: every Y instance here uses the DEFAULT seed.
+
+const YFT_NS = Object.freeze([1e3, 3e3, 1e4, 3e4, 1e5, 3e5, 1e6, 3e6, 1e7]);
+const YFT_W_N = 28;
+const YFT_CAP = 1e6;       // XFastTrie + Scapegoat foils only at n <= YFT_CAP (build memory / time)
+const YFT_BS_W = 25;       // lite-o1 BitSet foil only at w <= 25 (U <= 2^25)
+const YFT_N_U = 4096;      // U-sweep n
+const YFT_N_AA = 4096;     // A/A + drift probe + control config
+const YFT_W_AA = 20;
+const YFT_WARM = 16;       // untimed probe tier-up blocks before round 1 (inside the GC window)
+
+const Y_YS = 0;     // YFastTrie successor block
+const Y_XS = 1;     // XFastTrie successor block
+const Y_U32 = 2;    // u32Successor block
+const Y_SA = 3;     // lite-logn SortedArray successor block (REPORTED foil)
+const Y_SG = 4;     // lite-logn Scapegoat successor block (REPORTED foil)
+const Y_EF = 5;     // lite-o1 EliasFano nextGEQ(x + 1) block (REPORTED foil, static)
+const Y_BS = 6;     // lite-o1 BitSet nextSet(x + 1) block (REPORTED foil, U <= 2^25)
+const Y_YU = 7;     // YFastTrie add + delete block (absent keys; the set is restored)
+const Y_XU = 8;     // XFastTrie add + delete block (absent keys)
+const Y_YS2 = 9;    // control: the YFastTrie successor block done TWICE, counted as one block
+const Y_WRONG = 10; // non-strict (>= x) foil: the pre-pass must-fail control only
+
+// per-op kind tags (C-10 attribution order: the HIGHEST rank wins). Written into a Uint8Array
+// slot after the timed pair, from counter reads taken outside it.
+const YK_PLAIN = 0;
+const YK_MERGE = 1;
+const YK_SPLIT = 2;
+const YK_RESEED = 3;
+const YK_NAMES = Object.freeze(['plain', 'merge', 'split', 'reseed']);
+
+// one block function per structure and op, so every call site stays monomorphic; each returns
+// an int32 fold (the sink). The add + delete blocks count successful deletes (must equal len).
+function yBlkYftSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function yBlkXftSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function yBlkU32(arr, n, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) acc ^= u32Successor(arr, n, qs[i]);
+    return acc;
+}
+function yBlkSaSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function yBlkSgSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function yBlkEf(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) acc ^= s.nextGEQ(qs[i] + 1);
+    return acc;
+}
+function yBlkBs(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) acc ^= s.nextSet(qs[i] + 1);
+    return acc;
+}
+function yBlkYftUpd(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+function yBlkXftUpd(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+
+function yRun(r, qs, len) {
+    switch (r.kind) {
+        case Y_YS: return yBlkYftSucc(r.obj, qs, len);
+        case Y_XS: return yBlkXftSucc(r.obj, qs, len);
+        case Y_U32: return yBlkU32(r.obj, r.n, qs, len);
+        case Y_SA: return yBlkSaSucc(r.obj, qs, len);
+        case Y_SG: return yBlkSgSucc(r.obj, qs, len);
+        case Y_EF: return yBlkEf(r.obj, qs, len);
+        case Y_BS: return yBlkBs(r.obj, qs, len);
+        case Y_YU: return yBlkYftUpd(r.obj, qs, len);
+        case Y_XU: return yBlkXftUpd(r.obj, qs, len);
+        case Y_YS2: return (yBlkYftSucc(r.obj, qs, len) + yBlkYftSucc(r.obj, qs, len)) | 0;
+        default: throw new WitnessFail('yft: runner ' + r.name + ' is not timed');
+    }
+}
+
+// one strict-successor answer, normalised (-1 -> undefined); pre-pass only (cold)
+function yAnswer(r, q) {
+    let v;
+    switch (r.kind) {
+        case Y_YS: case Y_XS: case Y_SA: case Y_SG: return r.obj.successor(q);
+        case Y_U32: v = u32Successor(r.obj, r.n, q); break;
+        case Y_EF: v = r.obj.nextGEQ(q + 1); break;
+        case Y_BS: v = r.obj.nextSet(q + 1); break;
+        case Y_WRONG: v = lowerBound(r.obj, r.n, q); break;
+        default: throw new WitnessFail('yft: runner ' + r.name + ' has no answer');
+    }
+    return v === -1 ? undefined : v;
+}
+
+// first disagreement of r with the TRUE definition (u32Successor over the sorted keys),
+// or null; checked[0] += queries compared (the coverage floor)
+function yPrepassFirst(oracle, r, streams, checked) {
+    for (let s = 0; s < streams.length; s++) {
+        const qs = streams[s];
+        for (let i = 0; i < qs.length; i++) {
+            const q = qs[i];
+            const want = yAnswer(oracle, q);
+            const got = yAnswer(r, q);
+            checked[0]++;
+            if (got !== want) return { x: q, got, want };
+        }
+    }
+    return null;
+}
+
+// per-op latency into lat (preallocated). Successor; and add of an absent key, the delete that
+// restores the set outside the timed pair. The add's kind (reseed > split > plain; an add never
+// merges) comes from the cumulative engine counters (s._n[0] splits, s._x._q[2] inner reseeds)
+// read before and after the timed pair, written into kind[i]. Returns the sink / delete count.
+function yLatSucc(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const t = performance.now();
+        const r = s.successor(qs[i]);
+        lat[i] = (performance.now() - t) * 1e6;
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function yLatAdd(s, qs, len, lat, kind) {
+    const cn = s._n;
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        const sp = cn[0];
+        const rs = s._x._q[2];
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        kind[i] = s._x._q[2] !== rs ? YK_RESEED : cn[0] !== sp ? YK_SPLIT : YK_PLAIN;
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+
+// the REPORTED successor foils of one configuration, in print order SortedArray / Scapegoat /
+// EliasFano / BitSet / u32Successor; a capped foil is a null-obj runner printed "n/a (...)"
+function yFoils(keys, U, w) {
+    const n = keys.length;
+    const out = [runner(Y_SA, 'SortedArray', SortedArray.build(keys, new Float64Array(n)), n)];
+    if (n <= YFT_CAP) {
+        const sg = new Scapegoat(n);
+        for (let i = 0; i < n; i++) sg.set(keys[i], 0);
+        out.push(runner(Y_SG, 'Scapegoat', sg, n));
+    } else {
+        out.push(runner(-1, 'Scapegoat n/a (n > ' + YFT_CAP + ')', null, n));
+    }
+    out.push(runner(Y_EF, 'EliasFano', new EliasFano(keys), n));
+    if (w <= YFT_BS_W) {
+        const bs = new BitSet(U);
+        for (let i = 0; i < n; i++) bs.set(keys[i]);
+        out.push(runner(Y_BS, 'BitSet', bs, n));
+    } else {
+        out.push(runner(-1, 'BitSet n/a (U > 2^' + YFT_BS_W + ')', null, n));
+    }
+    out.push(runner(Y_U32, 'u32Successor', keys, n));
+    return out;
+}
+
+// the foil medians one configuration MUST produce, from the constants alone (an oracle that
+// does not share yFoils' code): SortedArray + EliasFano + u32 always, Scapegoat at n <= cap,
+// BitSet at w <= 25
+function yWantFoils(n, w) {
+    return 3 + (n <= YFT_CAP ? 1 : 0) + (w <= YFT_BS_W ? 1 : 0);
+}
+
+// --- the --yft tail (G3-4): fill M then drain M on a fresh default-seed YFastTrie(2^w, M) ---
+//
+// C-16: the key stream of width w is yftTailKeys(YFT_TAIL_M, 2^w, YFT_TAIL_SEED + w), shared
+// with the in-test replay; every tail instance OMITS the seed, so its counters are exact.
+// Op schedule (2M ops): op i < M is add(keys[i]) (phase fill), op M + j is delete(keys[j])
+// (phase drain), j ascending. Per-kind ops therefore sum to 2M = 8192.
+
+/** Tail keys per width (M): fill M, then drain M -> 2M = 8192 attributed ops. */
+export const YFT_TAIL_M = 4096;
+/** Tail seed base: the stream of width w is seeded YFT_TAIL_SEED + w (C-16). */
+export const YFT_TAIL_SEED = 0x7A170000;
+
+/**
+ * M distinct keys in [0, U) in a seeded, deterministic order (pure; no RNG beyond the
+ * seeded mulberry32 of test/helpers/tierStream.mjs): the sorted genKeys(M, U, seed) set,
+ * then a Fisher-Yates shuffle driven by mulberry32((seed ^ 0x9E3779B9) >>> 0).
+ * @param {number} M @param {number} U @param {number} seed uint32
+ * @returns {Uint32Array}
+ */
+export function yftTailKeys(M, U, seed) {
+    if (!Number.isInteger(M) || !(M >= 1) || !Number.isInteger(U) || !(U >= M) || !(U <= 4294967296) ||
+        !Number.isInteger(seed) || !(seed >= 0) || !(seed <= 4294967295)) {
+        throw new RangeError(PFX + 'yftTailKeys: need integers 1 <= M <= U <= 2^32 and a uint32 seed');
+    }
+    const out = genKeys(M, U, seed);
+    const rnd = mulberry32((seed ^ 0x9E3779B9) >>> 0);
+    for (let i = M - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        const t = out[i];
+        out[i] = out[j];
+        out[j] = t;
+    }
+    return out;
+}
+
+// the two tail instances live ONLY here (never in the async lane frame, where conservative
+// stack scanning could pin one): [0] = A (untimed replay in the GC window), [1] = B (timed)
+const YTAIL = [null, null];
+function yTailNoop() {}
+
+// fresh A and B (cold, before the window: the window body allocates nothing), both tracked
+// by lite-leak; the cleanup is a module-level no-op and the tag a string (held-value contract)
+function yTailBuild(YFastTrie, U, M, tracker) {
+    YTAIL[0] = new YFastTrie(U, M);
+    YTAIL[1] = new YFastTrie(U, M);
+    tracker.track(YTAIL[0], yTailNoop, 'yft-tail-a', { audit: true });
+    tracker.track(YTAIL[1], yTailNoop, 'yft-tail-b', { audit: true });
+}
+
+// counters of s into cb[off .. off + 4]: splits, merges, borrows, inner kicks, inner reseeds
+function yTailSnap(s, cb, off) {
+    const q = s._x._q;
+    cb[off] = s._n[0];
+    cb[off + 1] = s._n[1];
+    cb[off + 2] = s._n[2];
+    cb[off + 3] = q[1];
+    cb[off + 4] = q[2];
+}
+
+// per-op counter deltas since the snapshot cb[0 .. 4] into td[o .. o + 4] (outside the timed pair)
+function yTailDelta(s, cb, td, o) {
+    const q = s._x._q;
+    td[o] = s._n[0] - cb[0];
+    td[o + 1] = s._n[1] - cb[1];
+    td[o + 2] = s._n[2] - cb[2];
+    td[o + 3] = q[1] - cb[3];
+    td[o + 4] = q[2] - cb[4];
+}
+
+// instance A: the untimed replay (the GC-window body). ca[0 .. 4] before, ca[5 .. 9] after.
+function yTailReplay(keys, M, ca) {
+    const s = YTAIL[0];
+    yTailSnap(s, ca, 0);
+    for (let i = 0; i < M; i++) s.add(keys[i]);
+    for (let i = 0; i < M; i++) s.delete(keys[i]);
+    yTailSnap(s, ca, 5);
+}
+
+// instance B: every op timed alone into lat[op]; its counter deltas into td[5 op .. 5 op + 4].
+// cb[0 .. 4] = the per-op snapshot, cb[5 .. 9] = the run's start, cb[10 .. 14] = its end.
+// One loop per op so each timed pair holds one monomorphic call.
+function yTailTimed(keys, M, lat, td, cb) {
+    const s = YTAIL[1];
+    yTailSnap(s, cb, 5);
+    for (let i = 0; i < M; i++) {
+        const k = keys[i];
+        yTailSnap(s, cb, 0);
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        yTailDelta(s, cb, td, 5 * i);
+    }
+    for (let i = 0; i < M; i++) {
+        const k = keys[i];
+        yTailSnap(s, cb, 0);
+        const t = performance.now();
+        s.delete(k);
+        lat[M + i] = (performance.now() - t) * 1e6;
+        yTailDelta(s, cb, td, 5 * (M + i));
+    }
+    yTailSnap(s, cb, 10);
+}
+
+// sizes after the run, read without handing an instance to the async frame
+function yTailSizes(out) {
+    out[0] = YTAIL[0].size;
+    out[1] = YTAIL[1].size;
+}
+
+// drop both tail references (the retention check then expects tracker.size() 0)
+function yTailDrop() {
+    YTAIL[0] = null;
+    YTAIL[1] = null;
+}
+
+function pkgVersion(spec) {
+    try {
+        return JSON.parse(readFileSync(new URL('package.json', import.meta.resolve(spec)), 'utf8')).version;
+    } catch {
+        return 'unknown';
+    }
+}
+
+// --yft entry: flag check (before any banner), then laneModules(), then the lane
+async function yftMain(argv, env) {
+    const KNOWN = ['--yft', '--smoke', '--w32'];
+    for (const a of argv) {
+        if (!KNOWN.includes(a)) {
+            process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) +
+                ' (known with --yft: --smoke, --w32)\n');
+            return 1;
+        }
+    }
+    const M = await laneModules();
+    if (typeof M.lib.YFastTrie !== 'function' || typeof M.lib.XFastTrie !== 'function') {
+        throw new WitnessFail('yft: LogLogN.js must export YFastTrie and XFastTrie');
+    }
+    return yftLane(argv, env, M.lib.YFastTrie, M.lib.XFastTrie, M.abVerdict, M.FLOOR, M.gcFn, M.createLeakTracker);
+}
+
+async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, createLeakTracker) {
+    const SMOKE = argv.includes('--smoke');
+    const widthsAll = witnessWidths(argv, env);
+    const K = SMOKE ? 3 : WITNESS_K;
+    const NEED = SMOKE ? 2 : WITNESS_NEED;
+    const Q = SMOKE ? 1 << 12 : 1 << 16;
+    const NS = SMOKE ? [YFT_NS[0], YFT_NS[2]] : YFT_NS.slice();
+    const WS = SMOKE ? [widthsAll[0], widthsAll[widthsAll.length - 1]] : widthsAll;
+    const U_N = 2 ** YFT_W_N;
+    const U_AA = 2 ** YFT_W_AA;
+    const say = (s) => { process.stdout.write(s + '\n'); };
+    const fails = [];
+    const t0wall = performance.now();
+    if (!(NS.length > 0) || !(WS.length >= 2) || !(K >= 1) || !(NEED * 2 > K)) {
+        throw new WitnessFail('yft: coverage floor: n-sweep ' + NS.length + ' points, U-sweep ' + WS.length +
+            ' widths (need > 0 and >= 2), K ' + K + ' need ' + NEED);
+    }
+    let nAB = 0;   // n-sweep points with the YFastTrie vs XFastTrie A/B (n <= YFT_CAP)
+    for (const n of NS) if (n <= YFT_CAP) nAB++;
+
+    // 1. provenance
+    const cores = os.availableParallelism();
+    const loadStart = os.loadavg();
+    const cpus = os.cpus();
+    const qlHost = env !== null && typeof env === 'object' ? env.QUIET_LOCK_HOST : undefined;
+    const qlWhy = env !== null && typeof env === 'object' ? env.QUIET_LOCK_WHY : undefined;
+    const label = qlHost === 'quiet' ? 'QUIET' : 'PRELIMINARY';
+    const libBuf = readFileSync(fileURLToPath(new URL('../LogLogN.js', import.meta.url)));
+    let head = 'unknown';
+    try {
+        head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)),
+            encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+        head = 'unknown (git rev-parse failed)';
+    }
+    say('lite-loglogn STATISTICAL witness -- mode YFT ' + (SMOKE ? 'SMOKE' : 'FULL') +
+        ' (REPORTED; D-host: no CI, the abVerdict exit is never a release gate; C-10: no MAX-time verdict)');
+    say('provenance: date ' + new Date().toISOString() + ' host ' + os.hostname());
+    say('provenance: cpu ' + (cpus.length > 0 ? cpus[0].model : 'unknown') + ' availableParallelism ' + cores);
+    say('provenance: loadavg start ' + loadStart.map((x) => x.toFixed(2)).join(' '));
+    say('provenance: node ' + process.version + ' v8 ' + process.versions.v8 + ' ' +
+        process.platform + '/' + process.arch);
+    say('provenance: quiet-lock ' + (typeof qlHost === 'string' ? qlHost + ' (' + qlWhy + ')' : 'not set (not run under quiet-lock)') +
+        ' -> run label ' + label + (SMOKE ? ' (smoke: wiring only, numbers are not evidence)' : ''));
+    say('provenance: LogLogN.js ' + libBuf.length + ' B sha256 ' + sha256Hex(libBuf) + ' | git HEAD ' + head);
+    say('provenance: YFastTrie seed default (C-16: every Y instance in this lane omits the seed)' +
+        ' | foils lite-logn ' + pkgVersion('@zakkster/lite-logn') + ' (SortedArray, Scapegoat) lite-o1 ' +
+        pkgVersion('@zakkster/lite-o1') + ' (EliasFano, BitSet) lite-sketch ' + pkgVersion('@zakkster/lite-sketch') +
+        ' lite-adaptive ' + pkgVersion('@zakkster/lite-adaptive') + ' lite-gc-profiler ' +
+        pkgVersion('@zakkster/lite-gc-profiler'));
+    say('provenance: K ' + K + ' need ' + NEED + ' floor ' + FLOOR + ' (AB_EFFECT_FLOOR) queries/block ' + Q +
+        ' | n-sweep ' + NS.length + ' points [' + NS.join(', ') + '] at w ' + YFT_W_N + ' (cap n + 1; XFastTrie +' +
+        ' Scapegoat at n <= ' + YFT_CAP + ')' +
+        ' | U-sweep ' + WS.length + ' widths [' + WS.join(', ') + '] at n ' + YFT_N_U + ' (BitSet at w <= ' + YFT_BS_W + ')' +
+        ' | A/A + control + drift probe n ' + YFT_N_AA + ' w ' + YFT_W_AA);
+    say('provenance: flags [' + argv.join(' ') + '] LOGLOGN_W32=' +
+        (env !== null && typeof env === 'object' && env.LOGLOGN_W32 !== undefined ? env.LOGLOGN_W32 : '(unset)'));
+    say('A/B pair: B = YFastTrie (candidate) vs A = XFastTrie (foil), successor at n <= ' + YFT_CAP +
+        ' and at every U-sweep width -- the only A/B pair; u32Successor (n > cap), the foil medians and the' +
+        ' add+delete lane are REPORTED');
+
+    // 2. startup controls: the drift detector and abVerdict have teeth (deterministic)
+    const dFlat = hostDrift(driftVector(1));
+    const dStep = hostDrift(driftVector(1.25));
+    const vSp = driftVector(1);
+    vSp[30] = 400;
+    vSp[90] = 400;
+    const dSp = hostDrift(vSp);
+    say('CONTROL drift: FLAT ' + JSON.stringify(dFlat) + ' STEP ' + JSON.stringify(dStep) +
+        ' SPIKES ' + JSON.stringify(dSp));
+    if (dFlat.drift || !dStep.drift || dSp.drift) {
+        say('FAIL control drift: the injected step was missed, or FLAT / SPIKES fired');
+        return 1;
+    }
+    const abI = {
+        K: 15, need: 13, floor: FLOOR,
+        scenarios: [{ name: 's', wins: 15, losses: 0, ratio: 0.9 }],
+        aa: [{ name: 'aa', wins: 7, losses: 8, ratio: 1 }],
+        control: { wins: 0, losses: 15, ratio: 2 },
+        drift: false, load1: 1, cores: 12,
+    };
+    const a0 = abVerdict(abI);
+    const a1 = abVerdict({ ...abI, control: { wins: 15, losses: 0, ratio: 0.5 } });
+    const a2 = abVerdict({ ...abI, aa: [{ name: 'aa', wins: 14, losses: 1, ratio: 0.9 }] });
+    if (a0.exit !== 0 || a0.decision !== 'PASS' || a0.verdicts[0].verdict !== 'win' ||
+        a1.exit !== 1 || a1.decision !== 'FAIL' || a2.exit !== 2 || a2.decision !== 'PENDING') {
+        say('FAIL control abVerdict: self-check read ' + a0.decision + ' / ' + a1.decision + ' / ' + a2.decision);
+        return 1;
+    }
+    say('CONTROL abVerdict self-check: base PASS exit 0 (win); control-not-losing FAIL exit 1;' +
+        ' A/A winner above the floor PENDING exit 2 -- ok');
+
+    // the GC-window kit's 3 must-fail controls (module level, shared with --xft)
+    if (!(await gcControls(say))) return 1;
+
+    // per-run state, allocated ONCE before any round
+    const nAbba = NS.length + 2 * WS.length + 3;   // n-sweep x 1, U-sweep x 2, 2 A/A, 1 control
+    const series = new Float64Array(K * nAbba);
+    const ST = { pos: 0, abba: 0, lat: 0, med: 0 };
+    const TM = new Float64Array(4);
+    const RC = new Float64Array(K);
+    const RF = new Float64Array(K);
+    const RR = new Float64Array(K);
+    const SINK = new Int32Array(1);
+    const LAT = new Float64Array(Q);
+    const KIND = new Uint8Array(Q);
+    const KMX = new Float64Array(4);   // per-kind max ns of one latency run
+    const KCT = new Int32Array(4);     // per-kind op count of one latency run
+    const ARG = new Int32Array(1);     // argmax op # of one latency run
+    const CN0 = new Int32Array(5);     // splits, merges, borrows, inner kicks, inner reseeds before a run
+    const QQ = Float64Array.of(0.5, 0.99);
+    const QO = new Float64Array(2);
+    const sketch = new DDSketch(0.01);
+    const CG = new Float64Array(3);
+    const CHK = new Float64Array(1);   // pre-pass queries compared (coverage floor)
+    const PRE = new Int32Array(3);     // pre-pass configs, candidates, updChecks (coverage floor)
+    // COVERAGE hooks for Y-B1b (G3-4 tail): COV_MID is printed after `foil medians` (before
+    // `A/B scenarios`), COV_END after `gc window blocks`; each entry is one ', '-joined field
+    const COV_MID = [];
+    const COV_END = [];
+
+    // clock granularity, once (a per-op sample of a ~10 ns op is mostly clock)
+    CG[0] = Infinity;
+    CG[1] = 0;
+    for (let i = 0; i < CLOCK_PAIRS; i++) {
+        const t = performance.now();
+        CG[2] = performance.now() - t;
+        if (CG[2] === 0) CG[1]++;
+        else if (CG[2] < CG[0]) CG[0] = CG[2];
+    }
+    say('REPORTED clock: granularity ' + (Number.isFinite(CG[0]) ? fmt(CG[0] * 1e6) + ' ns' : 'n/a (no nonzero delta)') +
+        ' (zero deltas ' + (CG[1] * 100 / CLOCK_PAIRS).toFixed(2) + '% of ' + CLOCK_PAIRS + ' pairs)');
+
+    // the A/A config doubles as the drift probe and the control (YFastTrie, fixed config)
+    const keysAA = genKeys(YFT_N_AA, U_AA, 0xA11A0201);
+    const qAA = genQueries(Q, U_AA, 0xA11A0202);
+    const xAA = genExtras(keysAA, U_AA);
+    const absAA = xGenAbsent(keysAA, U_AA, Q, 0xA11A0203);
+    const oAA = runner(Y_U32, 'u32Successor', keysAA, YFT_N_AA);
+    const yA = runner(Y_YS, 'YFastTrie', xBuild(YFastTrie, keysAA, U_AA, YFT_N_AA + 1), YFT_N_AA);
+    const yB = runner(Y_YS, 'YFastTrie(B)', xBuild(YFastTrie, keysAA, U_AA, YFT_N_AA + 1), YFT_N_AA);
+    const probe = yA;
+
+    // pre-pass must-fail control: a non-strict foil MUST disagree with the true definition
+    const wrongHit = yPrepassFirst(oAA, runner(Y_WRONG, 'wrong(>=x)', keysAA, YFT_N_AA), [qAA, xAA], CHK);
+    if (wrongHit === null) {
+        say('FAIL control pre-pass: the non-strict foil was not flagged -- the pre-pass has no teeth');
+        return 1;
+    }
+    say('CONTROL pre-pass: non-strict foil flagged at x=' + wrongHit.x + ' (got ' + wrongHit.got +
+        ', want ' + wrongHit.want + ') -- ok');
+
+    // correctness pre-pass (cold, before any timing of cfg): every candidate answers the
+    // true strict successor; every add + delete block restores the set (size n, count len)
+    const prepass = (cfg, oracle, cands, streams) => {
+        const c0 = CHK[0];
+        PRE[0]++; PRE[1] += cands.length;
+        for (const r of cands) {
+            const hit = yPrepassFirst(oracle, r, streams, CHK);
+            if (hit !== null) {
+                throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' disagrees with u32Successor at first x=' +
+                    hit.x + ' (got ' + hit.got + ', want ' + hit.want + ')');
+            }
+        }
+        let want = 0; for (const qs of streams) want += qs.length; want *= cands.length;
+        if (!(want > 0) || CHK[0] - c0 !== want) throw new WitnessFail('pre-pass ' + cfg + ': compared ' + (CHK[0] - c0) + ' of ' + want + ' queries (coverage floor)');
+    };
+    const updCheck = (cfg, r, abs, n) => {
+        PRE[2]++;
+        const got = yRun(r, abs, Q);
+        if (got !== Q || r.obj.size !== n) {
+            throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' add + delete block deleted ' + got + ' of ' + Q +
+                ', size ' + r.obj.size + ' != ' + n);
+        }
+    };
+    prepass('A/A', oAA, [yA, yB], [qAA, xAA]);
+    // the control does exactly double work (deterministic): its fold equals twice the single block's
+    const ctrl = runner(Y_YS2, 'YFastTrie x2', yA.obj, YFT_N_AA);
+    if (yRun(ctrl, qAA, Q) !== ((2 * yRun(yA, qAA, Q)) | 0)) {
+        throw new WitnessFail('pre-pass control: the x2 block does not fold to twice the single block (not double work)');
+    }
+    // tier the probe up before round 1, inside the GC window (untimed; the FULL run takes the
+    // same window here, before its first timed block)
+    const GWN = new Int32Array(1);
+    const wW = await gcWindow(() => {
+        for (let i = 0; i < YFT_WARM; i++) { SINK[0] ^= yRun(probe, qAA, Q); GWN[0]++; }
+    });
+    say('GC window: ' + GWN[0] + ' untimed YFastTrie successor probe blocks of ' + Q + ' queries (the tier-up before' +
+        ' round 1): gc.major ' + wW.major + ' minor ' + wW.minor + ' arrayBuffers growth ' + wW.growth +
+        ' B (tolerance: major 0, growth 0 B) -- ' + (wW.majorBad || wW.abBad ? 'FAIL' : 'ok'));
+    if (wW.majorBad) fails.push(wW.observed ? 'gc window: gc.major ' + wW.major + ' > 0 (observed ' + wW.observed + ')' : 'gc window: gc.major unobserved');
+    if (wW.abBad) fails.push('gc window: arrayBuffers growth ' + wW.growth + ' B > 0');
+
+    // time one block of runner r: ns/op, written into TM[slot]
+    const timeInto = (r, qs, slot) => {
+        const t = performance.now();
+        SINK[0] ^= yRun(r, qs, Q);
+        TM[slot] = (performance.now() - t) * 1e6 / Q;
+    };
+
+    // K ABBA rounds of candidate a vs foil b (the B2b protocol, R3a re-warm), one probe
+    // block per round into the drift series
+    const abba = (nm, a, qa, b, qb) => {
+        yRun(a, qa, Q); yRun(b, qb, Q); yRun(probe, qAA, Q);   // warm-up, untimed
+        let wins = 0, losses = 0, rounds = 0;
+        for (let r = 0; r < K; r++) {
+            SINK[0] ^= yRun(a, qa, Q);
+            timeInto(a, qa, 0);
+            timeInto(b, qb, 1);
+            timeInto(b, qb, 2);
+            timeInto(a, qa, 3);
+            const ca = TM[0] + TM[3];
+            const cb = TM[1] + TM[2];
+            if (ca < cb) wins++;
+            else if (cb < ca) losses++;
+            RC[r] = ca / 2;
+            RF[r] = cb / 2;
+            SINK[0] ^= yRun(probe, qAA, Q);
+            timeInto(probe, qAA, 0);
+            series[ST.pos++] = TM[0];
+            rounds++;
+        }
+        ST.abba++;
+        const t = { wins, losses, rounds, candMed: median(RC, K), foilMed: median(RF, K), ratio: NaN };
+        if (rounds !== K) fails.push(nm + ': ' + rounds + ' rounds != K ' + K);
+        if (!(wins + losses <= K)) fails.push(nm + ': wins + losses > K');
+        if (!(t.candMed > 0) || !(t.foilMed > 0) || !Number.isFinite(t.candMed) || !Number.isFinite(t.foilMed)) {
+            fails.push(nm + ': median not finite > 0 (candidate ' + t.candMed + ', foil ' + t.foilMed + ')');
+        } else {
+            t.ratio = t.candMed / t.foilMed;
+        }
+        return t;
+    };
+    const tl = (t) => t.wins + ' / ' + t.losses + ' / ' + (t.rounds - t.wins - t.losses);
+    const r4 = (x) => (Number.isFinite(x) ? x.toFixed(4) : String(x));
+    const ab = (name, t) => ({ name, wins: t.wins, losses: t.losses, ratio: t.ratio });
+
+    // REPORTED foil medians: median ns/op over K rounds, one untimed warm block each; a capped
+    // foil (obj null) prints its "n/a (...)" name and counts nothing
+    const foilMedians = (cfg, foils, qs) => {
+        const parts = [];
+        for (const f of foils) {
+            if (f.obj === null) { parts.push(f.name); continue; }
+            SINK[0] ^= yRun(f, qs, Q);
+            for (let r = 0; r < K; r++) { timeInto(f, qs, 0); RR[r] = TM[0]; }
+            const m = median(RR, K);
+            if (!(m > 0) || !Number.isFinite(m)) fails.push('foil median ' + cfg + ' ' + f.name + ': ' + m + ' not finite > 0');
+            ST.med++;
+            parts.push(f.name + ' ' + fmt(m));
+        }
+        say('  REPORTED foils ' + cfg + ' successor (median ns/op of K ' + K + '): ' + parts.join(' | '));
+    };
+
+    // LATENCY: per-op YFastTrie successor and add (absent key) latency, DDSketch.addFrom (the
+    // unboxed path) p50 / p99 + the EXACT max (a loop over LAT; it must equal sketch.max). C-10:
+    // the add max is PRINTED with its op #, kind (reseed > split > plain, from counter reads
+    // outside the timed pair) and the per-kind max ('n/a' when that kind has 0 ops), beside the
+    // run's cumulative counter deltas (the untimed restoring deletes merge / borrow). REPORTED only.
+    const latency = (cfg, op, s, qs) => {
+        CN0[0] = s._n[0]; CN0[1] = s._n[1]; CN0[2] = s._n[2]; CN0[3] = s._x._q[1]; CN0[4] = s._x._q[2];
+        if (op === 0) {
+            SINK[0] ^= yLatSucc(s, qs, Q, LAT);
+        } else {
+            const d = yLatAdd(s, qs, Q, LAT, KIND);
+            if (d !== Q) fails.push('latency ' + cfg + ' add: deleted ' + d + ' of ' + Q);
+        }
+        const dSp = s._n[0] - CN0[0], dMg = s._n[1] - CN0[1], dBr = s._n[2] - CN0[2];
+        const dKi = s._x._q[1] - CN0[3], dRs = s._x._q[2] - CN0[4];
+        let mx = -1, bad = 0;
+        ARG[0] = -1;
+        KMX.fill(-1);
+        KCT.fill(0);
+        for (let i = 0; i < Q; i++) {
+            const v = LAT[i];
+            if (!(v >= 0) || !Number.isFinite(v)) { bad++; continue; }
+            if (v > mx) { mx = v; ARG[0] = i; }
+            if (op !== 0) {
+                const k = KIND[i];
+                KCT[k]++;
+                if (v > KMX[k]) KMX[k] = v;
+            }
+        }
+        if (bad !== 0) {
+            fails.push('latency ' + cfg + ' ' + (op === 0 ? 'successor' : 'add') + ': ' + bad + ' of ' + Q +
+                ' samples not finite >= 0 (checked before the sketch)');
+            return;
+        }
+        sketch.clear();
+        for (let i = 0; i < Q; i++) sketch.addFrom(LAT, i);
+        sketch.quantilesInto(QQ, QO);
+        const p50 = QO[0], p99 = QO[1], smax = sketch.max, cnt = sketch.count;
+        ST.lat++;
+        let att = '';
+        if (op !== 0) {
+            const per = [];
+            for (let k = YK_RESEED; k >= YK_PLAIN; k--) {
+                if (k === YK_MERGE) continue;   // an add never merges
+                per.push(YK_NAMES[k] + ' ' + (KCT[k] === 0 ? 'n/a' : fmt(KMX[k]) + ' (' + KCT[k] + ' ops)'));
+            }
+            att = ' at op #' + ARG[0] + ' kind ' + YK_NAMES[KIND[ARG[0]]] + ' | per-kind max ' + per.join(', ') +
+                ' | run deltas splits +' + dSp + ' merges +' + dMg + ' borrows +' + dBr + ' inner kicks +' + dKi +
+                ' inner reseeds +' + dRs + ' (the untimed restoring deletes included)';
+        }
+        say('  REPORTED latency ' + cfg + ' YFastTrie ' + (op === 0 ? 'successor' : 'add') + ' per-op (ns, DDSketch alpha 0.01, ' +
+            cnt + ' samples): p50 ' + fmt(p50) + ' p99 ' + fmt(p99) + ' max ' + fmt(mx) + att);
+        if (op !== 0 && KCT[YK_PLAIN] + KCT[YK_SPLIT] + KCT[YK_RESEED] !== Q) {
+            fails.push('latency ' + cfg + ' add: per-kind ops ' + (KCT[0] + KCT[2] + KCT[3]) + ' != ' + Q +
+                ' (merge-tagged ' + KCT[1] + ')');
+        }
+        if (cnt !== Q || bad !== 0 || !Number.isFinite(p50) || !Number.isFinite(p99) || !(mx >= 0) || smax !== mx ||
+            !(ARG[0] >= 0)) {
+            fails.push('latency ' + cfg + ' ' + (op === 0 ? 'successor' : 'add') + ': count ' + cnt + ' bad ' + bad +
+                ' p50 ' + p50 + ' p99 ' + p99 + ' max ' + mx + ' sketch.max ' + smax + ' op #' + ARG[0]);
+        }
+    };
+
+    const scenarios = [];
+    let wantMed = 0;
+
+    // 3. n-sweep at w 28: YFastTrie vs XFastTrie (A/B scenario, n <= cap) or vs u32Successor
+    // (REPORTED, n > cap), + REPORTED foil medians + byteLength (the SPACE co-headline, C-12)
+    say('n-sweep at w ' + YFT_W_N + ': YFastTrie vs XFastTrie (A/B scenario, n <= ' + YFT_CAP + ') or vs u32Successor' +
+        ' (REPORTED, n > ' + YFT_CAP + ') (ns/op medians; wins / losses / ties of K ' + K + ')');
+    for (let j = 0; j < NS.length; j++) {
+        const n = NS[j];
+        const keys = genKeys(n, U_N, 0x5EED5000 + j);
+        const qs = genQueries(Q, U_N, 0x0E575000 + j);
+        const xs = genExtras(keys, U_N);
+        const abs = xGenAbsent(keys, U_N, Q, 0xAB5E5000 + j);
+        const cfg = 'n=' + n + ' w=' + YFT_W_N;
+        const yft = runner(Y_YS, 'YFastTrie', xBuild(YFastTrie, keys, U_N, n + 1), n);
+        const xft = n <= YFT_CAP ? runner(Y_XS, 'XFastTrie', xBuild(XFastTrie, keys, U_N, n + 1), n) : null;
+        const foils = yFoils(keys, U_N, YFT_W_N);
+        const u32 = foils[foils.length - 1];
+        const cands = [yft];
+        if (xft !== null) cands.push(xft);
+        for (const f of foils) if (f.obj !== null && f.kind !== Y_U32) cands.push(f);
+        prepass(cfg, u32, cands, [qs, xs]);
+        updCheck(cfg, runner(Y_YU, 'YFastTrie', yft.obj, n), abs, n);
+        if (xft !== null) updCheck(cfg, runner(Y_XU, 'XFastTrie', xft.obj, n), abs, n);
+        const t = abba(cfg + (xft !== null ? ' vs XFT' : ' vs u32'), yft, qs, xft !== null ? xft : u32, qs);
+        if (xft !== null) scenarios.push(ab('succ ' + cfg, t));
+        const yBytes = yft.obj.byteLength;
+        say('  ' + cfg + ' YFastTrie ' + fmt(t.candMed) + ' | ' + (xft !== null ? 'XFT ' : 'u32 (REPORTED) ') +
+            fmt(t.foilMed) + ' | ' + tl(t) + ' ratio ' + r4(t.ratio) + ' | byteLength YFT ' + yBytes + ' B XFT ' +
+            (xft !== null ? xft.obj.byteLength + ' B (YFT / XFT ' + r4(yBytes / xft.obj.byteLength) + ')' :
+                'n/a (n > ' + YFT_CAP + ')') + ' | YFT ' + r4(yBytes / n) + ' B/key');
+        wantMed += yWantFoils(n, YFT_W_N);
+        foilMedians(cfg, foils, qs);
+        latency(cfg, 0, yft.obj, qs);
+        latency(cfg, 1, yft.obj, abs);
+        if (yft.obj.size !== n || (xft !== null && xft.obj.size !== n)) fails.push(cfg + ': size changed by the lane');
+    }
+
+    // 4. U-sweep at n 4096: YFastTrie vs XFastTrie successor (A/B) + add+delete (REPORTED) + foils
+    const fl = [], fw = [], fs = [], fu = [];
+    say('U-sweep at n ' + YFT_N_U + ': YFastTrie vs XFastTrie successor (A/B scenario) and add+delete' +
+        ' (REPORTED) (ns/op medians; wins / losses / ties of K ' + K + ')');
+    if (WS.includes(32)) {
+        say('  CAVEAT w=32:' +
+            ' keys and returned keys >= 2^31 may box at a non-inlined call boundary (harness key stream, the member' +
+            ' return, and a bucket rep handed to the inner trie; C-14), so w = 32 ns/op includes it (not measured separately)');
+    }
+    for (let j = 0; j < WS.length; j++) {
+        const w = WS[j];
+        const U = 2 ** w;
+        const keys = genKeys(YFT_N_U, U, 0x5EED6000 + w);
+        const qs = genQueries(Q, U, 0x0E576000 + w);
+        const xs = genExtras(keys, U);
+        const abs = xGenAbsent(keys, U, Q, 0xAB5E6000 + w);
+        const cfg = 'w=' + w + ' n=' + YFT_N_U;
+        const yft = runner(Y_YS, 'YFastTrie', xBuild(YFastTrie, keys, U, YFT_N_U + 1), YFT_N_U);
+        const xft = runner(Y_XS, 'XFastTrie', xBuild(XFastTrie, keys, U, YFT_N_U + 1), YFT_N_U);
+        const yu = runner(Y_YU, 'YFastTrie', yft.obj, YFT_N_U);
+        const xu = runner(Y_XU, 'XFastTrie', xft.obj, YFT_N_U);
+        const foils = yFoils(keys, U, w);
+        const cands = [yft, xft];
+        for (const f of foils) if (f.obj !== null && f.kind !== Y_U32) cands.push(f);
+        prepass(cfg, foils[foils.length - 1], cands, [qs, xs]);
+        updCheck(cfg, yu, abs, YFT_N_U);
+        updCheck(cfg, xu, abs, YFT_N_U);
+        const ts = abba(cfg + ' succ', yft, qs, xft, qs);
+        const tu = abba(cfg + ' add+delete', yu, abs, xu, abs);
+        scenarios.push(ab('succ ' + cfg, ts));
+        fw.push(w); fl.push(Math.log2(w)); fs.push(ts.candMed); fu.push(tu.candMed);
+        say('  ' + cfg + ' successor YFastTrie ' + fmt(ts.candMed) + ' | XFT ' + fmt(ts.foilMed) + ' | ' + tl(ts) +
+            ' ratio ' + r4(ts.ratio) + ' || add+delete YFastTrie ' + fmt(tu.candMed) + ' | XFT ' + fmt(tu.foilMed) +
+            ' | ' + tl(tu) + ' ratio ' + r4(tu.ratio) + ' (REPORTED) | byteLength YFT ' + yft.obj.byteLength +
+            ' B XFT ' + xft.obj.byteLength + ' B');
+        wantMed += yWantFoils(YFT_N_U, w);
+        foilMedians(cfg, foils, qs);
+        latency(cfg, 0, yft.obj, qs);
+        latency(cfg, 1, yft.obj, abs);
+        if (yft.obj.size !== YFT_N_U || xft.obj.size !== YFT_N_U) fails.push(cfg + ': size changed by the lane');
+    }
+    if (fw.length !== WS.length || !(fw.length >= 2)) {
+        fails.push('U-sweep fit: ' + fw.length + ' points for ' + WS.length + ' widths (need >= 2)');
+    } else {
+        const sL = fitLogLinear(fl, fs);
+        const sW = fitLogLinear(fw, fs);
+        const uL = fitLogLinear(fl, fu);
+        const uW = fitLogLinear(fw, fu);
+        say('REPORTED fit YFastTrie successor vs log2(w) (the O(log log U) axis): slope ' + fmt(sL.slope) +
+            ' ns/doubling intercept ' + fmt(sL.intercept) + ' R^2 ' + sL.r2.toFixed(4));
+        say('REPORTED fit YFastTrie successor vs w: slope ' + sW.slope.toFixed(4) + ' ns/bit intercept ' +
+            fmt(sW.intercept) + ' R^2 ' + sW.r2.toFixed(4));
+        say('REPORTED fit YFastTrie add+delete vs log2(w) (O(log log U) probes): slope ' + fmt(uL.slope) +
+            ' ns/doubling intercept ' + fmt(uL.intercept) + ' R^2 ' + uL.r2.toFixed(4));
+        say('REPORTED fit YFastTrie add+delete vs w (+ at most 2w-1 word moves, C-8): slope ' + uW.slope.toFixed(4) +
+            ' ns/bit intercept ' + fmt(uW.intercept) + ' R^2 ' + uW.r2.toFixed(4));
+        say('  the work bounds are PROVEN by the exact counts in test/YftCount.test.js (C-11, DETERMINISTIC,' +
+            ' npm test); these fits are REPORTED timing only');
+        for (const f of [sL, sW, uL, uW]) {
+            if (!Number.isFinite(f.slope) || !Number.isFinite(f.intercept) || !Number.isFinite(f.r2)) {
+                fails.push('U-sweep fit not finite: ' + JSON.stringify(f));
+            }
+        }
+    }
+
+    // 4b. tail (G3-4), per width w in WS: fresh default-seed YFastTrie(2^w, M) A and B, keys
+    // yftTailKeys(M, 2^w, YFT_TAIL_SEED + w) (C-16). A replays fill M then drain M inside ONE
+    // GC window; B is timed per op, each op tagged from counter deltas read outside its timed
+    // pair, the HIGHEST kind winning: reseed > split > merge > plain, where `merge` = the shrink
+    // path (a merge OR a borrow; a borrow delta tags merge). C-10: the MAX row is PRINTED with
+    // attribution and REPORTED only; C-11: the counts are the gate (attribution sums exact, A == B).
+    const M = YFT_TAIL_M;
+    const M2 = 2 * M;
+    const TLAT = new Float64Array(M2);
+    const TKIND = new Uint8Array(M2);
+    const TD = new Int32Array(5 * M2);   // per-op deltas: splits, merges, borrows, inner kicks, inner reseeds
+    const TCB = new Int32Array(15);      // B: per-op snapshot [0..4], run start [5..9], run end [10..14]
+    const TCA = new Int32Array(10);      // A: before [0..4], after [5..9]
+    const TSUM = new Int32Array(5);      // summed per-op attribution
+    const TSZ = new Int32Array(2);       // A / B size after the run
+    const GTN = new Int32Array(1);       // tail GC windows run
+    const RET = { tracked: 0, collected: 0, worst: 0, errors: 0, cycles: 0 };
+    const tracker = createLeakTracker({
+        name: 'lite-loglogn-witness-yft-tail',
+        onLeak: () => { RET.collected++; },
+        onError: () => { RET.errors++; },
+    });
+    say('tail at M ' + M + ' per width (fill M then drain M = ' + M2 + ' ops, keys yftTailKeys(M, 2^w, 0x' +
+        YFT_TAIL_SEED.toString(16).toUpperCase() + ' + w), default seed): A replays in a GC window, B timed per op' +
+        ' (kind: reseed > split > merge > plain; merge = merge or borrow)');
+    say('  C-10: the MAX rows are REPORTED only (no timing verdict); the stated bound is the count-gated WORK bound --' +
+        ' a split / merge / borrow moves <= 2w words, an inner reseed <= 32 tries (test/YftCount.test.js, C-11)');
+    let tailRuns = 0;
+    for (let j = 0; j < WS.length; j++) {
+        const w = WS[j];
+        const U = 2 ** w;
+        const tk = yftTailKeys(M, U, YFT_TAIL_SEED + w);
+        yTailBuild(YFastTrie, U, M, tracker);
+        RET.tracked += tracker.size();
+        const wT = await gcWindow(() => { yTailReplay(tk, M, TCA); GTN[0]++; });
+        say('GC window tail w=' + w + ': instance A fill ' + M + ' + drain ' + M + ' (untimed): gc.major ' + wT.major +
+            ' minor ' + wT.minor + ' arrayBuffers growth ' + wT.growth + ' B splits ' + (TCA[5] - TCA[0]) +
+            ' merges ' + (TCA[6] - TCA[1]) + ' (tolerance: major 0, growth 0 B; splits >= 1, merges >= 1) -- ' +
+            (wT.majorBad || wT.abBad ? 'FAIL' : 'ok'));
+        if (wT.majorBad || wT.abBad) {
+            fails.push('gc window tail w=' + w + ': ' + (wT.majorBad ? 'gc.major ' + wT.major + ' (observed ' + wT.observed + ')' : '') +
+                (wT.majorBad && wT.abBad ? ', ' : '') + (wT.abBad ? 'arrayBuffers growth ' + wT.growth + ' B > 0' : ''));
+        }
+        yTailTimed(tk, M, TLAT, TD, TCB);
+        yTailSizes(TSZ);
+        // attribution (cold): kind per op, per-kind count / max, summed per-op deltas
+        TSUM.fill(0);
+        KMX.fill(-1);
+        KCT.fill(0);
+        let mx = -1, arg = -1, bad = 0;
+        for (let i = 0; i < M2; i++) {
+            const o = 5 * i;
+            for (let c = 0; c < 5; c++) TSUM[c] += TD[o + c];
+            const kd = TD[o + 4] > 0 ? YK_RESEED : TD[o] > 0 ? YK_SPLIT : TD[o + 1] + TD[o + 2] > 0 ? YK_MERGE : YK_PLAIN;
+            TKIND[i] = kd;
+            KCT[kd]++;
+            const v = TLAT[i];
+            if (!(v >= 0) || !Number.isFinite(v)) { bad++; continue; }
+            if (v > KMX[kd]) KMX[kd] = v;
+            if (v > mx) { mx = v; arg = i; }
+        }
+        const tot = [0, 1, 2, 3, 4].map((c) => TCB[10 + c] - TCB[5 + c]);
+        const totA = [0, 1, 2, 3, 4].map((c) => TCA[5 + c] - TCA[c]);
+        const sumOk = [0, 1, 2, 3, 4].every((c) => TSUM[c] === tot[c]);
+        if (!sumOk) {
+            fails.push('attribution tail w=' + w + ': summed per-op deltas [' + Array.from(TSUM).join(', ') +
+                '] != counter deltas [' + tot.join(', ') + '] (splits, merges, borrows, inner kicks, inner reseeds)');
+        }
+        if (!totA.every((x, c) => x === tot[c])) {
+            fails.push('replay tail w=' + w + ': A counter deltas [' + totA.join(', ') + '] != B [' + tot.join(', ') + ']');
+        }
+        if (!(tot[0] >= 1) || !(tot[1] >= 1)) fails.push('tail w=' + w + ': splits ' + tot[0] + ' merges ' + tot[1] + ' (need >= 1 each)');
+        if (KCT[0] + KCT[1] + KCT[2] + KCT[3] !== M2) fails.push('tail w=' + w + ': per-kind ops sum ' + (KCT[0] + KCT[1] + KCT[2] + KCT[3]) + ' != ' + M2);
+        if (TSZ[0] !== 0 || TSZ[1] !== 0) fails.push('tail w=' + w + ': size after drain A ' + TSZ[0] + ' B ' + TSZ[1] + ' != 0');
+        if (bad !== 0 || !(arg >= 0)) {
+            fails.push('tail w=' + w + ': ' + bad + ' of ' + M2 + ' samples not finite >= 0');
+        } else {
+            sketch.clear();
+            for (let i = 0; i < M2; i++) sketch.addFrom(TLAT, i);
+            sketch.quantilesInto(QQ, QO);
+            const p50 = QO[0], p99 = QO[1];
+            if (!Number.isFinite(p50) || !Number.isFinite(p99) || sketch.count !== M2 || sketch.max !== mx) {
+                fails.push('tail w=' + w + ': sketch count ' + sketch.count + ' p50 ' + p50 + ' p99 ' + p99 + ' max ' + sketch.max + ' vs ' + mx);
+            }
+            const rat = p50 > 0 ? mx / p50 : NaN;
+            const nb = Number.isFinite(rat) && rat > 1 ? Math.min(64, Math.round(4 * Math.log2(rat))) : 0;
+            const ao = 5 * arg;
+            const per = [YK_PLAIN, YK_SPLIT, YK_MERGE, YK_RESEED].map((k) =>
+                YK_NAMES[k] + ' ' + (KCT[k] === 0 ? 'n/a' : fmt(KMX[k])));
+            say('REPORTED MAX single-op tail w=' + w + ' M=' + M + ': max ' + fmt(mx) + ' ns at op #' + arg + ' phase ' +
+                (arg < M ? 'fill' : 'drain') + ' kind ' + YK_NAMES[TKIND[arg]] + ' deltas splits +' + TD[ao] + ' merges +' +
+                TD[ao + 1] + ' borrows +' + TD[ao + 2] + ' kicks +' + TD[ao + 3] + ' reseeds +' + TD[ao + 4] +
+                ' | p50 ' + fmt(p50) + ' p99 ' + fmt(p99) + ' | per-kind max ' + per.join(', ') +
+                ' | max/p50 ' + r4(rat) + ' [' + '#'.repeat(nb) + '] (4 # per doubling, cap 64)');
+        }
+        say('COUNTS tail w=' + w + ' M=' + M + ': splits ' + tot[0] + ' merges ' + tot[1] + ' inner kicks ' + tot[3] +
+            ' inner reseeds ' + tot[4] + ' | per-kind ops plain ' + KCT[YK_PLAIN] + ' split ' + KCT[YK_SPLIT] + ' merge ' +
+            KCT[YK_MERGE] + ' reseed ' + KCT[YK_RESEED] + ' | borrows ' + tot[2] + ' (tagged merge)');
+        tailRuns++;
+        // retention (A5): drop both references, then gc + settle until the tracker empties (bounded)
+        yTailDrop();
+        let live = tracker.size();
+        for (let g = 0; g < 20 && live > 0; g++) {
+            gcFn();
+            await settle(25);
+            live = tracker.size();
+        }
+        if (live > RET.worst) RET.worst = live;
+        RET.cycles++;
+    }
+    const retOk = RET.worst === 0 && RET.errors === 0 && RET.cycles === WS.length && RET.tracked === 2 * WS.length && RET.collected === RET.tracked;
+    say('RETENTION: tail cycles ' + RET.cycles + ' / ' + WS.length + ', instances tracked ' + RET.tracked + ', collected ' +
+        RET.collected + ', errors ' + RET.errors + ', worst tracker.size() ' + RET.worst + ' after a cycle\'s drop + gc +' +
+        ' settle; tracker.size() ' + tracker.size() + ' -- ' + (retOk ? 'ok' : 'FAIL'));
+    if (!retOk) fails.push('retention: tracker.size() ' + RET.worst + ' after a tail cycle (want 0), tracked ' + RET.tracked + ' / ' + 2 * WS.length + ', collected ' + RET.collected + ', errors ' + RET.errors);
+    const wantTail = WS.length;
+    COV_MID.push('tail runs ' + tailRuns + ' / ' + wantTail);
+    COV_END.push('gc tail windows ' + GTN[0] + ' / ' + wantTail);
+    if (tailRuns !== wantTail || GTN[0] !== wantTail) {
+        fails.push('coverage: tail runs ' + tailRuns + ' / ' + wantTail + ', gc tail windows ' + GTN[0] + ' / ' + wantTail);
+    }
+
+    // 5. control: the YFastTrie successor block done twice (candidate) vs once: MUST lose
+    const tc = abba('control', ctrl, qAA, yA, qAA);
+    const control = { wins: tc.wins, losses: tc.losses, ratio: tc.ratio };
+    say('A/B control: YFastTrie x2 (candidate, double work) ' + fmt(tc.candMed) + ' vs YFastTrie ' + fmt(tc.foilMed) +
+        ' at n ' + YFT_N_AA + ' w ' + YFT_W_AA + ' | ' + tl(tc) + ' ratio ' + r4(tc.ratio) + ' (must lose)');
+
+    // 6. A/A: YFastTrie vs an independently built identical YFastTrie, successor and add+delete
+    const ta = abba('aa succ', yA, qAA, yB, qAA);
+    const tb = abba('aa add+delete', runner(Y_YU, 'YFastTrie', yA.obj, YFT_N_AA), absAA,
+        runner(Y_YU, 'YFastTrie(B)', yB.obj, YFT_N_AA), absAA);
+    const aa = [ab('aa succ n=' + YFT_N_AA + ' w=' + YFT_W_AA, ta), ab('aa add+delete n=' + YFT_N_AA + ' w=' + YFT_W_AA, tb)];
+    say('A/B A/A: successor YFastTrie ' + fmt(ta.candMed) + ' vs YFastTrie(B) ' + fmt(ta.foilMed) + ' | ' + tl(ta) +
+        ' ratio ' + r4(ta.ratio) + ' || add+delete ' + fmt(tb.candMed) + ' vs ' + fmt(tb.foilMed) + ' | ' + tl(tb) +
+        ' ratio ' + r4(tb.ratio) + ' (must not declare a winner above the floor)');
+    if (yA.obj.size !== YFT_N_AA || yB.obj.size !== YFT_N_AA) fails.push('A/A: size changed by the lane');
+
+    // drift + load
+    if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
+    const hd = hostDrift(series.subarray(0, ST.pos));
+    const loadEnd = os.loadavg();
+    const load1 = Math.max(loadStart[0], loadEnd[0]);
+    say('host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
+        fmt(median(series, ST.pos)) + ' ns/op) | loadavg end ' + loadEnd.map((x) => x.toFixed(2)).join(' ') +
+        ' load1 ' + load1.toFixed(2) + ' vs 0.5 x ' + cores + ' | run label ' + label);
+
+    // coverage floors: every scenario ran, every ABBA ran K rounds, every latency and foil median ran
+    const yWantLat = 2 * (NS.length + WS.length);
+    const cov = ['n-sweep ' + NS.length + ' points (A/B ' + nAB + ')', 'U-sweep ' + WS.length + ' widths',
+        'ABBA runs ' + ST.abba + ' / ' + nAbba + ' (K ' + K + ' rounds each)', 'probe rounds ' + ST.pos,
+        'latency runs ' + ST.lat + ' / ' + yWantLat, 'foil medians ' + ST.med + ' / ' + wantMed];
+    for (const c of COV_MID) cov.push(c);
+    cov.push('A/B scenarios ' + scenarios.length, 'pre-pass queries ' + CHK[0],
+        'gc window blocks ' + GWN[0] + ' / ' + YFT_WARM);
+    for (const c of COV_END) cov.push(c);
+    say('COVERAGE: ' + cov.join(', '));
+    if (!(GWN[0] > 0) || GWN[0] !== YFT_WARM) fails.push('coverage: gc window blocks ' + GWN[0] + ' != ' + YFT_WARM);
+    if (ST.abba !== nAbba) fails.push('coverage: ABBA runs ' + ST.abba + ' != ' + nAbba);
+    if (ST.lat !== yWantLat) fails.push('coverage: latency runs ' + ST.lat + ' != ' + yWantLat);
+    if (!(wantMed > 0) || ST.med !== wantMed) fails.push('coverage: foil medians ' + ST.med + ' != ' + wantMed);
+    if (scenarios.length !== nAB + WS.length || !(scenarios.length > 0)) {
+        fails.push('coverage: A/B scenarios ' + scenarios.length + ' != ' + (nAB + WS.length));
+    }
+    if (!(CHK[0] > 0)) fails.push('coverage: the pre-pass compared 0 queries');
+    // expected pre-pass work from the config arrays alone: A/A 2 candidates; per n-sweep point YFT +
+    // XFT (n <= cap) + the non-u32 foils; per U-sweep width YFT + XFT + the non-u32 foils
+    let wantCand = 2; for (const n of NS) wantCand += (n <= YFT_CAP ? 1 : 0) + yWantFoils(n, YFT_W_N); for (const w of WS) wantCand += 1 + yWantFoils(YFT_N_U, w);
+    if (PRE[0] !== NS.length + WS.length + 1 || PRE[1] !== wantCand || PRE[2] !== NS.length + nAB + 2 * WS.length) fails.push('coverage: pre-pass configs ' + PRE[0] + ' / ' + (NS.length + WS.length + 1) + ', candidates ' + PRE[1] + ' / ' + wantCand + ', updChecks ' + PRE[2] + ' / ' + (NS.length + nAB + 2 * WS.length));
+    if (fails.length > 0) {
+        for (const f of fails) say('FAIL ' + f);
+        return 1;
+    }
+
+    // 7. verdict (REPORTED)
+    const v = abVerdict({ K, need: NEED, floor: FLOOR, scenarios, aa, control, drift: hd.drift, load1, cores });
+    for (const r of v.reasons) say('  reason ' + r);
+    say('A/B verdicts (REPORTED; B = YFastTrie vs A = XFastTrie successor) [' +
+        v.verdicts.map((x) => x.name + ' ' + x.verdict).join(', ') + '] decision ' + v.decision);
+    say('sink ' + SINK[0] + ' | wall ' + ((performance.now() - t0wall) / 1000).toFixed(2) + ' s | label ' + label);
+    const shapeOk = (v.exit === 0 || v.exit === 1 || v.exit === 2) && Array.isArray(v.reasons) &&
+        v.reasons.every((r) => typeof r === 'string') && Array.isArray(v.verdicts) &&
+        v.verdicts.length === scenarios.length && ['PASS', 'FAIL', 'PENDING'].includes(v.decision);
+    if (!shapeOk) {
+        say('FAIL abVerdict returned a malformed result');
+        return 1;
+    }
+    if (SMOKE) {
+        say('abVerdict exit (printed, not used in smoke): ' + v.exit + ' ' + v.decision);
+        say('YFT SMOKE ok (untimed wiring: every scenario ran, abVerdict called, percentiles computed)');
+        return 0;
+    }
+    say('YFT exit ' + v.exit + ' ' + v.decision + ' -- REPORTED with provenance (' + label +
+        '); D-host: never a release gate');
+    return v.exit;
+}
+
 // realpath the entry: a symlinked path (macOS /tmp -> /private/tmp) must still run main()
 function isEntry() {
     if (typeof process.argv[1] !== 'string') return false;
@@ -2172,7 +3186,12 @@ function failOut(e) {
     return 1;
 }
 
-if (IS_MAIN && process.argv.slice(2).includes('--xft')) {
+if (IS_MAIN && process.argv.slice(2).includes('--yft')) {
+    // --yft first: its KNOWN list names any --xft / --tier beside it as an unknown flag (exit 1, no banner)
+    yftMain(process.argv.slice(2), process.env).then(
+        (c) => { process.exitCode = c; },
+        (e) => { process.exitCode = failOut(e); });
+} else if (IS_MAIN && process.argv.slice(2).includes('--xft')) {
     xftMain(process.argv.slice(2), process.env).then(
         (c) => { process.exitCode = c; },
         (e) => { process.exitCode = failOut(e); });

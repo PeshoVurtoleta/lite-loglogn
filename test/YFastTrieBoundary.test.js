@@ -13,6 +13,8 @@
  *     HEAD (spec: s_L + s - 1 > K), counter `_n[2]` + layout checked by hand;
  *   - U = 2 and U = 3: exhaustive over every reachable state and every op;
  *   - clear(): size 0, dump reps [0], `_n` KEPT (cumulative);
+ *   - C-7 poison: a failed inner rollback (split / borrow) poisons the YFastTrie (loud Error, hot
+ *     methods throw TypeError); clear() revives both, `_n` kept; a no-revive control is rejected;
  *   - C-7: an inner stall (a REAL rollback through XFastTrie._rebuild) inside a
  *     split and inside a head borrow throws the inner RangeError (/could not
  *     place/, not /YFastTrie/), dump(), `_n`, the inner keys and `_lv` are
@@ -381,4 +383,143 @@ test('YFastTrieBoundary: C-7 stall inside a BORROW FROM THE HEAD -- delete throw
         else if (S.size < 200) A(x);
     }
     agree(t, S, U);
+});
+
+// --- C-7 poison clause: a failed inner ROLLBACK poisons the YFastTrie; clear() revives both -----
+
+/**
+ * Makes the NEXT inner placement run a REAL _rebuild whose every _fill fails, INCLUDING the
+ * restore inside _undo, so the engine's own _rebuild -> _undo -> _poison path fires (no hand-set _q).
+ * Returns a function that removes the overrides (call it BEFORE clear(), which re-inits the inner trie).
+ */
+function forcePoison(t) {
+    const x = t._x;
+    let puts = 0;
+    x._put = function (L, f) {
+        if (puts++ === 0) {
+            this._rebuild(L, f);
+            return;
+        }
+        XFastTrie.prototype._put.call(this, L, f);
+    };
+    x._fill = () => false;
+    return () => {
+        delete x._put;
+        delete x._fill;
+    };
+}
+
+/** The loud poison Error is a plain Error (not the stall RangeError) naming POISONED. */
+function assertPoisonError(err) {
+    assert.ok(err instanceof Error, 'an Error, got ' + err);
+    assert.ok(!(err instanceof RangeError), 'not the plain stall RangeError');
+    assert.match(err.message, /POISONED/);
+    assert.match(err.message, /rollback failed/);
+}
+
+/** Every hot method throws TypeError on a poisoned YFastTrie (inner _q === null, C-7). */
+function assertPoisoned(t) {
+    assert.equal(t._x._q, null, 'inner _q is null');
+    for (const [name, fn] of [
+        ['has', () => t.has(5)],
+        ['add', () => t.add(5)],
+        ['delete', () => t.delete(5)],
+        ['successor', () => t.successor(5)],
+        ['predecessor', () => t.predecessor(5)],
+        ['min', () => t.min()],
+        ['max', () => t.max()],
+    ]) assert.throws(fn, TypeError, name + ' throws TypeError');
+}
+
+/** The revive contract after clear(): fresh inner _q, empty, rep 0 re-added, usable, _n kept. */
+function assertRevived(t, nBefore) {
+    assert.ok(t._x._q instanceof Int32Array, 'fresh inner _q Int32Array');
+    assert.equal(t.size, 0);
+    assert.deepEqual(Array.from(t.dump().reps), [0], 'rep 0 re-added');
+    assert.deepEqual(Array.from(t.dump().keys), []);
+    assert.equal(t.has(0), false);
+    assert.equal(t.min(), undefined);
+    assert.deepEqual(Array.from(t._n), nBefore, '_n kept by clear()');
+    t.add(7);
+    t.add(3);
+    assert.equal(t.successor(3), 7);
+    assert.equal(t.successor(7), undefined);
+    assert.equal(t.predecessor(7), 3);
+    assert.equal(t.has(7), true);
+    assert.equal(t.delete(7), true);
+    assert.equal(t.max(), 3);
+}
+
+/** Split-forcing state: head full (K keys), the next new key splits. */
+function splitState(Cls) {
+    const U = 1 << 20;
+    const t = new Cls(U, 4096);
+    // warm-up: overflow the head once (a split, _n[0] >= 1) then delete it all, so `_n` is nonzero
+    // before the poison and a clear() that zeroed `_n` is caught. Keys 500000+ are < U = 2^20.
+    for (let k = 0; k <= 2 * t.bits; k++) t.add(500000 + k);
+    for (let k = 0; k <= 2 * t.bits; k++) t.delete(500000 + k);
+    assert.ok(t._n[0] >= 1, 'warm-up split counted');
+    for (let k = 0; k < 2 * t.bits; k++) t.add(k * 3 + 10);
+    return { t, U };
+}
+
+/** Borrow-forcing state (same as the C-7 borrow test): the next delete(140) borrows from the head. */
+function borrowState(Cls) {
+    const U = 1024;
+    const t = new Cls(U, 200);
+    for (let i = 0; i < 20; i++) t.add(i * 10);
+    t.add(200);
+    for (let i = 1; i < 12; i++) t.add(i);
+    for (const x of [200, 190, 180, 170, 160, 150]) t.delete(x);
+    assert.deepEqual(Array.from(t.dump().sizes), [20, 5]);
+    return { t, U };
+}
+
+function poisonVia(t, op) {
+    const undo = forcePoison(t);
+    let err = null;
+    try {
+        op();
+    } catch (e) {
+        err = e;
+    }
+    undo();
+    assertPoisonError(err);
+}
+
+test('YFastTrieBoundary: C-7 poison -- failed rollback inside a SPLIT poisons; clear() revives both', () => {
+    const { t, U } = splitState(YFastTrie);
+    const nBefore = Array.from(t._n);
+    poisonVia(t, () => t.add(11));
+    assertPoisoned(t);
+    t.clear();
+    assertRevived(t, nBefore);
+});
+
+test('YFastTrieBoundary: C-7 poison -- failed rollback inside a BORROW poisons; clear() revives both', () => {
+    const { t, U } = borrowState(YFastTrie);
+    const nBefore = Array.from(t._n);
+    poisonVia(t, () => t.delete(140));
+    assertPoisoned(t);
+    t.clear();
+    assertRevived(t, nBefore);
+});
+
+test('YFastTrieBoundary: C-7 poison control -- a clear() that skips the inner revive is REJECTED by the check', () => {
+    // Control with teeth: only outer fields are reset, the inner trie stays poisoned.
+    class NoRevive extends YFastTrie {
+        clear() {
+            this._bn.fill(0);
+            this._size = 0;
+        }
+    }
+    for (const mkState of [splitState, borrowState]) {
+        const { t, U } = mkState(NoRevive);
+        const nBefore = Array.from(t._n);
+        poisonVia(t, mkState === splitState ? () => t.add(11) : () => t.delete(140));
+        assertPoisoned(t);
+        t.clear();
+        assert.throws(() => assertRevived(t, nBefore), assert.AssertionError, 'the revive check rejects the broken clear()');
+        assert.equal(t._x._q, null, 'still poisoned');
+    }
 });

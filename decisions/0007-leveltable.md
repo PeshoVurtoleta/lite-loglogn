@@ -125,6 +125,32 @@ Do not feed XFastTrie untrusted keys without bounding that.
   XFastTrie gains the same optional argument additively (maintainer ruling 2026-10-25; an additive exception to 'prior members BYTE-IDENTICAL').
   (This decisions/ folder is not shipped: it is not in package.json files[].)
 
-## Amendment
+## Amendment 1 (2026-10-25, PROPOSED with 0.4.0): optional caller seed
 
-(none yet)
+Source: `.handoff/PLAN-yfasttrie.md` CURRENT C-4, C-5, C-6, C-13 (maintainer rulings
+2026-10-23 and 2026-10-25). This implements the optional caller seed planned in the "Per-instance random seeds" entry above; per-instance random seeds stay rejected (never random-by-default).
+
+- **Signature (C-4).** `new XFastTrie(U, C, seed?)`. `seed === undefined` -> today's
+  deterministic defaults. Otherwise the seed must be a uint32 integer in [0, 2^32-1], else
+  `RangeError '[lite-loglogn] XFastTrie seed must be a uint32 integer in [0, 2^32-1]; got ...'`
+  (the value is appended). YFastTrie (ADR 0008) validates with its own class name and
+  forwards the seed.
+- **Mixing.** The constructor stores `_sd = seed | 0`. In the cold `_init`, the first seed
+  of level L becomes s1 = fmix32(imul(L, phi) ^ S_L ^ _sd), where S_L is the 0.3.0 default
+  size-derived value. The change is in cold code only: no hot body of XFastTrie changes.
+- **Seed 0 == omitted (C-5).** `_sd = 0` leaves s1 equal to the 0.3.0 expression, so seed 0
+  is bit for bit the omitted-seed default. Documented here, in ADR 0008 and in the .d.ts.
+- **clear() (C-6).** `clear()` restores the CONSTRUCTED state, including a caller seed
+  (it does not fall back to the defaults). Poison revival is unchanged.
+- **The 0.3.0 text still holds for the omitted seed (C-13).** The fixed defaults, the
+  hash-flood caveat and the reproducible replay gates are unchanged when the seed is
+  omitted, undefined or 0; XFastTrie is BEHAVIOR-identical there (xft-seed.json replay).
+  A caller seed only moves where colliding keys lie; it is NOT a defence against an
+  attacker who knows the seed, and it is never random-by-default.
+- **Precedent.** lite-o1 `CuckooMap` takes the same optional seed
+  (`LiteO1/O1.js` lines 3176-3181 at the time of writing): `undefined` -> a deterministic
+  default, else a uint32 integer or a `RangeError` ('[lite-o1] CuckooMap seed must be a
+  uint32 integer in [0, 2^32-1], got ...'), stored as the int32 bit pattern `seed | 0`.
+- **Additive exception.** This is an additive exception to "prior members BYTE-IDENTICAL"
+  (maintainer ruling 2026-10-25): the XFastTrie region differs from the frozen build fd8fcec (LogLogN.js sha256 375caeab) only in
+  the C-4 hunks; `XFastTrie.length` goes 2 -> 3.

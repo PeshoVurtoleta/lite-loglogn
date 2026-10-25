@@ -2,8 +2,8 @@
  * @zakkster/lite-loglogn -- ambient type surface.
  *
  * Hand-written to mirror EXACTLY the runtime exports of LogLogN.js: `VERSION`
- * and the classes `StratifiedBitset` and `XFastTrie`. The three-place version sync (package.json /
- * LogLogN.js VERSION / llms.txt) is gated by test/QaAudit.test.js. One ambient declaration
+ * and the classes `StratifiedBitset`, `XFastTrie` and `YFastTrie`. The three-place version sync
+ * (package.json / LogLogN.js VERSION / llms.txt) is gated by test/QaAudit.test.js. One ambient declaration
  * block per member is appended below as each member ships. ASCII-only.
  *
  * @license MIT
@@ -126,8 +126,14 @@ export class XFastTrie {
     /**
      * @param universe integer in [2, 2^32]; otherwise throws RangeError.
      * @param capacity integer in [1, min(universe, 2^24)]; otherwise throws RangeError.
+     * @param seed optional level-seed salt, a uint32 integer in [0, 2^32-1].
+     *   Omitted, `undefined` or 0 gives the default level seeds bit for bit; any
+     *   other value changes every level's hash seed (deterministic, never random).
+     *   Anything else throws RangeError
+     *   `[lite-loglogn] XFastTrie seed must be a uint32 integer in [0, 2^32-1]; got ...`.
+     *   Validated after universe and capacity.
      */
-    constructor(universe: number, capacity: number);
+    constructor(universe: number, capacity: number, seed?: number);
 
     /** Number of keys present. */
     readonly size: number;
@@ -158,8 +164,115 @@ export class XFastTrie {
     /** Largest key, or undefined if empty. */
     max(): number | undefined;
 
-    /** Cold. Removes every key and restores the default seeds; revives a poisoned instance. */
+    /**
+     * Cold. Removes every key and restores the CONSTRUCTED level seeds (the
+     * caller's seed included, even after an in-place reseed); revives a poisoned
+     * instance.
+     */
     clear(): void;
     /** Cold, allocating. A fresh snapshot independent of later mutation. */
     dump(): XFastTrieDump;
+}
+
+/** The snapshot returned by `YFastTrie#dump()`. */
+export interface YFastTrieDump {
+    /** The fixed universe U. */
+    universe: number;
+    /** The fixed capacity C (most keys held at once). */
+    capacity: number;
+    /** Number of keys present. */
+    size: number;
+    /** Key bit-width w = ceil(log2 U). */
+    bits: number;
+    /** Every key present, ascending (walked bucket by bucket from the rep thread). */
+    keys: Uint32Array;
+    /** The representatives, ascending; `reps[0]` is always 0 (the permanent head rep). */
+    reps: Uint32Array;
+    /** `sizes[i]` = the number of keys in the bucket of `reps[i]` (keys in [reps[i], reps[i+1])). */
+    sizes: Uint8Array;
+}
+
+/**
+ * YFastTrie -- O(log log U) successor / predecessor in O(n) space over a FIXED
+ * universe [0, U), 2 <= U <= 2^32, holding at most `capacity` keys (fixed at
+ * construction, fail closed). An inner XFastTrie holds O(n/w) representatives;
+ * each owns a bounded sorted bucket of keys (w = ceil(log2 U), K = 2w, h =
+ * ceil(w/2): the permanent head rep 0 holds 0..K keys, every other bucket h..K).
+ * Deterministic: no RNG. SPACE O(C), preallocated: Cr = min(2 + floor(C/h), U),
+ * byteLength = 4 (Cr+1) K + (Cr+1) + 16 + the inner XFastTrie(U, Cr).byteLength.
+ *
+ * Bounds: queries are O(log log U) (one inner locate plus a binary search of
+ * one bucket); updates are O(log log U) probes plus at most 2w - 1 contiguous
+ * word moves (O(w)); a bucket split / merge / borrow (at most 2w word moves plus
+ * one inner add (split), one inner delete (merge) or both (borrow), the inner
+ * add expected O(w)) is AMORTIZED. Hot methods
+ * allocate 0 bytes for keys < 2^30; a returned key >= 2^31 on Node (>= 2^30 on
+ * Chrome / Electron, pointer-compressed) may box as a HeapNumber when the call is
+ * not inlined.
+ * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
+ * (not a number, not an integer in [0, U)) touches nothing: has / delete ->
+ * false, successor / predecessor -> undefined, add -> RangeError. Absent =
+ * `undefined`. A split or borrow whose inner add stalls throws the inner
+ * XFastTrie RangeError (its text, not "YFastTrie") with the set UNCHANGED -- so
+ * `add` AND `delete` (a delete may borrow) can throw on a valid key. If the
+ * inner rollback itself fails, an Error is thrown and the instance is POISONED:
+ * every hot method then throws TypeError on a valid key (min / max always) until
+ * `clear()`.
+ */
+export class YFastTrie {
+    /**
+     * @param universe integer in [2, 2^32]; otherwise throws RangeError.
+     * @param capacity integer in [1, min(universe, 2^24)]; otherwise throws RangeError.
+     * @param seed optional uint32 integer in [0, 2^32-1], forwarded to the inner
+     *   XFastTrie (omitted, `undefined` or 0 = the default level seeds); anything
+     *   else throws RangeError
+     *   `[lite-loglogn] YFastTrie seed must be a uint32 integer in [0, 2^32-1]; got ...`.
+     *   The seed never changes a successful answer, only the inner hash layout
+     *   (whether an add stalls depends on that layout).
+     */
+    constructor(universe: number, capacity: number, seed?: number);
+
+    /** Number of keys present. */
+    readonly size: number;
+    /** The fixed universe U (keys are integers in [0, U)). */
+    readonly universe: number;
+    /** The fixed capacity (most keys held at once). */
+    readonly capacity: number;
+    /** Key bit-width w = ceil(log2 U). */
+    readonly bits: number;
+    /** Bytes of every typed array owned, the inner trie included: 4 (Cr+1) K + (Cr+1) + 16 + inner. */
+    readonly byteLength: number;
+
+    /** True iff x is present. A bad key returns false. */
+    has(x: number): boolean;
+    /**
+     * Idempotent. Throws RangeError on a bad key, on a NEW key at size ===
+     * capacity (`YFastTrie is full`), or when a split's inner add stalls -- each
+     * with no state changed -- or the poison Error if that rollback fails. Returns
+     * this.
+     */
+    add(x: number): this;
+    /**
+     * True if x was present. A bad key returns false. Can throw RangeError on a
+     * present key when the borrow it triggers stalls in the inner add (set
+     * unchanged), or the poison Error if that rollback fails.
+     */
+    delete(x: number): boolean;
+    /** Smallest key strictly greater than x, or undefined. */
+    successor(x: number): number | undefined;
+    /** Largest key strictly less than x, or undefined. */
+    predecessor(x: number): number | undefined;
+    /** Smallest key, or undefined if empty. */
+    min(): number | undefined;
+    /** Largest key, or undefined if empty. */
+    max(): number | undefined;
+
+    /**
+     * Cold. Removes every key and restores the constructed state (the inner
+     * trie's constructed seeds, the caller's seed included; rep 0 re-added);
+     * revives a poisoned instance.
+     */
+    clear(): void;
+    /** Cold, allocating. A fresh snapshot independent of later mutation. */
+    dump(): YFastTrieDump;
 }

@@ -388,5 +388,5 @@ test('XFastTrieOracle: LOGLOGN_SEED parse fails closed (F8)', () => {
         assert.equal(n, ok, f);
         wired += ok;
     }
-    assert.equal(wired, 4, 'four parseSeed consumers');
+    assert.equal(wired, 5, 'five parseSeed consumers');
 });

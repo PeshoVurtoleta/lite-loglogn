@@ -21,9 +21,13 @@
  * tree, O(U/w) space. XFastTrie (0.3.0): O(log log U) successor / predecessor
  * over pointer-free bucketized-cuckoo LevelTables, one per prefix length, plus a
  * sorted leaf thread; updates are honestly O(w); O(n*w) space, preallocated at a
- * FIXED capacity. Still planned: YFastTrie (the O(n)-space fix over x-fast
- * representatives, expected / amortized) and vEBTree (a flattened van Emde Boas
- * keeping worst-case O(log log U) and 0 B/op).
+ * FIXED capacity. YFastTrie (0.4.0): O(log log U) successor / predecessor over
+ * an inner XFastTrie of O(n/w) representatives, each owning a bounded sorted
+ * bucket of <= 2w keys; an update is O(log log U) probes plus at most 2w - 1
+ * contiguous word moves, and a bucket split / merge / borrow is AMORTIZED
+ * (deterministic buckets, no RNG); O(n) space, preallocated at a FIXED capacity.
+ * Still planned: vEBTree (a flattened van Emde Boas keeping worst-case
+ * O(log log U) and 0 B/op).
  * Members are independent (no shared mutable module state), so a bundler that
  * imports one drops the others (`sideEffects: false`).
  *
@@ -42,18 +46,24 @@
  * BigInt hot path.
  * Every hot op each member ships states its bound -- O(log_w U) (StratifiedBitset),
  * O(log log U) queries and O(w) updates (XFastTrie; an update's cuckoo insert is
- * expected O(1) per level, with an in-place reseed on a stall), worst-case unless
- * labelled expected / amortized -- and allocates ZERO bytes after construction.
+ * expected O(1) per level, with an in-place reseed on a stall), O(log log U)
+ * queries and O(log log U)-probe updates with at most 2w - 1 word moves
+ * (YFastTrie; a bucket split / merge / borrow is amortized and adds one inner
+ * XFastTrie update (a borrow two: an inner add, then an inner delete)),
+ * worst-case unless labelled expected / amortized -- and allocates ZERO bytes
+ * after construction.
  *
  * The SPACE price is a co-headline, stated on every member with the same
  * prominence as the time bound (vEB O(U), x-fast O(n*w), y-fast O(n),
  * StratifiedBitset O(U/w)) -- this family's defining honesty hook. XFastTrie
  * allocates its O(C*w) worst case up front, sized by its capacity C, not by the
  * keys present: byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16 (see its class
- * comment). The witness harness (never imported here) REPORTS fits on both the
- * log2(w) and the w axis and gates on neither: the w axis fit StratifiedBitset
- * better in the 2026-10-22 run (R^2 0.7293 vs 0.6589), as its O(log_32 U) label
- * predicts.
+ * comment). YFastTrie allocates O(C) words up front: byteLength = 4 (Cr+1) K +
+ * (Cr+1) + 16 + the inner XFastTrie(U, Cr).byteLength, Cr = min(2 + floor(C/h),
+ * U), K = 2w, h = ceil(w/2) (see its class comment). The witness harness (never
+ * imported here) REPORTS fits on both the log2(w) and the w axis and gates on
+ * neither: the w axis fit StratifiedBitset better in the 2026-10-22 run (R^2
+ * 0.7293 vs 0.6589), as its O(log_32 U) label predicts.
  *
  * @license MIT
  */
@@ -405,8 +415,12 @@ export class XFastTrie {
     /**
      * @param {number} universe integer in [2, 2^32]
      * @param {number} capacity integer in [1, min(universe, 2^24)]
+     * @param {number} [seed] optional uint32 level-seed salt (C-4): undefined or 0
+     *   gives the default seeds bit for bit; any other value is XORed into every
+     *   level's s1 (s1 = fmix32(imul(L, 0x9e3779b1) ^ S_L ^ seed)). Deterministic,
+     *   never random; clear() restores the seeds it gives. Anything else -> RangeError.
      */
-    constructor(universe, capacity) {
+    constructor(universe, capacity, seed) {
         if (typeof universe !== 'number' || !Number.isInteger(universe) ||
             universe < 2 || universe > 4294967296) {
             throw new RangeError('[lite-loglogn] XFastTrie universe must be an integer in [2, 2^32]; got ' +
@@ -418,6 +432,11 @@ export class XFastTrie {
             throw new RangeError('[lite-loglogn] XFastTrie capacity must be an integer in [1, ' + lim +
                 '] (min(universe, 2^24)); got ' +
                 (typeof capacity === 'number' ? String(capacity) : typeof capacity));
+        }
+        if (seed !== undefined && (typeof seed !== 'number' || !Number.isInteger(seed) ||
+            seed < 0 || seed > 4294967295)) {
+            throw new RangeError('[lite-loglogn] XFastTrie seed must be a uint32 integer in [0, 2^32-1]; got ' +
+                (typeof seed === 'number' ? String(seed) : typeof seed));
         }
         const w = 32 - Math.clz32(universe - 1);
         const lv = new Int32Array(4 * (w + 1));
@@ -434,6 +453,7 @@ export class XFastTrie {
         this._u = universe;
         this._w = w;
         this._c = capacity;
+        this._sd = seed | 0;
         this._size = 0;
         this._free = 1;
         this._lv = lv;
@@ -664,9 +684,9 @@ export class XFastTrie {
     }
 
     /**
-     * Cold. Removes every key and restores the default seeds (the constructed
-     * state; the `_q` counters are kept). Revives a poisoned instance (a fresh
-     * `_q`, counters zero).
+     * Cold. Removes every key and restores the constructed seeds (the default
+     * seeds, or those of the caller's seed; the `_q` counters are kept).
+     * Revives a poisoned instance (a fresh `_q`, counters zero).
      */
     clear() {
         if (this._q === null) this._q = new Int32Array(4);
@@ -735,7 +755,7 @@ export class XFastTrie {
 
     // ---- cold path: seeds, kick chain, reseed, rollback, poison -----------------
 
-    /** Cold. Default seeds per level, empty thread, free list 1..C, size 0. */
+    /** Cold. Seeds per level from `_sd` (0 = the defaults), empty thread, free list 1..C, size 0. */
     _init() {
         const lv = this._lv;
         const nx = this._next;
@@ -744,7 +764,7 @@ export class XFastTrie {
         const c = this._c;
         for (let L = 1; L <= w; L++) {
             const j = L << 2;
-            const s1 = fmix32(Math.imul(L, 0x9e3779b1) ^ ((lv[j + 1] + 1) << 3));
+            const s1 = fmix32(Math.imul(L, 0x9e3779b1) ^ ((lv[j + 1] + 1) << 3) ^ this._sd);
             lv[j + 2] = s1;
             lv[j + 3] = fmix32(s1 ^ 0x85ebca6b);
         }
@@ -925,5 +945,401 @@ export class XFastTrie {
         this._q = null;
         throw new Error('[lite-loglogn] XFastTrie invariant: rollback failed (' + why +
             '); the instance is POISONED -- every hot method throws until clear()');
+    }
+}
+
+// --- YFastTrie (0.4.0) -------------------------------------------------------
+
+/**
+ * Cold. Throws the RangeError for an add() of a NEW key at size === capacity.
+ * Kept out of add's body so the error-string bytes never sit in the hot method.
+ * @param {number} c
+ */
+function throwYFull(c) {
+    throw new RangeError('[lite-loglogn] YFastTrie is full (capacity ' + c +
+        '); delete a key first -- capacity is fixed at construction');
+}
+
+/**
+ * YFastTrie -- O(log log U) successor / predecessor in O(n) space over a FIXED
+ * universe [0, U), 2 <= U <= 2^32, holding at most `capacity` keys (fixed, fail
+ * closed). An inner XFastTrie `_x` holds O(n/w) REPRESENTATIVES; each rep owns a
+ * bounded sorted bucket of keys (decisions/0008). Deterministic: no RNG.
+ *
+ * Policy (w = ceil(log2 U), K = 2w, h = ceil(w/2)): reps are SEPARATORS --
+ * bucket i holds the keys in [rep_i, rep_{i+1}); reps do not move on delete, so a
+ * bucket's min may sit above its rep. The head rep 0 is permanent (the ctor and
+ * clear() add it), holds 0..K keys and never merges; every other bucket holds
+ * h..K keys. Split: an add of a NEW key into a bucket of K keys; the new rep is
+ * the key at index w, the right half (w keys) moves to the new rep's bucket, then
+ * x goes left or right. Underflow: a delete from a non-head bucket of s <= h
+ * keys: s_L + s - 1 <= K -> merge into the LEFT neighbour and drop the rep; else
+ * borrow (t = s_L + s - 1, the new rep = the left bucket's key at index
+ * ceil(t/2); the moved run becomes the new rep's bucket, the old rep is dropped).
+ *
+ * Layout (every typed array preallocated in the constructor and never replaced):
+ * Cr = min(2 + floor(C/h), U) inner capacity (never exceeded: reps <= 1 +
+ * floor(n/h), and a borrow, +1 rep while it runs, needs s_L >= 3h, which forces
+ * reps + 1 <= floor(C/h)); `_bk` U32[(Cr+1)K] one pool of K-word runs,
+ * bucket f = `_bk[f*K .. f*K + _bn[f])` where f is the rep's inner LEAF index;
+ * `_bn` U8[Cr+1] bucket sizes; `_n` I32[4] = the REPORTED counters splits,
+ * merges, borrows (cold path only, cumulative, clear() keeps them, WRAP at 2^31
+ * with `| 0`; [3] reserved). The inner trie is `new XFastTrie(U, Cr, seed)`;
+ * its own `_q[1]` / `_q[2]` / `_q[3]` count kicks / reseedOps / tries.
+ * `_hd` = the head rep 0's inner leaf, always leaf 1 (the ctor and clear() add
+ * rep 0 to an empty inner trie, whose free list starts at leaf 1).
+ * byteLength = 4 (Cr+1) K + (Cr+1) + 16 + inner XFastTrie(U, Cr).byteLength.
+ *
+ * Cost (lambda = inner level-table touches of one locate: 1 when x is a rep, else
+ * 1 + T; beta = binary-search reads over a bucket of s keys, in
+ * [floor(log2(s+1)), ceil(log2(s+1))]; hop = one leaf-thread read + <= 1 `_bk`
+ * read; m, m' = the inner update walk's early stop):
+ *
+ *   op                                    inner touches       search reads       moves
+ *   bad key                               0                   0                  0
+ *   has / add present / full / del absent lambda              beta + [lb < s]    0
+ *   successor / predecessor               lambda              beta + <=2 (+hop)  0
+ *   min / max                             0                   <=1 (+hop)         0
+ *   add, new key                          lambda              beta + [lb < s]    s - lb, +1 write
+ *   delete, key present                   lambda              beta + 1           s - lb - 1
+ *   + split                               +1 + T + (w - m)    -                  +w
+ *   + merge                               +(w - m)            -                  +s - 1
+ *   + borrow                              +(1+T+w-m)+(w-m')   -                  <= 2w
+ *
+ * Claim: queries are O(log log U); updates are O(log log U) probes plus at most
+ * 2w - 1 contiguous word moves (O(w)), and a split / merge / borrow (at most 2w
+ * word moves plus one inner add (split), one inner delete (merge) or both
+ * (borrow), an inner add expected O(w)) is amortized (a merge can be followed at once by one split of the merged bucket;
+ * a split or borrow leaves each bucket it touches Omega(w) updates from its next
+ * restructure). Hot
+ * methods allocate 0 bytes for keys < 2^30; a returned key >= 2^31 on Node
+ * (>= 2^30 on Chrome / Electron) may box when the call is not inlined, and a
+ * rep >= 2^31 passed to the inner add / delete of a split / merge / borrow may
+ * box (cold path). successor / predecessor are STRICT (> x / < x). -0 aliases
+ * key 0. A bad key touches nothing: has / delete -> false, successor /
+ * predecessor -> undefined, add -> RangeError. add of a NEW key at size ===
+ * capacity -> RangeError, nothing written. A split or borrow whose inner add
+ * stalls throws the inner RangeError with the set UNCHANGED (the inner add runs
+ * before any copy; so a delete that borrows can throw). An inner poison poisons
+ * the YFastTrie (every hot method throws TypeError on a valid key, min / max
+ * always); clear() revives both.
+ */
+export class YFastTrie {
+    /**
+     * @param {number} universe integer in [2, 2^32]
+     * @param {number} capacity integer in [1, min(universe, 2^24)]
+     * @param {number} [seed] optional uint32, forwarded to the inner XFastTrie
+     *   (undefined or 0 = the default level seeds); anything else -> RangeError.
+     */
+    constructor(universe, capacity, seed) {
+        if (typeof universe !== 'number' || !Number.isInteger(universe) ||
+            universe < 2 || universe > 4294967296) {
+            throw new RangeError('[lite-loglogn] YFastTrie universe must be an integer in [2, 2^32]; got ' +
+                (typeof universe === 'number' ? String(universe) : typeof universe));
+        }
+        const lim = universe < 16777216 ? universe : 16777216;
+        if (typeof capacity !== 'number' || !Number.isInteger(capacity) ||
+            capacity < 1 || capacity > lim) {
+            throw new RangeError('[lite-loglogn] YFastTrie capacity must be an integer in [1, ' + lim +
+                '] (min(universe, 2^24)); got ' +
+                (typeof capacity === 'number' ? String(capacity) : typeof capacity));
+        }
+        if (seed !== undefined && (typeof seed !== 'number' || !Number.isInteger(seed) ||
+            seed < 0 || seed > 4294967295)) {
+            throw new RangeError('[lite-loglogn] YFastTrie seed must be a uint32 integer in [0, 2^32-1]; got ' +
+                (typeof seed === 'number' ? String(seed) : typeof seed));
+        }
+        const w = 32 - Math.clz32(universe - 1);
+        const k = 2 * w;
+        const h = (w + 1) >>> 1;
+        const cr = Math.min(2 + Math.floor(capacity / h), universe);
+        this._u = universe;
+        this._w = w;
+        this._k = k;
+        this._h = h;
+        this._c = capacity;
+        this._size = 0;
+        this._hd = 0;
+        this._x = new XFastTrie(universe, cr, seed);
+        this._bk = new Uint32Array((cr + 1) * k);
+        this._bn = new Uint8Array(cr + 1);
+        this._n = new Int32Array(4);
+        this._x.add(0);
+        this._hd = this._x._next[0];
+    }
+
+    /** Number of keys present. */
+    get size() { return this._size; }
+
+    /** The fixed universe U (keys are integers in [0, U)). */
+    get universe() { return this._u; }
+
+    /** The fixed capacity (most keys held at once). */
+    get capacity() { return this._c; }
+
+    /** Key bit-width w = ceil(log2 U). */
+    get bits() { return this._w; }
+
+    /** Bytes of every typed array owned, inner trie included (4 (Cr+1) K + (Cr+1) + 16 + inner). */
+    get byteLength() {
+        return this._bk.byteLength + this._bn.byteLength + 16 + this._x.byteLength;
+    }
+
+    /**
+     * Hot helper, x|0 already in the inner `_q[0]`. @returns {number} the inner
+     * leaf (= bucket id) of the largest rep <= x (rep 0 is always present).
+     */
+    _loc() {
+        const t = this._x;
+        const s = t._slot(this._w);
+        return s >= 0 ? t._tmin[s] : t._prev[t._near()];
+    }
+
+    /**
+     * Hot helper. Lower bound of x (read from the inner `_q[0] >>> 0`) in the run
+     * `_bk[o .. o+s)`. @returns {number} the first index j in [0, s] with key >= x
+     */
+    _lb(o, s) {
+        const bk = this._bk;
+        const x = this._x._q[0] >>> 0;
+        let lo = o;
+        let hi = o + s;
+        while (lo < hi) {
+            const m = (lo + hi) >>> 1;
+            if (bk[m] < x) lo = m + 1;
+            else hi = m;
+        }
+        return lo - o;
+    }
+
+    /** @param {number} x @returns {boolean} */
+    has(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        this._x._q[0] = x;
+        const f = this._loc();
+        const s = this._bn[f];
+        const o = f * this._k;
+        const j = this._lb(o, s);
+        return j < s && this._bk[o + j] === x;
+    }
+
+    /** @param {number} x @returns {this} throws RangeError on a bad key or when full (no state touched) */
+    add(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) throwKey(x, this._u);
+        this._x._q[0] = x;
+        let f = this._loc();
+        const bn = this._bn;
+        const k = this._k;
+        let s = bn[f];
+        let j = this._lb(f * k, s);
+        const bk = this._bk;
+        if (j < s && bk[f * k + j] === x) return this;
+        if (this._size === this._c) throwYFull(this._c);
+        if (s === k) {
+            const nf = this._split(f);
+            const ls = bn[f];
+            if (j > ls) {
+                f = nf;
+                j -= ls;
+            }
+            s = bn[f];
+        }
+        const o = f * k;
+        bk.copyWithin(o + j + 1, o + j, o + s);
+        bk[o + j] = x;
+        bn[f] = s + 1;
+        this._size++;
+        return this;
+    }
+
+    /** @param {number} x @returns {boolean} true if x was present */
+    delete(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        this._x._q[0] = x;
+        const f = this._loc();
+        const bn = this._bn;
+        const s = bn[f];
+        const o = f * this._k;
+        const j = this._lb(o, s);
+        const bk = this._bk;
+        if (j === s || bk[o + j] !== x) return false;
+        if (s <= this._h && f !== this._hd) {
+            this._shrink(f, j);
+        } else {
+            bk.copyWithin(o + j, o + j + 1, o + s);
+            bn[f] = s - 1;
+        }
+        this._size--;
+        return true;
+    }
+
+    /** Smallest key > x, or undefined. @param {number} x @returns {number|undefined} */
+    successor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        this._x._q[0] = x;
+        const f = this._loc();
+        const s = this._bn[f];
+        const k = this._k;
+        const o = f * k;
+        let j = this._lb(o, s);
+        const bk = this._bk;
+        if (j < s && bk[o + j] === x) j++;
+        if (j < s) return bk[o + j];
+        const n = this._x._next[f];
+        return n === 0 ? undefined : bk[n * k];
+    }
+
+    /** Largest key < x, or undefined. @param {number} x @returns {number|undefined} */
+    predecessor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        this._x._q[0] = x;
+        const f = this._loc();
+        const k = this._k;
+        const o = f * k;
+        const j = this._lb(o, this._bn[f]);
+        const bk = this._bk;
+        if (j > 0) return bk[o + j - 1];
+        const p = this._x._prev[f];
+        if (p === 0) return undefined;
+        const n = this._bn[p];
+        return n === 0 ? undefined : bk[p * k + n - 1];
+    }
+
+    /** Smallest key, or undefined if empty. @returns {number|undefined} */
+    min() {
+        const t = this._x;
+        void t._q[0]; // poisoned (inner _q === null) -> TypeError, as in every hot method
+        const f = this._hd;
+        const k = this._k;
+        if (this._bn[f] !== 0) return this._bk[f * k];
+        const n = t._next[f];
+        return n === 0 ? undefined : this._bk[n * k];
+    }
+
+    /** Largest key, or undefined if empty. @returns {number|undefined} */
+    max() {
+        const t = this._x;
+        void t._q[0]; // poisoned (inner _q === null) -> TypeError, as in every hot method
+        const f = t._prev[0];
+        const n = this._bn[f];
+        return n === 0 ? undefined : this._bk[f * this._k + n - 1];
+    }
+
+    /**
+     * Cold. Removes every key: clears the inner trie (its constructed seeds, a
+     * poisoned one revived) and re-adds rep 0. The `_n` counters are kept.
+     */
+    clear() {
+        const t = this._x;
+        t.clear();
+        this._bn.fill(0);
+        this._size = 0;
+        t.add(0);
+        this._hd = t._next[0];
+    }
+
+    /**
+     * Cold, allocating. A fresh snapshot walked from the inner leaf thread: `keys`
+     * (U32, ascending), `reps` (U32, ascending, reps[0] = 0) and `sizes` (U8, the
+     * bucket size of each rep).
+     * @returns {{universe: number, capacity: number, size: number, bits: number,
+     *   keys: Uint32Array, reps: Uint32Array, sizes: Uint8Array}}
+     */
+    dump() {
+        const t = this._x;
+        const k = this._k;
+        const bk = this._bk;
+        const bn = this._bn;
+        const nx = t._next;
+        const ky = t._key;
+        const n = this._size;
+        const nr = t._size;
+        const keys = new Uint32Array(n);
+        const reps = new Uint32Array(nr);
+        const sizes = new Uint8Array(nr);
+        let r = 0;
+        let q = 0;
+        for (let f = nx[0]; f !== 0; f = nx[f]) {
+            const s = bn[f];
+            if (r === nr || q + s > n) {
+                throw new Error('[lite-loglogn] YFastTrie invariant: the buckets hold more than size ' + n +
+                    ' keys or the rep thread more than ' + nr + ' reps');
+            }
+            reps[r] = ky[f];
+            sizes[r++] = s;
+            keys.set(bk.subarray(f * k, f * k + s), q);
+            q += s;
+        }
+        if (r !== nr || q !== n) {
+            throw new Error('[lite-loglogn] YFastTrie invariant: ' + r + ' reps / ' + q +
+                ' keys walked, expected ' + nr + ' / ' + n);
+        }
+        return { universe: this._u, capacity: this._c, size: n, bits: this._w, keys, reps, sizes };
+    }
+
+    // ---- cold path: split, merge / borrow ---------------------------------------
+
+    /**
+     * Cold. Splits the full bucket of leaf f (K keys): the new rep = its key at
+     * index w is added to the inner trie FIRST (a stall throws with nothing
+     * changed, C-7), then keys w..K-1 move to the new leaf's bucket.
+     * Overridable (test controls replace it). @returns {number} the new leaf
+     */
+    _split(f) {
+        const t = this._x;
+        const bk = this._bk;
+        const bn = this._bn;
+        const k = this._k;
+        const w = this._w;
+        const o = f * k;
+        const nf = t._free;
+        t.add(bk[o + w]);
+        bk.copyWithin(nf * k, o + w, o + k);
+        bn[f] = w;
+        bn[nf] = k - w;
+        this._n[0] = (this._n[0] + 1) | 0;
+        return nf;
+    }
+
+    /**
+     * Cold. Deletes index j of the non-head bucket of leaf f (s <= h keys) and
+     * repairs the underflow against its left neighbour p: s_p + s - 1 <= K ->
+     * merge into p and drop f's rep; else borrow: the new rep = p's key at index
+     * ceil(t/2), t = s_p + s - 1, is added to the inner trie FIRST (a stall throws
+     * with nothing changed, C-7), p's keys from there on plus f's remaining keys
+     * become the new leaf's bucket, then f's rep is dropped. Overridable.
+     */
+    _shrink(f, j) {
+        const t = this._x;
+        const bk = this._bk;
+        const bn = this._bn;
+        const k = this._k;
+        const o = f * k;
+        const s = bn[f];
+        const p = t._prev[f];
+        const po = p * k;
+        const sl = bn[p];
+        if (sl + s - 1 <= k) {
+            bk.copyWithin(po + sl, o, o + j);
+            bk.copyWithin(po + sl + j, o + j + 1, o + s);
+            bn[p] = sl + s - 1;
+            bn[f] = 0;
+            t.delete(t._key[f]);
+            this._n[1] = (this._n[1] + 1) | 0;
+            return;
+        }
+        const c = (sl + s) >>> 1;
+        const nf = t._free;
+        t.add(bk[po + c]);
+        const no = nf * k;
+        const m = sl - c;
+        bk.copyWithin(no, po + c, po + sl);
+        bk.copyWithin(no + m, o, o + j);
+        bk.copyWithin(no + m + j, o + j + 1, o + s);
+        bn[p] = c;
+        bn[nf] = m + s - 1;
+        bn[f] = 0;
+        t.delete(t._key[f]);
+        this._n[2] = (this._n[2] + 1) | 0;
     }
 }

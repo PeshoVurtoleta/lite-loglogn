@@ -1,0 +1,174 @@
+{
+  "what": "lite-loglogn XFastTrie level-seed vectors (0.4.0 G1-0, C-4 / C-5 / C-13): seed omitted / undefined / 0 must reproduce every row; cut from the frozen build",
+  "build": {
+    "commit": "fd8fcec",
+    "sha256": "375caeab6f5aa15a343254dae252c18f8d34f35b5ac3f162c5f62482f2fd688d",
+    "regionFrom": "// --- XFastTrie (0.3.0) ",
+    "regionBytes": 23546,
+    "regionSha256": "0f546b5bcf44d72e61940e9fa053c061657af9947f12194388863aaa47368109"
+  },
+  "hash": "node:crypto sha256 hex; lvCtor / lvEnd = sha256(Array.from(_lv).join(\",\")) after the ctor / at the end; dump = sha256(JSON.stringify(dump())) at the end; q = [_q[1], _q[2], _q[3]] (kicks, reseedOps, tries) at the end",
+  "xftStreamVersion": 1,
+  "nOps": 20000,
+  "streams": [
+    {
+      "i": 0,
+      "U": 2,
+      "C": 2,
+      "streamSeed": 4147059580,
+      "lvCtor": "6e4924c015c0cd3cd9cde1d8f636bc23f57bf700fd138b262abc0e1847fd58d3",
+      "lvEnd": "6e4924c015c0cd3cd9cde1d8f636bc23f57bf700fd138b262abc0e1847fd58d3",
+      "q": [0, 0, 0],
+      "dump": "f6cbe8142d4e13f4623f95d9c49a93a29eccb401be94712740b3d27bfc832f17"
+    },
+    {
+      "i": 1,
+      "U": 3,
+      "C": 3,
+      "streamSeed": 2506528053,
+      "lvCtor": "c35386aa0285cc71b7e4d2091b9253444b442c7f6c6d4e41ece54f9a51c49522",
+      "lvEnd": "c35386aa0285cc71b7e4d2091b9253444b442c7f6c6d4e41ece54f9a51c49522",
+      "q": [0, 0, 0],
+      "dump": "d93cee4a969b8090cd874a397bd4b0b12d48e78a7080ea18ede976a2289801ca"
+    },
+    {
+      "i": 2,
+      "U": 5,
+      "C": 5,
+      "streamSeed": 865996526,
+      "lvCtor": "e25a49deaeaa83f988c184e6ff68f029c828816de42139c7d10b07e60e1232c5",
+      "lvEnd": "e25a49deaeaa83f988c184e6ff68f029c828816de42139c7d10b07e60e1232c5",
+      "q": [0, 0, 0],
+      "dump": "5e54b5f2f536c4601885e6f55c0e36eac14f0b9b7f8f5736ffd24a010a91e943"
+    },
+    {
+      "i": 3,
+      "U": 16,
+      "C": 16,
+      "streamSeed": 3520432295,
+      "lvCtor": "7428058929dc9db1a75649f61ee6009a992c3d560f39f64581da8e879536fe90",
+      "lvEnd": "7428058929dc9db1a75649f61ee6009a992c3d560f39f64581da8e879536fe90",
+      "q": [0, 0, 0],
+      "dump": "366c673c63a66425cd06e466304d6862ef6d4be63dc5e51f0561bc72b2361645"
+    },
+    {
+      "i": 4,
+      "U": 17,
+      "C": 8,
+      "streamSeed": 1879900768,
+      "lvCtor": "0367d7ceb7d50459b9e06a5235b470d5a3b9b73a01ff0844da5bb507787cebba",
+      "lvEnd": "0367d7ceb7d50459b9e06a5235b470d5a3b9b73a01ff0844da5bb507787cebba",
+      "q": [0, 0, 0],
+      "dump": "61a2f3ca3af5aaf10a224496eba574def35ea9832aa602484b338751e4a8127b"
+    },
+    {
+      "i": 5,
+      "U": 256,
+      "C": 64,
+      "streamSeed": 239369241,
+      "lvCtor": "252cab47cbdbc292ec12d68743fdcb3c39466ac94b756022cbfcf6897cbb820b",
+      "lvEnd": "252cab47cbdbc292ec12d68743fdcb3c39466ac94b756022cbfcf6897cbb820b",
+      "q": [13, 0, 0],
+      "dump": "0767ce4975c90770a1427bf50af3fae552951ca45979b8d5d08beb61317c51d4"
+    },
+    {
+      "i": 6,
+      "U": 1000,
+      "C": 200,
+      "streamSeed": 2893805010,
+      "lvCtor": "3110b896c207e36c1f3149e503d705e2b61558012e057b6e5658d3c874d45d0e",
+      "lvEnd": "3110b896c207e36c1f3149e503d705e2b61558012e057b6e5658d3c874d45d0e",
+      "q": [410, 0, 0],
+      "dump": "5dc3cb24a2aa8529d60dc4d87a6db4052b39d791268b398e545f21e6dde8561c"
+    },
+    {
+      "i": 7,
+      "U": 65536,
+      "C": 4096,
+      "streamSeed": 1253273483,
+      "lvCtor": "c58dd763b53e7571953da4bbaa2673593f4b14e4ca3dec185f11fccc5fccc642",
+      "lvEnd": "c58dd763b53e7571953da4bbaa2673593f4b14e4ca3dec185f11fccc5fccc642",
+      "q": [2, 0, 0],
+      "dump": "22b66fce4993ee70465bcf5fd20adb320488607f599ee3cd6f5749da80029e91"
+    },
+    {
+      "i": 8,
+      "U": 65537,
+      "C": 1024,
+      "streamSeed": 3907709252,
+      "lvCtor": "65e5d87b22d079b14d3da1f806b22266bfa105e16152467f0a63e0ccaedbd6c7",
+      "lvEnd": "65e5d87b22d079b14d3da1f806b22266bfa105e16152467f0a63e0ccaedbd6c7",
+      "q": [9, 0, 0],
+      "dump": "90f89f36b9f7f990ccbee8fe1f875fd7782c648c1167deae8ffe83dc5184af9e"
+    },
+    {
+      "i": 9,
+      "U": 1048576,
+      "C": 4096,
+      "streamSeed": 2267177725,
+      "lvCtor": "1aceb66b8329fbf8caa214bf79ecf012d3a080b204eefec2a6c58619001d225c",
+      "lvEnd": "1aceb66b8329fbf8caa214bf79ecf012d3a080b204eefec2a6c58619001d225c",
+      "q": [16, 0, 0],
+      "dump": "9cd882e63f7de9ed52f71f3a5ffae3ee635feacaaca796551828717a7e81d64c"
+    },
+    {
+      "i": 10,
+      "U": 16777216,
+      "C": 4096,
+      "streamSeed": 626646198,
+      "lvCtor": "6b28e5bd5fddcd6dfe63b88d425839f14fb8c3b15606d2bb2996fa40df33ddff",
+      "lvEnd": "6b28e5bd5fddcd6dfe63b88d425839f14fb8c3b15606d2bb2996fa40df33ddff",
+      "q": [28, 0, 0],
+      "dump": "e95174010db49d12acc38548fcfcf25117a5e88be71a7fe59f3453b4b037c7ad"
+    },
+    {
+      "i": 11,
+      "U": 268435456,
+      "C": 4096,
+      "streamSeed": 3281081967,
+      "lvCtor": "f674fe77415710e0054e2ed0d54d416347c79384552f22af08451b426e900718",
+      "lvEnd": "f674fe77415710e0054e2ed0d54d416347c79384552f22af08451b426e900718",
+      "q": [24, 0, 0],
+      "dump": "0b11ddb1430dd530ea577082da83a792027d0aa2b6bcfceb7764e4811a3020ba"
+    },
+    {
+      "i": 12,
+      "U": 4294967296,
+      "C": 4096,
+      "streamSeed": 1640550440,
+      "lvCtor": "1eb5cefad7cf76c0d8fdcfddaf65e2cfb34232c3e991906e0f1f77d38026b2d5",
+      "lvEnd": "1eb5cefad7cf76c0d8fdcfddaf65e2cfb34232c3e991906e0f1f77d38026b2d5",
+      "q": [24, 0, 0],
+      "dump": "9145cde9044a487c9b806be44087fb5934ddefe19a8c9e0660ad15d24f5c1288"
+    },
+    {
+      "i": 13,
+      "U": 4294967295,
+      "C": 1024,
+      "streamSeed": 18913,
+      "lvCtor": "664433570a66ca8aa618fd45af7675ca4244313191c3a8fba6128956e77fb373",
+      "lvEnd": "664433570a66ca8aa618fd45af7675ca4244313191c3a8fba6128956e77fb373",
+      "q": [7, 0, 0],
+      "dump": "a0e4c11e684bd899c10b638665fda193ac215ea1b03bbbc33ceae316fdbdc66e"
+    },
+    {
+      "i": 14,
+      "U": 2147483649,
+      "C": 512,
+      "streamSeed": 2654454682,
+      "lvCtor": "c30da1dcd1e55fb66353b11bf8fdb0a3b0577f88f7deea214bddfb2091e2b473",
+      "lvEnd": "c30da1dcd1e55fb66353b11bf8fdb0a3b0577f88f7deea214bddfb2091e2b473",
+      "q": [9, 0, 0],
+      "dump": "91f8c3a064ea7046049f118ef3a41df5192328564abd211e332d93a25f0d7e96"
+    }
+  ],
+  "collide": {
+    "U": 65536,
+    "C": 16,
+    "keys": [0, 2, 16, 17, 19, 24, 47, 61, 73],
+    "lvCtor": "8ad1ac43897d87127ebc7395368931fcacaafb87c2ab8b5b350f85dd7029a2ed",
+    "lvEnd": "32fac710edd71c6f826745b651451f2556ee6eac7c0de021e894fed5736b354b",
+    "q": [40, 1, 1],
+    "dump": "cd393be9ce19b8a5423462078f9f831f041e6c548cd11a178d3259b6bb906267"
+  }
+}

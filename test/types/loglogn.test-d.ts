@@ -1,13 +1,13 @@
 /**
  * @zakkster/lite-loglogn -- ambient type tests (tsc -p test/types/tsconfig.json).
  *
- * Exports: `VERSION` and the classes `StratifiedBitset` and `XFastTrie` (each
- * with its dump snapshot interface). Each member session appends a type-level assertion block for its
+ * Exports: `VERSION` and the classes `StratifiedBitset`, `XFastTrie` and
+ * `YFastTrie` (each with its dump snapshot interface). Each member session appends a type-level assertion block for its
  * class here. ASCII-only.
  */
 
-import { VERSION, StratifiedBitset, XFastTrie } from '../../LogLogN.js';
-import type { StratifiedBitsetDump, XFastTrieDump } from '../../LogLogN.js';
+import { VERSION, StratifiedBitset, XFastTrie, YFastTrie } from '../../LogLogN.js';
+import type { StratifiedBitsetDump, XFastTrieDump, YFastTrieDump } from '../../LogLogN.js';
 
 // VERSION is a string.
 const v: string = VERSION;
@@ -129,6 +129,18 @@ new XFastTrie(16);
 new XFastTrie();
 // @ts-expect-error -- the capacity is a number, not a string.
 new XFastTrie(16, '16');
+// The optional third argument is a number seed (0.4.0, C-4).
+const xSeeded: XFastTrie = new XFastTrie(16, 16, 1);
+const xSeedU: XFastTrie = new XFastTrie(16, 16, undefined);
+void xSeeded; void xSeedU;
+// @ts-expect-error -- the seed is a number, not a string.
+new XFastTrie(16, 16, '1');
+// @ts-expect-error -- the seed is a number, not a bigint.
+new XFastTrie(16, 16, 1n);
+// @ts-expect-error -- the seed is not nullable.
+new XFastTrie(16, 16, null);
+// @ts-expect-error -- there is no fourth constructor argument.
+new XFastTrie(16, 16, 1, 1);
 // @ts-expect-error -- an XFastTrie is not a StratifiedBitset (no levels getter; dump() returns XFastTrieDump).
 const xs: StratifiedBitset = x;
 void xs;
@@ -220,3 +232,126 @@ void xsnap.words;
 x.forEach(() => {});
 // @ts-expect-error -- not iterable.
 for (const k of x) void k;
+
+// --- YFastTrie ----------------------------------------------------------------
+
+const y = new YFastTrie(1 << 20, 4096);
+const yc: YFastTrie = y;
+void yc;
+const ySeeded: YFastTrie = new YFastTrie(1 << 20, 4096, 0xffffffff);
+const ySeedU: YFastTrie = new YFastTrie(16, 16, undefined);
+void ySeeded; void ySeedU;
+
+// @ts-expect-error -- the constructor needs a capacity as well as a universe.
+new YFastTrie(16);
+// @ts-expect-error -- the constructor needs a universe and a capacity.
+new YFastTrie();
+// @ts-expect-error -- the capacity is a number, not a string.
+new YFastTrie(16, '16');
+// @ts-expect-error -- the seed is a number, not a string.
+new YFastTrie(16, 16, '1');
+// @ts-expect-error -- the seed is a number, not a bigint.
+new YFastTrie(16, 16, 1n);
+// @ts-expect-error -- the seed is not nullable.
+new YFastTrie(16, 16, null);
+// @ts-expect-error -- there is no fourth constructor argument.
+new YFastTrie(16, 16, 1, 1);
+// @ts-expect-error -- a YFastTrie is not an XFastTrie (its dump() has no levels).
+const yx: XFastTrie = y;
+void yx;
+// @ts-expect-error -- an XFastTrie is not a YFastTrie (its dump() has no reps / sizes).
+const xy: YFastTrie = x;
+void xy;
+// YFastTrie has no levels member: adding one to the .d.ts makes this line fail.
+const yNoLevels: 'levels' extends keyof YFastTrie ? never : true = true;
+void yNoLevels;
+
+// Getters are numbers and readonly.
+const ySize: number = y.size;
+const yUniverse: number = y.universe;
+const yCapacity: number = y.capacity;
+const yBits: number = y.bits;
+const yByteLength: number = y.byteLength;
+void ySize; void yUniverse; void yCapacity; void yBits; void yByteLength;
+// @ts-expect-error -- size is readonly.
+y.size = 1;
+// @ts-expect-error -- universe is readonly.
+y.universe = 1;
+// @ts-expect-error -- capacity is readonly.
+y.capacity = 1;
+// @ts-expect-error -- bits is readonly.
+y.bits = 1;
+// @ts-expect-error -- byteLength is readonly.
+y.byteLength = 1;
+
+// has / delete return boolean; add is chainable and returns the instance.
+const yh: boolean = y.has(1);
+const yd: boolean = y.delete(1);
+void yh; void yd;
+// @ts-expect-error -- has takes a number key.
+y.has('1');
+// @ts-expect-error -- delete returns boolean, not the instance.
+const ydi: YFastTrie = y.delete(1);
+void ydi;
+const ya: YFastTrie = y.add(1).add(2).add(3);
+void ya;
+// @ts-expect-error -- add returns the instance, not boolean.
+const yab: boolean = y.add(1);
+void yab;
+
+// successor / predecessor / min / max return number | undefined.
+const ysu: number | undefined = y.successor(1);
+const ypr: number | undefined = y.predecessor(1);
+const ymi: number | undefined = y.min();
+const yma: number | undefined = y.max();
+void ysu; void ypr; void ymi; void yma;
+// @ts-expect-error -- successor may be undefined.
+const ysun: number = y.successor(1);
+void ysun;
+// @ts-expect-error -- predecessor may be undefined.
+const yprn: number = y.predecessor(1);
+void yprn;
+// @ts-expect-error -- min may be undefined.
+const ymin: number = y.min();
+void ymin;
+// @ts-expect-error -- max may be undefined.
+const ymax: number = y.max();
+void ymax;
+// @ts-expect-error -- successor never returns null.
+const ynul: number | null = y.successor(1);
+void ynul;
+
+// clear returns void.
+const ycl: void = y.clear();
+void ycl;
+
+// dump returns the snapshot: keys / reps Uint32Array, sizes Uint8Array.
+const ysnap: YFastTrieDump = y.dump();
+const ysU: number = ysnap.universe;
+const ysC: number = ysnap.capacity;
+const ysN: number = ysnap.size;
+const ysB: number = ysnap.bits;
+const ysK: Uint32Array = ysnap.keys;
+const ysR: Uint32Array = ysnap.reps;
+const ysS: Uint8Array = ysnap.sizes;
+void ysU; void ysC; void ysN; void ysB; void ysK; void ysR; void ysS;
+// @ts-expect-error -- keys is a Uint32Array, not a number[].
+const ykn: number[] = ysnap.keys;
+void ykn;
+// @ts-expect-error -- reps is a Uint32Array, not a number[].
+const yrn: number[] = ysnap.reps;
+void yrn;
+// @ts-expect-error -- sizes is a Uint8Array, not a Uint32Array.
+const ysz: Uint32Array = ysnap.sizes;
+void ysz;
+// @ts-expect-error -- the dump has no levels (that is XFastTrie's).
+void ysnap.levels;
+// @ts-expect-error -- a YFastTrieDump is not an XFastTrieDump.
+const yxd: XFastTrieDump = ysnap;
+void yxd;
+
+// The class has no iterator or forEach (iteration is a successor walk only).
+// @ts-expect-error -- no forEach.
+y.forEach(() => {});
+// @ts-expect-error -- not iterable.
+for (const k of y) void k;

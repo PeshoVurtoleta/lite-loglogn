@@ -5,7 +5,7 @@
  * must hold, independent of any one member:
  *   - the VERSION trinity (LogLogN.js const === package.json === llms.txt), the
  *     version check of record (no test pins a version literal);
- *   - the frozen export surface (exactly StratifiedBitset + VERSION + XFastTrie);
+ *   - the frozen export surface (exactly StratifiedBitset + VERSION + XFastTrie + YFastTrie);
  *   - the six-file pack discipline (files[] exact; repo-only dirs absent);
  *   - no "Karadjov" anywhere in the shipped source / docs;
  *   - ASCII-only source in LogLogN.js (this family needs NO Unicode exception --
@@ -20,11 +20,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as LogLogNModule from '../LogLogN.js';
-import { VERSION, StratifiedBitset, XFastTrie } from '../LogLogN.js';
-import { startFn, expectFn } from './_worker-run.mjs';
+import { VERSION, StratifiedBitset, XFastTrie, YFastTrie } from '../LogLogN.js';
+import { startFn, expectFn, KILL_MS } from './_worker-run.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -40,12 +41,12 @@ test('VERSION trinity: LogLogN.js const, package.json, and llms.txt agree byte-f
     assert.equal(m[1], VERSION, 'llms.txt Version header !== LogLogN.js VERSION const');
 });
 
-// --- frozen export surface: StratifiedBitset + VERSION + XFastTrie ---------
+// --- frozen export surface: StratifiedBitset + VERSION + XFastTrie + YFastTrie
 
-test('LogLogN.js exports exactly StratifiedBitset, VERSION and XFastTrie -- nothing else has leaked in', () => {
+test('LogLogN.js exports exactly StratifiedBitset, VERSION, XFastTrie and YFastTrie -- nothing else has leaked in', () => {
     const exportedNames = Object.keys(LogLogNModule).sort();
-    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION', 'XFastTrie'],
-        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION, XFastTrie)');
+    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION', 'XFastTrie', 'YFastTrie'],
+        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION, XFastTrie, YFastTrie)');
     assert.equal(typeof VERSION, 'string');
     assert.equal(typeof LogLogNModule.StratifiedBitset, 'function');
 });
@@ -449,4 +450,342 @@ test('control: xftCtorErr flags a ctor that accepts bad input and one that misre
     // a ctor that throws a plain Error instead of RangeError is flagged
     class FakeTypeErr { constructor() { throw new TypeError('x'); } }
     assert.ok(xftCtorErr(FakeTypeErr, [[1, 1]], []).length > 0, 'wrong error class not flagged');
+});
+
+// --- YFastTrie coercion / boundary block (A6 mirror, 0.4.0 U-c G1-B2, C-4 / C-7) ----
+// Mirrors the XFastTrie block: expected outcomes are hand-written literals (bad key
+// -> has / delete false, successor / predecessor undefined, add RangeError, nothing
+// changed). yftRowErr builds a state that has SPLIT (several buckets) before the bad
+// keys arrive; it runs on the real class and on fakes subclassing YFastTrie that
+// must each be flagged. The seed table (C-4) runs on BOTH classes: 4 accepted, 8
+// rejected values, each rejection message pinned literally (it names the class).
+
+// [U, C, F]: U = 2 minimum; 33 and 1025 non-pow2; 2^32 is w = 32. F < C keys are
+// filled, so a bad add can never hide behind the full check; F > K = 2w on the last
+// three, so their fill splits (asserted below).
+const YFT_ROWS = [[2, 2, 1], [33, 33, 24], [1025, 64, 48], [2 ** 32, 100, 80]];
+
+/** F fill keys spread over [0, U): 0 first, U - 1 last when F > 1. */
+function yftFill(U, F) {
+    const out = [];
+    for (let i = 0; i < F; i++) out.push(F === 1 ? 0 : Math.floor(i * (U - 1) / (F - 1)));
+    return out;
+}
+
+// Returns { rows, errs, reps }: rows = checks made, errs = failure strings, reps = buckets.
+function yftRowErr(Cls, U, C, F) {
+    const errs = [];
+    let rows = 0;
+    const s = new Cls(U, C);
+    for (const k of yftFill(U, F)) s.add(k);
+    const before = JSON.stringify(s.dump());
+    const bytes = s.byteLength;
+    const size = s.size;
+    const reps = s.dump().reps.length;
+    const keys = XFT_BAD(U);
+    for (let j = 0; j < keys.length; j++) {
+        const k = keys[j];
+        const tag = 'U=' + U + ' bad[' + j + '] ';
+        rows++; if (s.has(k) !== false) errs.push(tag + 'has');
+        rows++; if (s.delete(k) !== false) errs.push(tag + 'delete');
+        rows++; if (s.successor(k) !== undefined) errs.push(tag + 'successor');
+        rows++; if (s.predecessor(k) !== undefined) errs.push(tag + 'predecessor');
+        rows++;
+        try { s.add(k); errs.push(tag + 'add did not throw'); } catch (e) {
+            if (!(e instanceof RangeError && LITE.test(e.message))) errs.push(tag + 'add threw wrong error');
+        }
+    }
+    if (JSON.stringify(s.dump()) !== before) errs.push('U=' + U + ' dump changed');
+    if (s.byteLength !== bytes) errs.push('U=' + U + ' byteLength changed');
+    if (s.size !== size) errs.push('U=' + U + ' size changed');
+    return { rows, errs, reps };
+}
+
+test('A6 YFastTrie bad keys: has / delete false, succ / pred undefined, add throws; no state change', T, () => {
+    let rows = 0;
+    const reps = [];
+    for (const [U, C, F] of YFT_ROWS) {
+        assert.ok(F < C, 'U=' + U + ' fill below capacity');
+        const r = yftRowErr(YFastTrie, U, C, F);
+        assert.deepEqual(r.errs, [], 'U=' + U);
+        rows += r.rows;
+        reps.push(r.reps);
+    }
+    // 4 universes x 13 tokens x 5 methods = 260 (hand count)
+    assert.equal(rows, 260);
+    // the bad keys met split states: one bucket at U = 2, several elsewhere
+    assert.equal(reps[0], 1);
+    for (let i = 1; i < reps.length; i++) assert.ok(reps[i] >= 2, 'U=' + YFT_ROWS[i][0] + ' reps ' + reps[i]);
+    const norm = (f) => String(f).replace(/\s+/g, ' ');
+    const lit = norm(XFT_BAD);
+    assert.ok(norm(yftLiveBody).includes(lit.slice(lit.indexOf('['))), 'yftLiveBody bad list === XFT_BAD');
+});
+
+// valid-key successor / predecessor / min / max: Worker (A6). test/_worker-run.mjs
+// hands its body StratifiedBitset and XFastTrie only, so YFastTrie bodies run in an
+// inline eval worker with the same contract (self-contained body, KILL_MS timer, a
+// hang / worker error / nonzero exit / missing result is a FAIL; shape for expectFn).
+const LIB_URL = new URL('../LogLogN.js', import.meta.url).href;
+const YFT_WORKER = [
+    "'use strict';",
+    "const { parentPort, workerData } = require('node:worker_threads');",
+    "const assert = require('node:assert/strict');",
+    'import(workerData.lib)',
+    '    .then((mod) => {',
+    "        const fn = (0, eval)('\"use strict\"; (' + workerData.src + ')');",
+    "        if (typeof fn !== 'function') throw new TypeError('worker body is not a function');",
+    '        const ret = fn({ YFastTrie: mod.YFastTrie, XFastTrie: mod.XFastTrie, assert });',
+    "        if (ret !== undefined) throw new TypeError('worker body must return undefined');",
+    '        return { ok: true };',
+    '    })',
+    '    .catch((e) => ({ ok: false, message: e && e.stack ? String(e.stack) : String(e) }))',
+    '    .then((m) => parentPort.postMessage(m));',
+].join('\n');
+
+/** Starts fn in a fresh inline Worker. NEVER rejects: resolves { result, error }. */
+function startYft(fn, label, ms = KILL_MS) {
+    return new Promise((resolve) => {
+        let result = null;
+        let done = false;
+        const w = new Worker(YFT_WORKER, { eval: true, workerData: { lib: LIB_URL, src: fn.toString() } });
+        const finish = (error) => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve({ result, error });
+        };
+        const timer = setTimeout(() => {
+            w.terminate();
+            finish('hang > ' + ms + ' ms: ' + label + ' worker terminated');
+        }, ms);
+        w.on('message', (m) => {
+            result = m;
+        });
+        w.on('error', (e) => finish(label + ' worker error: ' + (e && e.stack ? e.stack : String(e))));
+        w.on('exit', (code) => finish(code === 0 ? null : label + ' worker exit code ' + code));
+    });
+}
+
+function yftLiveBody({ YFastTrie, assert }) {
+    const U = 1025;
+    const bad = [Symbol('k'), 1n, { valueOf() { return 1; } }, new Number(1), NaN, null,
+        undefined, '1', -1, 1.5, U, 2 ** 32,
+        { toString() { throw new Error('user'); }, valueOf() { throw new Error('user'); } }];
+    const s = new YFastTrie(U, 64);
+    for (let i = 0; i < 64; i++) s.add(i * 16); // w 11, K 22: three splits
+    const reps = s.dump().reps.length;
+    assert.ok(reps >= 3, 'reps ' + reps);
+    for (const k of bad) {
+        try { s.add(k); } catch (e) { /* expected */ }
+        s.delete(k); s.has(k); s.successor(k); s.predecessor(k);
+    }
+    assert.equal(s.size, 64);
+    assert.equal(s.dump().reps.length, reps);
+    for (let i = 0; i < 64; i++) {
+        const k = i * 16;
+        assert.equal(s.has(k), true);
+        assert.equal(s.has(k + 1), false);
+        assert.equal(s.successor(k), i < 63 ? k + 16 : undefined);
+        assert.equal(s.successor(k + 1), i < 63 ? k + 16 : undefined);
+        assert.equal(s.predecessor(k), i > 0 ? k - 16 : undefined);
+        assert.equal(s.predecessor(k + 1), k);
+    }
+    assert.equal(s.min(), 0);
+    assert.equal(s.max(), 1008);
+    assert.equal(s.successor(1024), undefined);
+    assert.equal(s.predecessor(1024), 1008);
+}
+
+const YFT_LIVE = startYft(yftLiveBody, 'yft-live');
+const YFT_LIVE_FAIL = startYft(function failingBody({ assert }) { assert.equal(1, 2); }, 'yft-fail');
+const YFT_LIVE_HANG = startYft(function hangingBody() { for (;;) { /* spin */ } }, 'yft-hang', 2000);
+
+test('A6 YFastTrie: a bad key leaves the instance live and valid keys still work (split state)', T, async () => {
+    await expectFn(YFT_LIVE);
+});
+
+test('control: the inline YFastTrie worker fails closed on a failing body and on a hang', T, async () => {
+    const f = await YFT_LIVE_FAIL;
+    assert.equal(f.error, null);
+    assert.equal(f.result.ok, false);
+    assert.match(f.result.message, /AssertionError|Expected values to be strictly equal/);
+    await assert.rejects(expectFn(YFT_LIVE_FAIL));
+    const h = await YFT_LIVE_HANG;
+    assert.ok(h.error !== null && /^hang > 2000 ms/.test(h.error), String(h.error));
+    assert.equal(h.result, null);
+    await assert.rejects(expectFn(YFT_LIVE_HANG));
+});
+
+test('A6 YFastTrie -0 aliases 0 (add(-0) -> has(0), size 1; add(0) no-op; delete(-0) true)', T, () => {
+    const s = new YFastTrie(8, 4);
+    assert.equal(s.has(-0), false);
+    s.add(-0);
+    assert.equal(s.size, 1);
+    assert.equal(s.has(0), true);
+    assert.equal(s.has(-0), true);
+    assert.equal(Object.is(s.min(), 0), true);
+    s.add(0);
+    assert.equal(s.size, 1);
+    s.add(5);
+    assert.equal(s.successor(-0), 5);
+    assert.equal(s.predecessor(-0), undefined);
+    assert.equal(s.delete(-0), true);
+    assert.equal(s.has(0), false);
+    assert.equal(s.size, 1);
+    assert.deepEqual(Array.from(s.dump().reps), [0]); // rep 0 stays: deleting KEY 0 never drops the head
+});
+
+/** Ctor rejections whose message does not name the class (`[lite-loglogn] <name> universe|capacity`). */
+function ctorNameErr(Cls, name, rejects) {
+    const errs = [];
+    const re = new RegExp('^\\[lite-loglogn\\] ' + name + ' (universe|capacity) must be an integer in \\[');
+    for (const [u, c] of rejects) {
+        try {
+            if (c === MISSING) new Cls(u); else new Cls(u, c);
+        } catch (e) {
+            if (!(e instanceof RangeError && re.test(e.message))) errs.push(String(e && e.message));
+            continue;
+        }
+        errs.push('accepted');
+    }
+    return errs;
+}
+
+test('A6 YFastTrie constructor rejects bad (U, C) with a RangeError naming YFastTrie and accepts legal ones', T, () => {
+    // same domain as XFastTrie: U in [2, 2^32], C in [1, min(U, 2^24)]
+    assert.deepEqual(xftCtorErr(YFastTrie, XFT_REJECT, XFT_ACCEPT), []);
+    assert.deepEqual(ctorNameErr(YFastTrie, 'YFastTrie', XFT_REJECT), []);
+    assert.deepEqual(ctorNameErr(XFastTrie, 'XFastTrie', XFT_REJECT), []);
+    // the cross check has teeth: each class's messages fail the other name
+    assert.equal(ctorNameErr(YFastTrie, 'XFastTrie', XFT_REJECT).length, XFT_REJECT.length);
+});
+
+// C-4 seed table: [value, accepted, rejection suffix after 'got '] -- hand-written literals.
+const SEED_ROWS = [
+    [undefined, true], [0, true], [1, true], [4294967295, true],
+    [-1, false, '-1'], [4294967296, false, '4294967296'], [1.5, false, '1.5'], [NaN, false, 'NaN'],
+    [Infinity, false, 'Infinity'], ['1', false, 'string'], [1n, false, 'bigint'], [null, false, 'object'],
+];
+
+/** Seed-table failures of Cls (whose messages must name `name`); [] when every row holds. */
+function seedTableErr(Cls, name) {
+    const errs = [];
+    const head = '[lite-loglogn] ' + name + ' seed must be a uint32 integer in [0, 2^32-1]; got ';
+    for (const [v, ok, got] of SEED_ROWS) {
+        const tag = name + ' seed ' + (typeof v === 'bigint' ? v + 'n' : typeof v === 'string' ? "'" + v + "'" : String(v));
+        let s = null;
+        try {
+            s = new Cls(64, 16, v);
+        } catch (e) {
+            if (ok) errs.push(tag + ' rejected: ' + (e && e.message));
+            else if (!(e instanceof RangeError)) errs.push(tag + ' threw ' + (e && e.name) + ', not RangeError');
+            else if (e.message !== head + got) errs.push(tag + ' message: ' + e.message);
+            continue;
+        }
+        if (!ok) errs.push(tag + ' accepted');
+        else if (s.add(5).has(5) !== true || s.size !== 1 || s.successor(0) !== 5) errs.push(tag + ' instance not usable');
+    }
+    // validation order universe -> capacity -> seed: a bad seed never masks a bad U or C
+    const order = [[1, 16, 'universe'], [64, 0, 'capacity'], [64, 65, 'capacity']];
+    for (const [u, c, what] of order) {
+        try {
+            new Cls(u, c, -1);
+            errs.push(name + ' (' + u + ', ' + c + ', -1) accepted');
+        } catch (e) {
+            if (!(e instanceof RangeError && e.message.startsWith('[lite-loglogn] ' + name + ' ' + what + ' must be'))) {
+                errs.push(name + ' (' + u + ', ' + c + ', -1) order: ' + (e && e.message));
+            }
+        }
+    }
+    return errs;
+}
+
+test('C-4 seed table (12 values) on BOTH classes: 4 accepted, 8 RangeErrors naming the class; order U -> C -> seed', T, () => {
+    assert.equal(SEED_ROWS.length, 12);
+    assert.equal(SEED_ROWS.filter((r) => r[1]).length, 4);
+    assert.deepEqual(seedTableErr(XFastTrie, 'XFastTrie'), []);
+    assert.deepEqual(seedTableErr(YFastTrie, 'YFastTrie'), []);
+});
+
+// --- YFastTrie must-fail controls: the SAME checkers must flag each wrong answer ------
+
+/** The nine row fakes of the XFastTrie block, rebuilt over Base. */
+function rowFakes(Base) {
+    return [
+        class FakeHas extends Base { has(k) { return typeof k === 'symbol' ? true : super.has(k); } },
+        class FakeAddNoThrow extends Base { add(k) { return isNaNKey(k) ? this : super.add(k); } },
+        class FakeDelete extends Base { delete(k) { return k === null ? true : super.delete(k); } },
+        class FakeSucc extends Base { successor(k) { return k === '1' ? 0 : super.successor(k); } },
+        class FakePred extends Base { predecessor(k) { return k === -1 ? 0 : super.predecessor(k); } },
+        class FakeUserErr extends Base {
+            add(k) { if (typeof k === 'object' && k !== null && k.toString !== Object.prototype.toString) throw new Error('user'); return super.add(k); }
+        },
+        class FakeMutates extends Base {
+            delete(k) { if (isNaNKey(k)) { super.delete(this.max()); return false; } return super.delete(k); }
+        },
+        class FakeNoPrefix extends Base { add(k) { if (k === '1') throw new RangeError('bad key'); return super.add(k); } },
+        class FakeGrows extends Base { add(k) { if (k === '1') this._grew = 8; return super.add(k); } get byteLength() { return super.byteLength + (this._grew === 8 ? 8 : 0); } },
+    ];
+}
+
+test('control: yftRowErr flags every wrong answer kind on fakes subclassing YFastTrie', T, () => {
+    const fakes = rowFakes(YFastTrie);
+    assert.equal(fakes.length, 9);
+    for (const F of fakes) {
+        for (const [U, C, n] of YFT_ROWS.slice(1)) {
+            const r = yftRowErr(F, U, C, n);
+            assert.ok(r.errs.length > 0, F.name + ' was not flagged at U=' + U);
+        }
+    }
+    const [, , , , , , FakeMutates, FakeNoPrefix, FakeGrows] = fakes;
+    assert.ok(yftRowErr(FakeMutates, 33, 33, 24).errs.some((e) => /dump changed/.test(e)));
+    assert.ok(yftRowErr(FakeMutates, 33, 33, 24).errs.some((e) => /size changed/.test(e)));
+    assert.ok(yftRowErr(FakeNoPrefix, 33, 33, 24).errs.some((e) => /add threw wrong error/.test(e)));
+    assert.ok(yftRowErr(FakeGrows, 33, 33, 24).errs.some((e) => /byteLength changed/.test(e)));
+    // a guard that lets a bad add through is visible because F < C (no full check masks it)
+    class FakeAddsFraction extends YFastTrie { add(k) { return k === 1.5 ? super.add(1) : super.add(k); } }
+    assert.ok(yftRowErr(FakeAddsFraction, 1025, 64, 48).errs.some((e) => /add did not throw/.test(e)));
+    assert.ok(yftRowErr(FakeAddsFraction, 1025, 64, 48).errs.some((e) => /dump changed/.test(e)));
+});
+
+test('control: the YFastTrie ctor and seed checkers flag lax, misnamed and misreporting fakes', T, () => {
+    class YFakeWrongBits extends YFastTrie { get bits() { return 0; } }
+    class YFakeWrongCap extends YFastTrie { get capacity() { return 0; } }
+    class YFakeNonEmpty extends YFastTrie { get size() { return 1; } }
+    assert.ok(xftCtorErr(YFakeWrongBits, [], [[33, 8, 33, 8, 6]]).length > 0, 'wrong bits not flagged');
+    assert.deepEqual(xftCtorErr(YFakeWrongCap, [], [[33, 8, 33, 8, 6]]), ['capacity 8 -> 0']);
+    assert.deepEqual(xftCtorErr(YFakeNonEmpty, [], [[33, 8, 33, 8, 6]]), ['size not 0']);
+    // a ctor whose errors name the INNER class (the inner ctor raised them)
+    class YFakeInnerName extends YFastTrie {
+        constructor(u, c, s) {
+            try { super(u, c, s); } catch (e) { throw new RangeError(e.message.replace('YFastTrie', 'XFastTrie')); }
+        }
+    }
+    assert.equal(ctorNameErr(YFakeInnerName, 'YFastTrie', XFT_REJECT).length, XFT_REJECT.length);
+    assert.equal(seedTableErr(YFakeInnerName, 'YFastTrie').length, 8 + 3);
+    // seed fakes: lax on null, int32 range, TypeError on a non-number, wrong suffix
+    class YFakeSeedNull extends YFastTrie { constructor(u, c, s) { super(u, c, s === null ? undefined : s); } }
+    class YFakeSeedI32 extends YFastTrie {
+        constructor(u, c, s) {
+            if (typeof s === 'number' && s > 2147483647) throw new RangeError('[lite-loglogn] YFastTrie seed must be a uint32 integer in [0, 2^32-1]; got ' + s);
+            super(u, c, s);
+        }
+    }
+    class YFakeSeedType extends YFastTrie {
+        constructor(u, c, s) { if (s !== undefined && typeof s !== 'number') throw new TypeError('seed'); super(u, c, s); }
+    }
+    class YFakeSeedSuffix extends YFastTrie {
+        constructor(u, c, s) {
+            try { super(u, c, s); } catch (e) { throw new RangeError(e.message.replace(/got object$/, 'got null')); }
+        }
+    }
+    assert.deepEqual(seedTableErr(YFakeSeedNull, 'YFastTrie'), ['YFastTrie seed null accepted']);
+    assert.equal(seedTableErr(YFakeSeedI32, 'YFastTrie').length, 1); // rejects 2^32-1 only
+    assert.ok(seedTableErr(YFakeSeedI32, 'YFastTrie').some((e) => /seed 4294967295 rejected/.test(e)));
+    assert.equal(seedTableErr(YFakeSeedType, 'YFastTrie').length, 3); // '1', 1n, null
+    assert.deepEqual(seedTableErr(YFakeSeedSuffix, 'YFastTrie'),
+        ['YFastTrie seed null message: [lite-loglogn] YFastTrie seed must be a uint32 integer in [0, 2^32-1]; got null']);
+    // an accepted seed whose instance does not work is flagged too
+    class YFakeDeadSeed extends YFastTrie { add(k) { return this; } }
+    assert.equal(seedTableErr(YFakeDeadSeed, 'YFastTrie').length, 4);
 });

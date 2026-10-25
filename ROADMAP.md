@@ -620,8 +620,8 @@ PURPOSE
   sorted bucket of O(w) keys -- dropping space to O(n); queries O(log log U), updates
   O(log log U) probes + at most 2w-1 contiguous word moves, split / merge / borrow amortized.
   The "you can actually use this on a 32-bit universe" answer and the space-fix teaching beat.
-  It is the family's amortized/expected-honesty member: bucket splits/merges amortize and any
-  representative structure is expected, so the tail is REPORTED, not hidden.
+  It is the family's amortized-honesty member (no RNG, so never "expected"): bucket splits /
+  merges / borrows amortize and the inner trie's reseed tail is REPORTED, not hidden.
 
 TASKS
   - Implement YFastTrie wrapping XFastTrie's substrate: O(n/w) representatives in the x-fast

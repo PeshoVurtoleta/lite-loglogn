@@ -608,15 +608,17 @@ alloc_bytes_per_op: 0
 leak_cycles: 4096
 peers: ["@zakkster/lite-gc-profiler", "@zakkster/lite-leak", "@zakkster/lite-perf-gate"]
 depends_on: [XFastTrie]
-gate_note: the amortized/expected member -- deterministic seed; witness MUST print MAX
-           single-op time (bucket split/merge + rehash tail), the honesty hook (hook b)
+gate_note: the amortized member -- deterministic, no RNG; witness PRINTS MAX single-op time
+           with attribution (reseed / split / merge / plain), REPORTED only; the stated bound
+           is the deterministic WORK bound gated by counts (hook b; RULED 2026-10-25, C-10)
 ---
 
 # lite-loglogn -- YFastTrie: an x-fast trie over O(n/w) representatives
 
 PURPOSE
-  The PRACTICAL member: an x-fast trie over O(n/w) representatives, each carrying a balanced
-  bucket of O(w) keys -- dropping space to O(n) and update to O(log log U) amortized/expected.
+  The PRACTICAL member: an x-fast trie over O(n/w) representatives, each carrying a bounded
+  sorted bucket of O(w) keys -- dropping space to O(n); queries O(log log U), updates
+  O(log log U) probes + at most 2w-1 contiguous word moves, split / merge / borrow amortized.
   The "you can actually use this on a 32-bit universe" answer and the space-fix teaching beat.
   It is the family's amortized/expected-honesty member: bucket splits/merges amortize and any
   representative structure is expected, so the tail is REPORTED, not hidden.
@@ -625,33 +627,45 @@ TASKS
   - Implement YFastTrie wrapping XFastTrie's substrate: O(n/w) representatives in the x-fast
     trie; each representative owns a bucket (design call below) of ~w keys; split when a
     bucket exceeds 2w, merge when below w/2.
-  - **Design call (settle with user):** the bucket structure -- a small sorted `Uint32Array`
-    (cache-friendly, binary search) vs a tiny tree. Lean: sorted array of bounded size, so it
-    is pointer-free and zero-GC; record in an ADR with the split/merge policy.
-  - Deterministic seeding wherever RNG enters (the repo LCG `seed = (seed*1664525 +
-    1013904223) >>> 0`, instance-local, never module state). A fixed seed -> identical sequence.
-  - Extend witness.mjs: n-sweep + the U-sweep fit AND **print MAX single-op time** so a
-    split/merge or rehash spike shows as a tall bar (honesty hook b).
+  - **Bucket structure (RULED 2026-10-25, D-a):** bounded sorted `Uint32Array` runs in one
+    preallocated pool, binary search; K = 2w, h = ceil(w/2); reps are separators, head rep 0
+    permanent; split at K, merge-left or borrow below h. ADR 0008 records the policy.
+  - **y-fast, not z-fast (RULED 2026-10-25, D-b);** z-fast stays a Tier 4 candidate.
+  - **No RNG anywhere (RULED 2026-10-25):** the bucket policy is deterministic, so the
+    repo-LCG seeding line no longer applies to this member.
+  - **Hash seeds (RULED, maintainer 2026-10-23):** 0.3.0 keeps XFastTrie's FIXED default LevelTable
+    seeds + the documented hash-flood caveat (ADR 0007). 0.4.0 adds an OPTIONAL caller-supplied
+    ctor seed, CuckooMap-style (lite-o1 O1.js:3176-3181: a uint32, validated fail-closed, RangeError
+    `[lite-loglogn]`; omitted -> today's deterministic default, so every count / replay / reseed-
+    census gate stays exact). Never random-by-default. **D-c RULED 2026-10-25:** BOTH ctors take
+    it -- `new XFastTrie(U, C, seed?)`, `new YFastTrie(U, C, seed?)`; seed 0 == omitted (bit-for-
+    bit today's defaults); clear() restores the constructed state incl. the seed. XFastTrie stays
+    BEHAVIOR-identical with the seed omitted / undefined / 0 (its only diff = the seed hunks, cold).
+  - Extend witness.mjs: n-sweep + the U-sweep fit AND **print MAX single-op time** with
+    attribution so a split/merge or reseed spike shows as a tall bar (honesty hook b); REPORTED.
   - Extend torture (split/merge must not allocate per steady-state op), perf, SPACE (assert
     O(n), the space fix).
-  - Docs: member section stating O(log log U) EXPECTED/AMORTIZED + O(n) space + the tail;
-    CHANGELOG 0.4.0; ADR. Prior members BYTE-IDENTICAL.
+  - Docs: member section stating queries O(log log U), updates O(log log U) probes + O(w)
+    word moves (split / merge / borrow amortized) + O(n) space + the tail; CHANGELOG 0.4.0;
+    ADR 0008. StratifiedBitset BYTE-IDENTICAL; XFastTrie behavior-identical (seed omitted).
 
 ASSERTIONS
   - Fuzz vs oracle 0 divergences across add/delete/successor/predecessor with splits and
-    merges triggered. A deterministic distribution assertion for the seeded bucket policy
-    (fixed seed, count bands + a chi-square bound with the CORRECT degrees of freedom --
-    lite-o1 RandomSet is the template); never loosened into vacuity.
-  - witness: MAX single-op time PRINTED and within a stated bound; the amortized mean still
-    fits the double-log; n-sweep crossover reported.
+    merges triggered. Pinned bucket size-band histograms in the vectors + a check that a
+    caller seed actually changes the level seeds. (The chi-square row is DROPPED, RULED
+    2026-10-25: no RNG, so it would be vacuous.)
+  - Exact split / merge / borrow / probe COUNTS gate the work bound (<= 2w word moves per
+    split / merge / borrow; an inner reseed <= 32 tries).
+  - witness: MAX single-op time PRINTED with attribution, REPORTED only (no timing verdict);
+    the amortized mean still fits the double-log; n-sweep crossover reported.
   - torture 0 B/op steady-state (splits/merges amortized, not per-op alloc); all prior
     members still 0 B/op; controls fail.
   - SPACE: O(n) asserted (grows with n, not U) -- the fix over x-fast's O(n*w).
 
 HOT PATH
-  Steady-state successor/add/delete are O(log log U) amortized: the x-fast representative
-  probe + an in-bucket binary search, zero allocation. Splits/merges are amortized and off
-  the steady path; the seeded RNG uses instance-local integer state, no allocation.
+  Steady-state successor/add/delete: the x-fast representative probe + an in-bucket binary
+  search (+ <= 2w-1 word moves on add/delete), zero allocation on keys < 2^30. Splits /
+  merges / borrows are amortized and off the steady path; no RNG.
 
 NON-GOALS
   No worst-case claim (that is vEBTree). No unbounded bucket growth. Do not hide the tail --
@@ -659,7 +673,7 @@ NON-GOALS
 
 DONE WHEN
   YFastTrie shipped, O(n) space asserted, fuzz-vs-oracle green; witness prints the MAX single-op
-  tail; determinism proven; prior members byte-identical
+  tail; determinism proven; StratifiedBitset byte-identical, XFastTrie behavior-identical
 ```
 
 ===============================================================================
@@ -893,6 +907,19 @@ byte-identical. Order and space bound stated up front on each:
   lite-loglogn ships its witness as a runnable script. Every timing claim (witness, witness:tier,
   witness --xft) is REPORTED with provenance (date, host, load, Node, run count) and labelled QUIET /
   PRELIMINARY by quiet-lock; exact COUNTS stay the deterministic hard gate.
+  If D-host is ever revisited (not reopened here): lite-pick's `.github/workflows/soak-ab.yml` is a
+  working hosted A/B template (previous release vs candidate interleaved on one runner, exact
+  Mann-Whitney per lane, a 7-control teeth battery, lite-pick ADR 0017) to copy by design parity.
+- **Consumer leads (from lite-pick, 2026-10-23; research only, nothing ruled).** (a) lite-pick NQ's
+  idle step is a bounded-integer ordered-set query over [0, cap), cap <= ~2^16: rotate mode =
+  successor(cursor) with wrap; `ties: 'random'` = rank, then select(random k). An idle bitset kept on
+  the 0 <-> 1 inflight transitions (only lite-pick Pool.js could own it; parity-pinned; copied by
+  design, never imported; eligibility needs a second bitset ANDed at pick time) is a small-U consumer
+  of a FastBit1024 / StratifiedBitset tier -- and it needs `rank` / `select`, which StratifiedBitset
+  does not ship (only RoaringSet R2 plans them). It is NOT a RoaringSet consumer (universes too small).
+  (b) lite-pick ConsistentHash uses a Maglev table (O(1)); a Karger ring would be a successor query
+  over the 32-bit hash space -- a possible REPORTED recipe / foil ("Maglev vs ring successor:
+  XFastTrie / sorted array"). Source: LitePick/.handoff/XPKG-loglogn.md.
 - **Hybrid tiered bitset** (PROPOSED, maintainer 2026-10-22; name and version slot open; its likely
   shape is the Dementiev et al. 2004 Stree -- a 2^16 root array, hashed 8-bit levels, a summary
   pyramid on every level -- RESEARCH.md 13.4 row 1) -- one
@@ -946,7 +973,7 @@ witness AND its honest caveat. Not a near-term queue -- a reserve:
   deeply exotic, w=32-capped; a research note on "how O(1)-within-a-word predecessor is possible."
 - **ZFastTrie** *(candidate, 2026-10-22; RESEARCH.md 13.3-13.4)* -- O(log log U) predecessor with
   O(n) space and expected-time updates, the practical successor of x-/y-fast. Needs the LevelTable
-  (L-03). "y-fast or z-fast" becomes a D-call of the YFastTrie session.
+  (L-03). "y-fast or z-fast": RULED y-fast for 0.4.0 (2026-10-25); z-fast stays here.
 - **PGMIndex** *(candidate, 2026-10-22; RESEARCH.md 13.3-13.4)* -- a learned index with worst-case
   bounds; it TAKES the InterpolationSearchTree slot (the "measure your key distribution" member).
 - **Notes, not members (RESEARCH.md 13.1-13.3):** decremental successor / interval union-find

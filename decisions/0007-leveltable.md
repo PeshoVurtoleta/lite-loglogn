@@ -1,7 +1,7 @@
 # 0007 -- LevelTable: the in-file bucketized cuckoo table (L-03 settled)
 
 - Status: ACCEPTED (maintainer, 2026-10-22)
-- Severity: S1 (the substrate every trie member binds: XFastTrie now, YFastTrie later)
+- Severity: S1 (the substrate every trie member binds: XFastTrie 0.3.0, YFastTrie 0.4.0)
 - Date: 2026-10-22
 - Session: XFastTrie (0.3.0)
 
@@ -61,7 +61,7 @@ oracle only.
   If even the rebuild cannot re-place a level, the instance is POISONED: the
   scratch column is set to `null`, a loud `Error` is thrown, every hot method then
   throws a `TypeError` on a valid key (`min` / `max` always), and only `clear()`
-  revives it (it restores the default seeds). A bad key is rejected before the
+  revives it (it restores the CONSTRUCTED seeds: the defaults, or the caller's seed since Amendment 1). A bad key is rejected before the
   scratch column is read, so it still gives `false` / `undefined` / `RangeError`.
   Storing `null` widens that field's type once, cold; optimized code that assumed
   an `Int32Array` there deopts.
@@ -113,22 +113,22 @@ Do not feed XFastTrie untrusted keys without bounding that.
 - **Open-addressing `Uint32Array` tables (ADR 0003's original sketch).** Superseded by R1:
   the bucketized cuckoo table has a hard bound of 8 slot probes per lookup and
   needs no tombstones on delete; the hash-flood caveat applies to either.
-- **A z-fast trie instead of a plain x-fast trie (R2, maintainer).** Deferred to the
-  YFastTrie decision.
+- **A z-fast trie instead of a plain x-fast trie (R2, maintainer).** Decided with
+  YFastTrie (ADR 0008, C-1): y-fast, not z-fast; the z-fast trie stays future work (Tier 4).
 - **Growth on demand / hidden rehash (R3, maintainer).** Rejected: capacity is fixed
   at construction; the only rebuild is the labelled in-place reseed.
 - **Per-instance random seeds.** Not shipped (maintainer ruling, 2026-10-23). 0.3.0 keeps
   the fixed default seeds plus the hash-flood caveat above. Never random-by-default: it
   would make the deterministic count, replay and reseed-census gates non-reproducible.
-  Planned for 0.4.0 with YFastTrie: an OPTIONAL caller-supplied ctor seed, CuckooMap-style
+  Shipped in 0.4.0 with YFastTrie (Amendment 1 below): an OPTIONAL caller-supplied ctor seed, CuckooMap-style
   (a uint32 validated fail-closed, RangeError; omitted = today's deterministic defaults).
   XFastTrie gains the same optional argument additively (maintainer ruling 2026-10-25; an additive exception to 'prior members BYTE-IDENTICAL').
   (This decisions/ folder is not shipped: it is not in package.json files[].)
 
-## Amendment 1 (2026-10-25, PROPOSED with 0.4.0): optional caller seed
+## Amendment 1 (2026-10-25, accepted with 0.4.0): optional caller seed
 
 Source: `.handoff/PLAN-yfasttrie.md` CURRENT C-4, C-5, C-6, C-13 (maintainer rulings
-2026-10-23 and 2026-10-25). This implements the optional caller seed planned in the "Per-instance random seeds" entry above; per-instance random seeds stay rejected (never random-by-default).
+2026-10-23 and 2026-10-25). This implements the optional caller seed announced in the "Per-instance random seeds" entry above; per-instance random seeds stay rejected (never random-by-default).
 
 - **Signature (C-4).** `new XFastTrie(U, C, seed?)`. `seed === undefined` -> today's
   deterministic defaults. Otherwise the seed must be a uint32 integer in [0, 2^32-1], else

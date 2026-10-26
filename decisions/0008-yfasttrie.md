@@ -1,10 +1,10 @@
 # 0008 -- YFastTrie: sorted-run buckets under an x-fast representative trie
 
-- Status: PROPOSED (2026-10-25; accepted when 0.4.0 ships)
+- Status: ACCEPTED (2026-10-25; shipped in 0.4.0)
 - Severity: S1 (the second trie member; it fixes the O(n)-space claim and the seed surface)
 - Date: 2026-10-25
 - Session: YFastTrie (0.4.0), unit U-a (G1-2)
-- Source: `.handoff/PLAN-yfasttrie.md`, section CURRENT (C-1 .. C-18, maintainer rulings 2026-10-23 / 2026-10-25)
+- Source: `.handoff/PLAN-yfasttrie.md`, section CURRENT (C-1 .. C-20, maintainer rulings 2026-10-23 / 2026-10-25)
 
 ## Context
 
@@ -61,14 +61,17 @@ seed to the inner trie:
   non-reproducible). The seed only moves the inner trie's level seeds; the buckets use no
   hash.
 
-## Cost model (PLANNED; pinned by exact counts in test/YftCount.test.js, U-c)
+## Cost model (pinned by exact counts in test/YftCount.test.js)
 
-No measured number appears in this record: none exists yet. The model below is the
-planner's, and `test/YftCount.test.js` will pin it with a counting Proxy on `_bk`, `_bn`
-and the 8 inner columns. lambda = 1 when x is itself a rep, else 1 + T (T = log2 w for
+`test/YftCount.test.js` pins this table with a counting Proxy on `_bk`, `_bn` and the 8
+inner columns, evaluated on an independent policy model (YModel), never on the engine.
+lambda = 1 when x is itself a rep, else 1 + T (T = log2 w for
 w = 2^j, as in ADR 0004 Amendment 1). beta is the binary-search read count for a run of s
 keys: floor(log2(s+1)) <= beta <= ceil(log2(s+1)), exact at s = 2^j - 1. A "hop" is one
-thread read plus at most one `_bk` read.
+thread read plus at most one `_bk` read. lb = the lower-bound index found by the search.
+Rows are WHOLE ops: the split row REPLACES the plain add row, and the merge / borrow rows
+REPLACE the plain delete row (addendum A3 of the plan corrected the first draft of this
+table). s = x's bucket size before the op, lb = x's index in it:
 
     op                                            inner touches     search reads      moves
     bad key                                       0                 0                 0
@@ -76,16 +79,37 @@ thread read plus at most one `_bk` read.
       delete absent                               lambda            beta+[lb<s]       0
     successor / predecessor                       lambda            beta+<=2 (+hop)   0
     min / max                                     0                 <=1 (+hop)        0
-    add new                                       lambda            beta+[lb<s]       s-lb, +1 key write
-    delete present                                lambda            beta+1            s-lb-1
-      + split                                     +1+T+(w-m)        -                 +w
-      + merge                                     +(w-m)            -                 +s-1
-      + borrow                                    +(1+T+w-m)+(w-m') -                 <= 2w
+    add new, no split                             lambda            beta+[lb<s]       s-lb, +1 key write
+    delete present, no merge / borrow             lambda            beta+1            s-lb-1
+    add new, split (s = K)                        lambda+1+T+(w-m)  beta+[lb<s]+1     w + (w-lb'), +1 key write
+    delete present, merge (s <= h)                lambda+(w-m)      beta+1            s-1
+    delete present, borrow (s <= h)               lambda+1+T+(w-m)  beta+2            (s_L-c) + (s-1)
+                                                    +(w-m')                           = floor(t/2) <= 2w
 
-(lb = the lower-bound index found by the search;
-m = the ADR 0007 early-stop prefix length of the row's inner add (split) or inner delete (merge); in the borrow row m is the inner add's and m' the inner delete's.) Planned reading: an absent successor at
-s = 2w-1 costs touches + probes = 4, 6, 8, 10, 12 for w = 2, 4, 8, 16, 32 (EXACT COUNTS,
-REPORTED as a fit reading; not a timing claim).
+m = the ADR 0007 early-stop prefix length of the row's inner add (split) or inner delete
+(merge); in the borrow row m is the inner add's and m' the inner delete's. Reading notes:
+
+- **Split moves.** The split copy moves the upper w keys to the new bucket (+w); then x is
+  inserted into the half it lands in (a w-key run), costing w - lb' for x's index lb' in
+  that half, plus the key write. In terms of lb (x's index in the K-key run): 2w - lb for a
+  left-routed x, 3w - lb for a right-routed one (right iff lb > w); at most 2w. The worst
+  case is 2w moves (x lands at the front of the left half, lb = 0; a right-routed x moves at most 2w - 1).
+- **Merge and borrow REPLACE the plain delete shift.** A merge moves the s-1 surviving keys
+  into the left neighbour (the deleted key is skipped during the copy); a borrow moves
+  s_L - c keys from the left neighbour's tail and the s-1 survivors, c = ceil(t/2),
+  t = s_L + s - 1, so a borrow moves t - c = floor(t/2) <= 2w words. Neither also pays
+  s - lb - 1.
+- **Search reads.** A split and a borrow each read one more `_bk` word, the new rep
+  (a split: beta+[lb<s]+1; a borrow: beta+2, the other read being the equality read). A merge reads no extra word.
+- Reading the first draft additively (a split adds +w to the pre-split s-lb; a merge adds
+  s-1 to s-lb-1) overstates the moves; `test/YftCount.test.js` asserts the measured moves
+  are at most that literal reading and equal to the table above.
+
+Pinned reading (EXACT COUNTS, DETERMINISTIC; a fit reading, not a timing claim): an absent
+successor at s = 2w-1 costs touches + probes = 4, 6, 8, 10, 12 for w = 2, 4, 8, 16, 32
+(R^2 against log2(w) = 1.0000, against w = 0.8710). The work bounds are also pinned: a
+plain update moves at most 2w-1 words (the worst case is hit), a split / merge / borrow at
+most 2w (the split worst case is hit), an inner reseed makes at most 32 tries.
 
 ## Failure modes (C-7, O3)
 
@@ -141,11 +165,11 @@ REPORTED as a fit reading; not a timing claim).
   the h boundary, so restructures get no O(1) amortized bound; borrow re-balances instead.
 - **A z-fast trie.** Rejected for 0.4.0 (C-1): stays Tier 4, complexity.
 
-## Consequences and gates (planned; test files named by the program order in CURRENT)
+## Consequences and gates (the files that gate this record)
 
 - test/YftVectors.test.js + test/helpers/yftStream.mjs: C-3 policy replay (YModel),
   size-band histograms (C-9), the 15 xft-b0 streams (C-13).
-- test/YftCount.test.js: the cost model above (C-8, C-11); test/XftSeed.test.js: C-4, C-5,
+- test/YftCount.test.js: the cost model above (C-8, C-11, seven must-fail mutants plus a hang control); test/XftSeed.test.js: C-4, C-5,
   C-6 and the xft-seed.json parity (C-13).
 - test/YFastTrieOracle.test.js, test/YFastTrieBoundary.test.js: C-3 invariants, C-7 failure
   modes, bad keys, key 4294967295, 'YFastTrie is full'.
@@ -155,4 +179,7 @@ REPORTED as a fit reading; not a timing claim).
 - test/witness.mjs `--yft`, test/YftWitness.test.js: C-10, C-15 (must-fail fakes), C-16
   (tail seed 0x7A170000 + w).
 - Docs batch (README, llms.txt, CHANGELOG, GUIDE): C-8 wording and the SPACE row.
-- Until 0.4.0 ships this record is PROPOSED; nothing here is a shipped claim.
+- test/YftWitness.test.js gates the `--yft --smoke` child with counts and strings only
+  (five must-fail fakes, `test/fakes/yftw-*`); the timed `--yft` lane is REPORTED.
+- Shipped in 0.4.0. Timing, the SPACE table and the witness tail are REPORTED
+  measurements (README), not claims of this record.

@@ -6,6 +6,112 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-25
+
+### Added
+
+- **`YFastTrie`, the third member (0.4.0).** O(log log U) `successor` /
+  `predecessor` in O(n) SPACE over a FIXED universe [0, U), 2 <= U <= 2^32,
+  holding at most a FIXED `capacity` of keys: `new YFastTrie(universe, capacity,
+  seed?)`. An inner XFastTrie over O(n/w) separator representatives plus bounded
+  sorted `Uint32Array` buckets in ONE preallocated pool; DETERMINISTIC, no RNG
+  (ADR 0008). Policy: w = ceil(log2 U), K = 2w, h = ceil(w/2); the head rep 0 is
+  permanent (0..K keys); every other bucket holds h..K; a new key into a K-key
+  bucket splits it, a delete from a non-head bucket of s <= h keys merges into
+  the left neighbour or borrows. The same method surface as XFastTrie (hot,
+  0 B: `has`, `add`, `delete`, `successor`, `predecessor`, `min`, `max`; cold:
+  `clear()`, allocating `dump()` returning `{ universe, capacity, size, bits,
+  keys, reps, sizes }`; getters `size`, `universe`, `capacity`, `bits`,
+  `byteLength`). Claim, worded exactly: queries are O(log log U); updates are
+  O(log log U) probes plus at most 2w - 1 contiguous word moves (O(w)); a
+  split / merge / borrow is AMORTIZED. Failure modes: `add` of a NEW key at
+  `size === capacity` throws `RangeError` ('YFastTrie is full', nothing
+  written); a split or borrow whose inner add stalls throws the inner
+  `RangeError` with the set UNCHANGED (so `delete` can throw too); a failed
+  inner rollback POISONS the instance until `clear()`.
+- **YFastTrie cost model (DETERMINISTIC, gated in `npm test`).** Exact inner
+  touches, `_bk` / `_bn` reads and contiguous word moves, counted through a Proxy
+  over all ten columns and checked against an independent policy model
+  (`test/YftCount.test.js`; the split row replaces the plain add row and the
+  merge / borrow rows replace the plain delete row): an absent successor from a
+  bucket of 2w - 1 keys costs touches + bucket reads = 4, 6, 8, 10, 12 at
+  w = 2, 4, 8, 16, 32 (R^2 against log2(w) 1.0000, against w 0.8710); a plain
+  update moves at most 2w - 1 words, a split / merge / borrow at most 2w, an
+  inner reseed makes at most 32 tries.
+- **YFastTrie SPACE (DETERMINISTIC formula, pinned from a test-owned model).**
+  `byteLength = 4 (Cr+1) K + (Cr+1) + 16 + XFastTrie(U, Cr).byteLength`, Cr =
+  min(2 + floor(C/h), U). REPORTED (`node test/space-table.mjs`, 2026-10-25,
+  Node v26.8.2, untimed): YFastTrie is 0.099 to 0.529 of XFastTrie's bytes in
+  every cell of the 16-cell table (n = C = 1,000,000: 27,524,503 B at U = 2^20,
+  34,123,672 B at U = 2^24, 47,484,715 B at U = 2^32); a dense universe still
+  favours StratifiedBitset.
+- **Optional caller seed on BOTH tries.** `new XFastTrie(U, C, seed?)` and `new
+  YFastTrie(U, C, seed?)`: a uint32 integer; omitted, `undefined` or 0 = the
+  default level seeds bit for bit; anything else throws `RangeError`
+  '[lite-loglogn] <Class> seed must be a uint32 integer in [0, 2^32-1]; got ...'
+  (validated after universe and capacity). Never random by default. ADR 0007
+  Amendment 1 and ADR 0008.
+- **Witness `--yft` lane and `witness:yft` script.** `node test/witness.mjs
+  --yft` (REPORTED, release-time, quiet host, 2% effect floor): YFastTrie vs
+  XFastTrie `successor` A/B in an n-sweep and a U-sweep, with the foils, the
+  add+delete lane, fits and latency REPORTED, and a TAIL run per width whose MAX
+  single-op time is printed with attribution (reseed > split > merge incl. borrow
+  > plain) and carries NO timing verdict (the stated bound is the count-gated
+  work bound: a split / merge / borrow moves <= 2w words, an inner reseed <= 32
+  tries). One QUIET run, 2026-10-25 (HEAD 568cd25): successor ratio vs XFastTrie
+  0.5178 at n = 1,000,000 and 0.9154 at n = 1,000 (w = 28), a loss (1.0444,
+  0 / 15 / 0) at w = 16; byteLength YFT / XFT 0.1064 to 0.1441; slower than a
+  local binary search at every n. README, llms.txt.
+- **`--yft --smoke` gate.** `test/YftWitness.test.js` runs the counts-only smoke
+  in `npm test` (counts and strings only) with five must-fail fakes
+  (`test/fakes/yftw-empty|exit1|garbage|kill|nan.mjs`) plus a good-child positive
+  control.
+- **Docs.** README, llms.txt, GUIDE.md gain the YFastTrie sections; ADR 0008
+  (ACCEPTED) with the corrected cost table (plan addendum A3); ADR 0007
+  Amendment 1 accepted; the z-fast question is decided (y-fast; z-fast stays
+  future work).
+
+### Changed
+
+- **`XFastTrie` constructor takes an optional third argument** (`seed?`), so
+  `XFastTrie.length` goes 2 -> 3. Behavior is identical with the seed omitted,
+  `undefined` or 0 (replay-pinned against the 0.3.0 streams); the change is in
+  cold code only, no hot body changed.
+- **`clear()` restores the CONSTRUCTED state** on both tries, a caller seed
+  included (with no seed this is the default seeds, as in 0.3.0).
+- **Package description** now lists YFastTrie as shipped (vEBTree stays planned).
+- **JSDoc (comments only, no code token changed).** The YFastTrie cost table in
+  `LogLogN.js` now gives whole-op rows (a split replaces the plain add row, a
+  merge / borrow replaces the plain delete row), matching `YftCount`; the
+  XFastTrie `clear()` comment says it restores the constructed seeds.
+
+### Tests
+
+- **`npm test` = 535 tests** (0.3.0: 343), 0 fail. New files: `YftVectors` (policy
+  replay against an independent model, size-band histograms), `YftCount` (the
+  cost model; seven must-fail mutant controls plus a hang control),
+  `YFastTrieOracle` / `YFastTrieBoundary` (invariants, failure modes, bad keys,
+  key 4294967295, 'YFastTrie is full', poison and revive), `YFastTrieSpace`
+  (byteLength from a test-owned model), `YftBytecode` (every hot body <= 460 B),
+  `XftSeed` (seed validation, seed 0 == omitted, `clear()` restoring the
+  constructed seeds, the `xft-seed.json` replay), `YftWitness`, `PeelOutcome`,
+  `WorkerFakes`.
+- **FILLERS (test-only).** `PeelOutcome` (+14: every StratifiedBitset successor /
+  predecessor classified FOUND / PAST / FALL, a must-diverge mutant), `WorkerFakes`
+  (+27: empty / exit1 / garbage / kill / nan fakes (+ skip on the launcher) fail the startFn, sibling, big and
+  launcher runners); `LOGLOGN_SEED` is fail-closed in the oracle tests;
+  `test/big/run.mjs` now needs >= 1 real passing test; torture T3w pins the
+  gcLane -> gcVerdict wiring.
+- **Torture lanes** (`npm run torture`): T0-T3, X0-X4 and the new Y0a / Y0b / Y1
+  (+ Y1c) / Y2 / Y3 / Y4 (splits and merges at 0 B/op, no lane fires a borrow; Y2 includes a
+  straddle step with keys >= 2^31 on the transient lane); must-fail controls
+  5 (T3) + 6 (X4) + 7 (Y4) = 18, all flip.
+- **`npm run test:perf` = 51** (PerfGate 15 + XFastTriePerf 17 + YFastTriePerf
+  19; YFastTriePerf's three must-fail teeth: a fresh-array loop flips the
+  scavenge lane only, GrowingYft flips grows and arrayBuffers, SideBufferYft flips
+  arrayBuffers only). verify run 2026-10-25 (load1 6.58, a PRELIMINARY host; these
+  are allocation-count gates), Node v26.8.2, 1 run.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

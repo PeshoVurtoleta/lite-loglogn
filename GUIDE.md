@@ -2,15 +2,15 @@
 
 A repo-only decision guide for the sub-logarithmic family: which member, which
 bitset, reach-for / avoid, and how to measure the bound and the space price
-yourself. StratifiedBitset (0.2.0) and
-XFastTrie (0.3.0) are shipped; YFastTrie and vEBTree are PLANNED. It is NOT an API
+yourself. StratifiedBitset (0.2.0),
+XFastTrie (0.3.0) and YFastTrie (0.4.0) are shipped; vEBTree is PLANNED. It is NOT an API
 encyclopedia (that is the README + `LogLogN.d.ts`); it answers "which member,
 is my bound real, and what does it cost in space?"
 
 Every number below names its tier: DETERMINISTIC (gated in `npm test` /
 `npm run verify`) or REPORTED (a measurement with provenance, gates nothing).
 This package has no CI, so every timing claim (`npm run witness`,
-`witness:tier`, `witness:xft`) is REPORTED, not a gated STATISTICAL claim.
+`witness:tier`, `witness:xft`, `witness:yft`) is REPORTED, not a gated STATISTICAL claim.
 
 ---
 
@@ -29,14 +29,14 @@ Amendment 1, ADR 0006). Timing is evidence on one host, not the proof: no R^2
 floor and no slope band is gated. Each member declares which axis it fits;
 StratifiedBitset fits the `w` axis (REPORTED, A8 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66: R^2 0.7293 vs 0.6589
 for log2(w), 1 run), and does not claim a log2(w) line. "log2(w) must win" belongs
-to the strict O(log log U) members (XFastTrie shipped, others planned), proven
+to the strict O(log log U) members (XFastTrie and YFastTrie shipped, vEBTree planned), proven
 there by counts.
 
 ---
 
 ## Which member? (decision flowchart)
 
-`(wc)` = worst-case, `(exp)` = expected / amortized. All assume keys are integers
+`(wc)` = worst-case, `(am)` = amortized (YFastTrie restructuring). All assume keys are integers
 in [0, U), U <= 2^32.
 
 ```
@@ -50,7 +50,7 @@ START -- what do you need on a BOUNDED integer universe?
 |   or the set is sparse in a huge universe?          -> XFastTrie (wc query, O(w) update, O(n*w) space)  [0.3.0]
 |
 +-- O(log log U) query but you cannot pay O(n*w) space
-|   (many elements)?                                  -> YFastTrie (exp, O(n) space)           [planned 0.4.0]
+|   (many elements)?                                  -> YFastTrie (wc query, am update, O(n) space)      [0.4.0]
 |
 +-- Worst-case O(log log U) with a compact universe
     and you want the classic structure?              -> vEBTree (wc, O(U) space)              [planned 0.5.0]
@@ -62,7 +62,7 @@ START -- what do you need on a BOUNDED integer universe?
 | --- | --- | --- | --- | --- |
 | Teachable predecessor / successor, array-embedded | StratifiedBitset | O(log_32 U); min / max read Lc words (Lc = levels <= 7) | O(U/w) | 0.2.0 |
 | Fastest query, sparse set in a huge universe, space and update cost accepted | XFastTrie | O(log log U) query; O(w) update | O(n*w), preallocated at a FIXED capacity | 0.3.0 |
-| O(log log U) at O(n) space | YFastTrie | expected O(log log U) | O(n) | planned 0.4.0 |
+| O(log log U) query at O(n) space | YFastTrie | O(log log U) query; update O(log log U) probes + at most 2w-1 word moves, split / merge / borrow amortized | O(n), preallocated at a FIXED capacity | 0.4.0 |
 | Classic worst-case, compact universe | vEBTree | O(log log U) worst-case | O(U) | planned 0.5.0 |
 
 ---
@@ -85,7 +85,7 @@ START -- what do you need on a BOUNDED integer universe?
 
 - The set is sparse in a huge universe: space is O(U/w) regardless of n (U = 2^32 is
   about 554 MB; w = 28 level 0 alone is 32 MB). Use XFastTrie (O(n*w), fixed
-  capacity; see below), the planned YFastTrie, or a sorted array.
+  capacity; see below), YFastTrie, or a sorted array.
 - U <= 2^25 and you only need successor: lite-o1 `BitSet` has a fixed 3 levels
   (O(1) in U) and bulk and / or / xor + popcount; see the table below.
 - Non-integer or unbounded keys: see the family boundary.
@@ -143,6 +143,30 @@ START -- what do you need on a BOUNDED integer universe?
 
 ---
 
+## YFastTrie
+
+### Reach for it
+
+- You want the XFastTrie query (`successor` / `predecessor` O(log log U)) but cannot pay O(n*w) space: YFastTrie is O(n), preallocated at the CAPACITY you pass (`byteLength = 4 (Cr+1) K + (Cr+1) + 16 +` the inner XFastTrie's, Cr = min(2 + floor(C/h), U), K = 2w, h = ceil(w/2); DETERMINISTIC, pinned in `test/YFastTrieSpace.test.js`). REPORTED bytes (`node test/space-table.mjs`, 2026-10-25): n = C = 1,000,000 at U = 2^32 -> 47,484,715 B against XFastTrie's 393,682,220 B (0.121) and StratifiedBitset's 554,189,332 B.
+- Updates probe fewer levels than XFastTrie's: O(log log U) probes plus at most 2w - 1 contiguous word moves, and a bucket split / merge / borrow is AMORTIZED (at most 2w word moves plus an inner XFastTrie update). The costs are counted exactly (DETERMINISTIC, `test/YftCount.test.js`: an absent successor from a bucket of 2w - 1 keys costs touches + bucket reads = 4, 6, 8, 10, 12 at w = 2, 4, 8, 16, 32).
+- You want the optional ctor seed (`new YFastTrie(U, C, seed?)`, deterministic, never random by default) or fully deterministic buckets (no RNG).
+
+### Avoid it
+
+- A dense universe: StratifiedBitset is far smaller (YFastTrie is 6.496 to 262.501 times its bytes at U = 2^16, REPORTED) and its query is a handful of words.
+- Anything where a plain binary search over a sorted array suffices: in the 2026-10-25 `witness:yft` run (REPORTED, one run) YFastTrie `successor` was slower than a local `Uint32Array` binary search at every n tested (ratio 3.0364 at n = 3,000,000, 2.8628 at n = 10,000,000, w = 28).
+- A hard worst-case update bound: the single-op tail is REPORTED, not bounded in time (the stated bound is the count-gated work bound: a split / merge / borrow moves <= 2w words). vEBTree (planned) is the worst-case member.
+- Untrusted keys: the inner trie's cuckoo seeds are fixed by default, so adversarial keys can force kicks and reseeds; a stalled inner add during a split or borrow throws a `RangeError` with the set unchanged (so `delete` can throw too; ADR 0007, ADR 0008).
+- A growing set: add of a new key at `size === capacity` throws a RangeError.
+
+### Measure it yourself
+
+- Bound (DETERMINISTIC): `npm test` (`YftCount`, `YFastTrieSpace`, `YftVectors`, `YFastTrieOracle`).
+- Zero-GC (DETERMINISTIC): `npm run torture` lanes Y0a / Y0b / Y1 (+ Y1c) / Y2 / Y3 / Y4, `npm run test:perf`.
+- Speed (REPORTED, release-time, quiet host): `npm run witness:yft` (YFastTrie vs XFastTrie successor A/B with the 2% effect floor; foils, add+delete and the tail MAX are REPORTED with no timing verdict; `--yft --smoke` is the counts-only gate in `npm test`). The 2026-10-25 run (QUIET, 1 run): successor ratio vs XFastTrie 0.5178 at n = 1,000,000 and 0.9154 at n = 1,000 (w = 28); 1.0444, a LOSS, at w = 16, n = 4096.
+
+---
+
 ## Which bitset? (the suite's tiers)
 
 Timsort runs insertion sort on short runs and merges above them, because each wins
@@ -151,7 +175,8 @@ which operations you need. Word counts are REPORTED from sibling source read
 2026-10-22 (words of the bit arrays read per op, worst case); the StratifiedBitset
 row is DETERMINISTIC (counts gated by Count.test.js and TierParity.test.js); the
 XFastTrie row counts level-table touches, not words, and is DETERMINISTIC
-(XftCount.test.js).
+(XftCount.test.js); the YFastTrie row counts touches, bucket reads and word moves
+(YftCount.test.js, DETERMINISTIC).
 
 | Universe | Structure | next / prev / min-max | Extras | Absent |
 | --- | --- | --- | --- | --- |
@@ -160,6 +185,7 @@ XFastTrie row counts level-table touches, not words, and is DETERMINISTIC
 | U <= 2^25, next only | lite-o1 BitSet | next 7 (U <= 2^20) / 38 (U = 2^25), no prev, first only | and / or / xor + popcount, size O(words) | -1 |
 | U <= 2^32 | StratifiedBitset | next <= 2Lc-1 / prev <= 2Lc-1 / min-max Lc | size O(1) | `undefined` |
 | U <= 2^32, sparse | XFastTrie | next / prev 1 + log2(w) touches (absent) / min-max 0; update w - m | fixed capacity, size O(1) | `undefined` |
+| U <= 2^32, sparse, many keys | YFastTrie | next / prev lambda touches + a bucket search (touch counts as XFastTrie); update lambda + at most 2w-1 word moves | fixed capacity, size O(1), O(n) space | `undefined` |
 
 At U <= 1,024 StratifiedBitset touches the same number of words as the sibling
 (Lc <= 2); pick the sibling for its surface. The boundary row: U <= 2^25 and

@@ -69,7 +69,7 @@
  */
 
 /** Package version. One of the three version sites (package.json / VERSION / llms.txt). */
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0';
 
 // --- members land here, append-only, one tree-shakeable class each -----------
 // StratifiedBitset (v0.2.0)         -- array-embedded O(log_w U) successor / predecessor
@@ -684,8 +684,8 @@ export class XFastTrie {
     }
 
     /**
-     * Cold. Removes every key and restores the constructed seeds (the default
-     * seeds, or those of the caller's seed; the `_q` counters are kept).
+     * Cold. Removes every key and restores the constructed seeds (the defaults,
+     * or those derived from the caller's seed); the `_q` counters are kept.
      * Revives a poisoned instance (a fresh `_q`, counters zero).
      */
     clear() {
@@ -993,26 +993,41 @@ function throwYFull(c) {
  * Cost (lambda = inner level-table touches of one locate: 1 when x is a rep, else
  * 1 + T; beta = binary-search reads over a bucket of s keys, in
  * [floor(log2(s+1)), ceil(log2(s+1))]; hop = one leaf-thread read + <= 1 `_bk`
- * read; m, m' = the inner update walk's early stop):
+ * read; m = the early stop of the inner add (split, borrow) or delete (merge)
+ * walk, m' = that of the borrow's inner delete; s = the size of x's bucket
+ * before the op, lb = x's index in it):
  *
- *   op                                    inner touches       search reads       moves
- *   bad key                               0                   0                  0
- *   has / add present / full / del absent lambda              beta + [lb < s]    0
- *   successor / predecessor               lambda              beta + <=2 (+hop)  0
- *   min / max                             0                   <=1 (+hop)         0
- *   add, new key                          lambda              beta + [lb < s]    s - lb, +1 write
- *   delete, key present                   lambda              beta + 1           s - lb - 1
- *   + split                               +1 + T + (w - m)    -                  +w
- *   + merge                               +(w - m)            -                  +s - 1
- *   + borrow                              +(1+T+w-m)+(w-m')   -                  <= 2w
+ *   op                                    inner touches        search reads         moves
+ *   bad key                               0                    0                    0
+ *   has / add present / full / del absent lambda               beta + [lb < s]      0
+ *   successor / predecessor               lambda               beta + <=2 (+hop)    0
+ *   min / max                             0                    <=1 (+hop)           0
+ *   add, new key, no split                lambda               beta + [lb < s]      s - lb, +1 write
+ *   delete, key present, no merge/borrow  lambda               beta + 1             s - lb - 1
+ *   add, new key, split (s = K)           lambda + 1 + T       beta + [lb < s] + 1  w + (w - lb'), +1 write
+ *                                         + (w - m)
+ *   delete, key present, merge            lambda + (w - m)     beta + 1             s - 1
+ *   delete, key present, borrow           lambda + 1 + T       beta + 2             (s_L - c) + (s - 1)
+ *                                         + (w - m) + (w - m')                      = floor(t/2) <= 2w
  *
- * Claim: queries are O(log log U); updates are O(log log U) probes plus at most
- * 2w - 1 contiguous word moves (O(w)), and a split / merge / borrow (at most 2w
- * word moves plus one inner add (split), one inner delete (merge) or both
- * (borrow), an inner add expected O(w)) is amortized (a merge can be followed at once by one split of the merged bucket;
- * a split or borrow leaves each bucket it touches Omega(w) updates from its next
- * restructure). Hot
- * methods allocate 0 bytes for keys < 2^30; a returned key >= 2^31 on Node
+ * Every row is a WHOLE op, read as written: the split row REPLACES the plain
+ * add row and the merge / borrow rows REPLACE the plain delete row (they are
+ * not added to them). Split: w words move to the new rep's bucket, then x is
+ * inserted into the half it lands in (right iff lb > w; lb' = x's index in that
+ * half), so moves = 2w - lb for a left-routed x and 3w - lb for a right-routed
+ * one, at most 2w; the +1 read is the new rep's `_bk` word. Merge: the s - 1
+ * remaining keys move into the left bucket (they replace the plain shift).
+ * Borrow: c = ceil(t/2), t = s_L + s - 1; the left bucket's s_L - c keys from
+ * index c and the s - 1 remaining keys move to the new rep's bucket; the +2
+ * reads are the equality read and the new rep's `_bk` word.
+ *
+ * Claim: queries are O(log log U); updates are O(log log U) probes plus at
+ * most 2w - 1 contiguous word moves (O(w)), and a split / merge / borrow (at
+ * most 2w word moves plus one inner add (split), one inner delete (merge) or
+ * both (borrow), an inner add expected O(w)) is amortized (a merge can be
+ * followed at once by one split of the merged bucket; a split or borrow
+ * leaves each bucket it touches Omega(w) updates from its next restructure).
+ * Hot methods allocate 0 bytes for keys < 2^30; a returned key >= 2^31 on Node
  * (>= 2^30 on Chrome / Electron) may box when the call is not inlined, and a
  * rep >= 2^31 passed to the inner add / delete of a split / merge / borrow may
  * box (cold path). successor / predecessor are STRICT (> x / < x). -0 aliases

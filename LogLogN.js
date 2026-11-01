@@ -415,7 +415,7 @@ export class XFastTrie {
     /**
      * @param {number} universe integer in [2, 2^32]
      * @param {number} capacity integer in [1, min(universe, 2^24)]
-     * @param {number} [seed] optional uint32 level-seed salt (C-4): undefined or 0
+     * @param {number} [seed] optional uint32 level-seed salt: undefined or 0
      *   gives the default seeds bit for bit; any other value is XORed into every
      *   level's s1 (s1 = fmix32(imul(L, 0x9e3779b1) ^ S_L ^ seed)). Deterministic,
      *   never random; clear() restores the seeds it gives. Anything else -> RangeError.
@@ -480,7 +480,11 @@ export class XFastTrie {
     /** Key bit-width w = ceil(log2 U) (the number of trie levels). */
     get bits() { return this._w; }
 
-    /** Bytes of every typed array the instance owns (13 TS + 12 (C+1) + 16 (w+1) + 16). */
+    /**
+     * Bytes of every typed array the instance owns (13 TS + 12 (C+1) + 16 (w+1) + 16).
+     * The trailing 16 is `_q` (I32[4]), counted as a constant because a poisoned
+     * instance holds `_q = null` (clear() re-creates it).
+     */
     get byteLength() {
         return this._lv.byteLength + this._occ.byteLength + this._tk.byteLength +
             this._tmin.byteLength + this._tmax.byteLength + this._key.byteLength +
@@ -940,7 +944,7 @@ export class XFastTrie {
             ' could not place the key after 32 reseed tries; add rolled back (size ' + this._size + ')');
     }
 
-    /** Cold. Poisons the instance (A3): `_q = null`, loud Error; clear() revives it. */
+    /** Cold. Poisons the instance: `_q = null`, loud Error; clear() revives it. */
     _poison(why) {
         this._q = null;
         throw new Error('[lite-loglogn] XFastTrie invariant: rollback failed (' + why +
@@ -995,7 +999,7 @@ function throwYFull(c) {
  * [floor(log2(s+1)), ceil(log2(s+1))]; hop = one leaf-thread read + <= 1 `_bk`
  * read; m = the early stop of the inner add (split, borrow) or delete (merge)
  * walk, m' = that of the borrow's inner delete; s = the size of x's bucket
- * before the op, lb = x's index in it):
+ * before the op, lb = x's index in it, s_L = the left neighbour bucket's size):
  *
  *   op                                    inner touches        search reads         moves
  *   bad key                               0                    0                    0
@@ -1297,7 +1301,7 @@ export class YFastTrie {
     /**
      * Cold. Splits the full bucket of leaf f (K keys): the new rep = its key at
      * index w is added to the inner trie FIRST (a stall throws with nothing
-     * changed, C-7), then keys w..K-1 move to the new leaf's bucket.
+     * changed), then keys w..K-1 move to the new leaf's bucket.
      * Overridable (test controls replace it). @returns {number} the new leaf
      */
     _split(f) {
@@ -1321,7 +1325,7 @@ export class YFastTrie {
      * repairs the underflow against its left neighbour p: s_p + s - 1 <= K ->
      * merge into p and drop f's rep; else borrow: the new rep = p's key at index
      * ceil(t/2), t = s_p + s - 1, is added to the inner trie FIRST (a stall throws
-     * with nothing changed, C-7), p's keys from there on plus f's remaining keys
+     * with nothing changed), p's keys from there on plus f's remaining keys
      * become the new leaf's bucket, then f's rep is dropped. Overridable.
      */
     _shrink(f, j) {

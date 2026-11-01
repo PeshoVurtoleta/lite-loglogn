@@ -351,6 +351,7 @@ test('A6 XFastTrie bad keys: has / delete false, succ / pred undefined, add thro
     // xftLiveBody must be self-contained, so its bad list is a copy: pin it to XFT_BAD
     const norm = (f) => String(f).replace(/\s+/g, ' ');
     const lit = norm(XFT_BAD);
+    assert.ok(lit.indexOf('[') > 0, 'XFT_BAD source has a bad-list literal');
     assert.ok(norm(xftLiveBody).includes(lit.slice(lit.indexOf('['))), 'xftLiveBody bad list === XFT_BAD');
 });
 
@@ -408,33 +409,21 @@ test('A6 XFastTrie constructor rejects bad (U, C) with a RangeError and accepts 
 // --- must-fail controls: the SAME checkers must flag each wrong answer -------
 
 const isNaNKey = (k) => typeof k === 'number' && k !== k;
-class FakeHas extends XFastTrie { has(k) { return typeof k === 'symbol' ? true : super.has(k); } }
-class FakeAddNoThrow extends XFastTrie { add(k) { return isNaNKey(k) ? this : super.add(k); } }
-class FakeDelete extends XFastTrie { delete(k) { return k === null ? true : super.delete(k); } }
-class FakeSucc extends XFastTrie { successor(k) { return k === '1' ? 0 : super.successor(k); } }
-class FakePred extends XFastTrie { predecessor(k) { return k === -1 ? 0 : super.predecessor(k); } }
-class FakeUserErr extends XFastTrie {
-    add(k) { if (typeof k === 'object' && k !== null && k.toString !== Object.prototype.toString) throw new Error('user'); return super.add(k); }
-}
-class FakeMutates extends XFastTrie {
-    delete(k) { if (isNaNKey(k)) { super.delete(0); return false; } return super.delete(k); }
-}
 class FakeCtorLax { constructor() { this.universe = 0; this.capacity = 0; this.bits = 0; this.size = 0; } }
 class FakeWrongBits extends XFastTrie { get bits() { return 0; } }
-class FakeNoPrefix extends XFastTrie { add(k) { if (k === '1') throw new RangeError('bad key'); return super.add(k); } }
-class FakeGrows extends XFastTrie { add(k) { if (k === '1') this._grew = 8; return super.add(k); } get byteLength() { return super.byteLength + (this._grew === 8 ? 8 : 0); } }
 class FakeWrongCap extends XFastTrie { get capacity() { return 0; } }
 class FakeNonEmpty extends XFastTrie { get size() { return 1; } }
 class FakeCtorNoPrefix { constructor() { throw new RangeError('bad ctor'); } }
 
 test('control: xftRowErr flags every wrong answer kind (has / add / delete / succ / pred / user error / state change)', T, () => {
-    const fakes = [FakeHas, FakeAddNoThrow, FakeDelete, FakeSucc, FakePred, FakeUserErr, FakeMutates, FakeNoPrefix, FakeGrows];
+    const fakes = rowFakes(XFastTrie);
     assert.equal(fakes.length, 9);
+    const [, , , , , , FakeMutates, FakeNoPrefix, FakeGrows] = fakes;
     for (const F of fakes) {
         const r = xftRowErr(F, 33, 8);
         assert.ok(r.errs.length > 0, F.name + ' was not flagged');
     }
-    // FakeMutates at U = 33 changes dump: key 0 gone
+    // FakeMutates at U = 33 changes dump: its max() (U - 1 = 32) gone
     assert.ok(xftRowErr(FakeMutates, 33, 8).errs.some((e) => /dump changed/.test(e)));
     assert.ok(xftRowErr(FakeNoPrefix, 33, 8).errs.some((e) => /add threw wrong error/.test(e)));
     assert.ok(xftRowErr(FakeGrows, 33, 8).errs.some((e) => /byteLength changed/.test(e)));
@@ -518,6 +507,7 @@ test('A6 YFastTrie bad keys: has / delete false, succ / pred undefined, add thro
     for (let i = 1; i < reps.length; i++) assert.ok(reps[i] >= 2, 'U=' + YFT_ROWS[i][0] + ' reps ' + reps[i]);
     const norm = (f) => String(f).replace(/\s+/g, ' ');
     const lit = norm(XFT_BAD);
+    assert.ok(lit.indexOf('[') > 0, 'XFT_BAD source has a bad-list literal');
     assert.ok(norm(yftLiveBody).includes(lit.slice(lit.indexOf('['))), 'yftLiveBody bad list === XFT_BAD');
 });
 
@@ -709,7 +699,7 @@ test('C-4 seed table (12 values) on BOTH classes: 4 accepted, 8 RangeErrors nami
 
 // --- YFastTrie must-fail controls: the SAME checkers must flag each wrong answer ------
 
-/** The nine row fakes of the XFastTrie block, rebuilt over Base. */
+/** The nine row fakes, built over Base (shared by the XFastTrie and YFastTrie controls). */
 function rowFakes(Base) {
     return [
         class FakeHas extends Base { has(k) { return typeof k === 'symbol' ? true : super.has(k); } },

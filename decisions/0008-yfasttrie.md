@@ -4,7 +4,8 @@
 - Severity: S1 (the second trie member; it fixes the O(n)-space claim and the seed surface)
 - Date: 2026-10-25
 - Session: YFastTrie (0.4.0), unit U-a (G1-2)
-- Source: `.handoff/PLAN-yfasttrie.md`, section CURRENT (C-1 .. C-20, maintainer rulings 2026-10-23 / 2026-10-25)
+- Source: `.handoff/PLAN-yfasttrie.md`, section CURRENT (C-1 .. C-20, maintainer rulings
+  2026-10-23 / 2026-10-25)
 
 ## Context
 
@@ -93,14 +94,16 @@ m = the ADR 0007 early-stop prefix length of the row's inner add (split) or inne
   inserted into the half it lands in (a w-key run), costing w - lb' for x's index lb' in
   that half, plus the key write. In terms of lb (x's index in the K-key run): 2w - lb for a
   left-routed x, 3w - lb for a right-routed one (right iff lb > w); at most 2w. The worst
-  case is 2w moves (x lands at the front of the left half, lb = 0; a right-routed x moves at most 2w - 1).
+  case is 2w moves (x lands at the front of the left half, lb = 0; a right-routed x moves
+  at most 2w - 1).
 - **Merge and borrow REPLACE the plain delete shift.** A merge moves the s-1 surviving keys
   into the left neighbour (the deleted key is skipped during the copy); a borrow moves
   s_L - c keys from the left neighbour's tail and the s-1 survivors, c = ceil(t/2),
   t = s_L + s - 1, so a borrow moves t - c = floor(t/2) <= 2w words. Neither also pays
   s - lb - 1.
 - **Search reads.** A split and a borrow each read one more `_bk` word, the new rep
-  (a split: beta+[lb<s]+1; a borrow: beta+2, the other read being the equality read). A merge reads no extra word.
+  (a split: beta+[lb<s]+1; a borrow: beta+2, the other read being the equality read). A
+  merge reads no extra word.
 - Reading the first draft additively (a split adds +w to the pre-split s-lb; a merge adds
   s-1 to s-lb-1) overstates the moves; `test/YftCount.test.js` asserts the measured moves
   are at most that literal reading and equal to the table above.
@@ -144,7 +147,8 @@ most 2w (the split worst case is hit), an inner reseed makes at most 32 tries.
 
 - StratifiedBitset stays BYTE-identical (Parity pin). XFastTrie stays BEHAVIOR-identical
   with the seed omitted / undefined / 0 (xft-seed.json replay; every existing XFastTrie
-  gate unchanged); its region differs from the frozen build fd8fcec (LogLogN.js sha256 375caeab) only in the C-4 hunks.
+  gate unchanged); its region differs from the frozen build fd8fcec (LogLogN.js sha256
+  375caeab) only in the C-4 hunks.
   `XFastTrie.length` goes 2 -> 3 (no test pins it).
 - The hot paths are 0 B/op on keys < 2^30. The 0.3.0 inline caveat applies: a rep >= 2^31
   can box when `inner.add` is not inlined, so the torture straddle step (keys >= 2^31 in
@@ -161,7 +165,8 @@ most 2w (the split worst case is hit), an inner reseed makes at most 32 tries.
   touches of every query; the single locate (rep <= x) plus one hop is enough.
 - **Merge without borrow.** Rejected: when the merged size exceeds K the bucket would
   split again at once, so a delete / add pair at the h boundary oscillates, and
-  always-merge-without-borrow can cost one split plus one merge (O(w) word moves each) on every op at
+  always-merge-without-borrow can cost one split plus one merge (O(w) word moves each) on
+  every op at
   the h boundary, so restructures get no O(1) amortized bound; borrow re-balances instead.
 - **A z-fast trie.** Rejected for 0.4.0 (C-1): stays Tier 4, complexity.
 
@@ -169,7 +174,8 @@ most 2w (the split worst case is hit), an inner reseed makes at most 32 tries.
 
 - test/YftVectors.test.js + test/helpers/yftStream.mjs: C-3 policy replay (YModel),
   size-band histograms (C-9), the 15 xft-b0 streams (C-13).
-- test/YftCount.test.js: the cost model above (C-8, C-11, seven must-fail mutants plus a hang control); test/XftSeed.test.js: C-4, C-5,
+- test/YftCount.test.js: the cost model above (C-8, C-11, seven must-fail mutants plus a
+  hang control); test/XftSeed.test.js: C-4, C-5,
   C-6 and the xft-seed.json parity (C-13).
 - test/YFastTrieOracle.test.js, test/YFastTrieBoundary.test.js: C-3 invariants, C-7 failure
   modes, bad keys, key 4294967295, 'YFastTrie is full'.
@@ -183,3 +189,13 @@ most 2w (the split worst case is hit), an inner reseed makes at most 32 tries.
   (five must-fail fakes, `test/fakes/yftw-*`); the timed `--yft` lane is REPORTED.
 - Shipped in 0.4.0. Timing, the SPACE table and the witness tail are REPORTED
   measurements (README), not claims of this record.
+
+## Amendment (0.4.1, 2026-11-01)
+
+Borrows are now ALLOCATION-gated: torture lane Y1b (U = 2^16, w = 16, K = 32, h = 8,
+C = 43; each cycle 43 adds + 43 deletes + clear(), census 1 split / 1 merge / 1 borrow)
+measured 0 B/op over 5000 cycles (torture, 2 runs, 2026-11-01, Node v26.8.2, load1
+4.0-4.6, a PRELIMINARY host; a count gate). Its must-fail controls CY8 AllocBorrow and
+CY9 noRefill flip it. This supersedes the 0.4.0 wording that no Y lane fires a borrow; an
+inner reseed is still fired by no Y lane (XFastTrie's X2 covers kicks and reseeds). The
+accepted body above is unchanged.

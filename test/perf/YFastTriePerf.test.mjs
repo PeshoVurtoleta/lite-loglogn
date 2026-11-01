@@ -339,10 +339,14 @@ const teethMustFailGrow = {
  * split, allocates a fresh 1 KB Uint32Array (off-heap backing store) into a
  * preallocated 64-slot side table, never touching a column: identity and
  * byteLength are unchanged, so `grows` reads 0. The k*N window retains a few
- * dozen buffers (measured 36 KB arrayBuffers and 33 KB retained of the 64 KB
- * budget, 3 of 3 runs; at most 64 slots); the slot table is built in the
- * constructor (cold), so retained and scavenges stay under budget and the only
- * lane that can see it is arrayBuffers.
+ * dozen buffers. Measured: arrayBuffers 36 KB against the 0 KB budget (3 of
+ * 3 runs, 2026-11-01, load1 14-20 PRELIMINARY); at most 64 slots x 1 KB = 64
+ * KB of side buffers. The slot table is built in the constructor (cold), so
+ * scavenges stay at 0 and the only lane that can see the side buffers is
+ * arrayBuffers. Retained reads ~33 KB (33, 33, 34 KB), a fixed offset of the
+ * k*N scenario itself, independent of the side buffer (a 64-element variant
+ * read the same 33 KB, 3 of 3 runs, 2026-11-01), 31 KB under the 64 KB
+ * retained budget.
  */
 class SideBufferYft extends YFastTrie {
     constructor(u, c) {

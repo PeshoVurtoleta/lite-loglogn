@@ -470,7 +470,8 @@ function fPingPong(U, C, seed) {
 }
 
 /**
- * F8: borrow at w = 4 (U = 16, K = 8, h = 2), the smallest WIDTH where C-3 can borrow (the smallest universe is U = 12; this stream uses 16)
+ * F8: borrow at w = 4 (U = 16, K = 8, h = 2), the smallest WIDTH where C-3
+ * can borrow (the smallest universe is U = 12; this stream uses 16).
  * Cycle: add 5..12 (head K), 13 (split, rep 9), 0..3 (head K again),
  * delete 13, 12, 11 (right at h), 10 (borrow: rep 6), then drain; 40 cycles with
  * random order variations, then churn.

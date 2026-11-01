@@ -257,7 +257,7 @@ COVERAGE: n-sweep 9 (A/B 7), U-sweep 4, ABBA runs 20/20, probe rounds 300, laten
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 535 tests, 0 fail, 2026-10-25, Node v26.8.2; also
+- DETERMINISTIC (npm test = 569 tests, 568 pass, 1 skipped, 0 fail, 2026-11-01, Node v26.8.2; also
   npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
@@ -273,7 +273,12 @@ COVERAGE: n-sweep 9 (A/B 7), U-sweep 4, ABBA runs 20/20, probe rounds 300, laten
   and U = 2^30 (C = 8192) -> 0 B/op, gc major 0 / minor 0, splits and merges firing;
   Y1 storm 5,000 cycles (splits +200,000, merges +200,000) abGrowth 0; Y3 leak census
   4096/4096 collected; Y4's seven must-fail controls flip (5 + 6 + 7 = 18 across
-  T3, X4, Y4). `--yft --smoke` is gated in npm test by YftWitness (counts / strings
+  T3, X4, Y4 in that run). Since 0.4.1 Y1b allocation-gates borrows (torture, 2 runs,
+  2026-11-01, Node v26.8.2, load1 4.0-4.6, PRELIMINARY host; count gates): U = 2^16,
+  C = 43, census 1 split / 1 merge / 1 borrow per cycle, 5,000 cycles -> alloc 0 B/op,
+  abGrowth 0, transient nsExcess 0 B / 256 cycles; Y4 gains CY8 AllocBorrow (56 B/op)
+  and CY9 noRefill (borrows +0), nine controls, 5 + 6 + 9 = 20 across T3, X4, Y4; no Y
+  lane fires an inner reseed (X2 covers kicks and reseeds). `--yft --smoke` is gated in npm test by YftWitness (counts / strings
   only, five must-fail fakes).
   `npm run test:perf`: PerfGate 15/15 (7 zero-alloc scenarios + 3 must-fail teeth +
   flag pin (2) + detector (1) + arrayBuffers attribution (1) + GATE key-set pin (1)) + XFastTriePerf 17/17

@@ -27,6 +27,9 @@
  *       retained array (size > 0), a gc kick (forced globalThis.gc() inside
  *       T0's gc window: the T0 gc verdict not-ok, gcMajor > 0). Any control
  *       passing is exit 1.
+ *   X0-X4 (XFastTrie) and Y0 / Y1 / Y1b / Y1c / Y2 / Y3 / Y4 (YFastTrie;
+ *       Y1b = the borrow cycle) follow, each documented at its section.
+ *       Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) = 20.
  * KNOWN GAP (narrowed): a real >4 ms pause is host timing and cannot be forced, so the
  * gc kick (a forced major) pins maxMajor only. The maxPauseMs THRESHOLD AND WIRING are
  * pinned deterministically by the separate `T3w` line: the exact gcVerdict() gcLane
@@ -1012,36 +1015,43 @@ async function main() {
 
     // ==== Y-tiers: YFastTrie (PLAN-yfasttrie G2, task G2-4) ==================
     // Run after X0-X4 so the T / X tiers keep their own feedback; the Y-tiers
-    // drive YFastTrie through their OWN step closures (makeStepY, makeStormStep,
-    // makeStraddleStep) -- makeStep's and makeStepX's call sites never see a
-    // YFastTrie. Every Y lane uses the default seed (C-16), so the census is
-    // exact; hot paths are gated at 0 B/op on keys < 2^30 (C-14).
-    //   Y0  2,000,000 mixed ops (makeStepX's op mix) at U = 2^20 AND at U = 2^30,
-    //       capacity XC, keys < 2^30 from Uint32Array rings, integer sinks in
-    //       Int32Array slots: retained 0 B/op (null = FAIL), transient excess <
-    //       NS_MAX_EXCESS per NS_K-op window, gc major 0, maxPauseMs <= 4.
-    //       Coverage floor: every op kind ran, with hits AND misses, and splits
-    //       >= 1 AND merges >= 1 inside every measured window (the 8 measureAllocs
-    //       batches together, warmup hoisted out, EACH of the NS_W new-space
-    //       windows, the gc window) -- the cold
-    //       split / merge path runs inside the 0 B/op windows, not beside them.
+    // drive YFastTrie through their OWN step closures (makeStepY,
+    // makeStormStep, makeBorrowStep, makeStraddleStep) -- makeStep's and
+    // makeStepX's call sites never see a YFastTrie. Every Y lane uses the
+    // default seed (C-16), so the census is exact; hot paths are gated at
+    // 0 B/op on keys < 2^30 (C-14).
+    //   Y0  2,000,000 mixed ops (makeStepX's op mix) at U = 2^20 AND at
+    //       U = 2^30, capacity XC, keys < 2^30 from Uint32Array rings, integer
+    //       sinks in Int32Array slots: retained 0 B/op (null = FAIL),
+    //       transient excess < NS_MAX_EXCESS per NS_K-op window, gc major 0,
+    //       maxPauseMs <= 4. Coverage floor: every op kind ran, with hits AND
+    //       misses, and splits >= 1 AND merges >= 1 inside EVERY measured
+    //       window: each of the 8 measureAllocs batches (warmup hoisted out;
+    //       the op stream is fixed-seed, so every batch restructures; cold
+    //       replay 2026-11-01, splits / merges per batch: 2^20 = 14 / 12 then
+    //       12 / 12 x 7, 2^30 = 3 / 3 x 8), each of the NS_W new-space windows,
+    //       the gc window -- the cold split / merge path runs inside the
+    //       0 B/op windows, not beside them.
     //   Y1  split / merge storm, the census stream below: retained 0 B/op
     //       measured over 4 batches of Y_ITERS cycles (the 5th Y_ITERS is the
     //       warmup) while the exact `_n` check spans all 5,000 calls, then a
-    //       stabilize 'deep' window of EXACTLY 10,000
-    //       splits (250 cycles x 40): arrayBuffers growth 0, settled; every `_n`
-    //       delta must equal the census x cycles (a splits delta of 0 is a FAIL).
-    //   Y2  U = 2^32. (a) X1's ring shape (keys up to 2^32 - 1 in the ring and in
-    //       the set), stabilize 'deep': arrayBuffers growth 0, settled, max() =
-    //       2^32 - 1, splits >= 1 AND merges >= 1 in the steady window (warmup
-    //       hoisted out). (b) the straddle
-    //       step, TRANSIENT lane only (C-14): every arg and return < 2^30 while
-    //       the searched head bucket holds 32 keys >= 2^31; no split / merge /
-    //       borrow in any window (so the cold-path inline caveat cannot apply).
-    // Teeth (the formal controls are G2-B3's Y4, each one mutation): CY1 retain
-    // flips Y0 alloc; CY2 box flips Y0 transient (and the Y2b lane, same nsLaneY
+    //       stabilize 'deep' window of EXACTLY 10,000 splits (250 cycles x 40):
+    //       arrayBuffers growth 0, settled; every `_n` delta must equal the
+    //       census x cycles (a splits delta of 0 is a FAIL).
+    //   Y1b borrow cycle (part 2, below Y1c): the same yStormLane gate on a
+    //       stream that borrows once per cycle; a borrows delta of 0 is a FAIL.
+    //   Y2  U = 2^32. (a) X1's ring shape (keys up to 2^32 - 1 in the ring and
+    //       in the set), stabilize 'deep': arrayBuffers growth 0, settled,
+    //       max() = 2^32 - 1, splits >= 1 AND merges >= 1 in the steady window
+    //       (warmup hoisted out). (b) the straddle step, TRANSIENT lane only
+    //       (C-14): every arg and return < 2^30 while the searched head bucket
+    //       holds 32 keys >= 2^31; no split / merge / borrow in any window (so
+    //       the cold-path inline caveat cannot apply).
+    // Teeth (the formal controls are Y4, each one mutation): CY1 retain flips
+    // Y0 alloc; CY2 box flips Y0 transient (and the Y2b lane, same nsLaneY
     // path); CY3 ReallocSplit flips Y1 abGrowth; CY6 gcKick flips Y0 gc; CY7
-    // flatKeys flips Y1's split floor (deltas != census).
+    // flatKeys flips Y1's split floor (deltas != census); CY8 AllocBorrow
+    // flips Y1b alloc; CY9 noRefill flips Y1b's borrows floor.
     //
     // Y CENSUS (2026-10-25, LogLogN.js 7ecfe459, default seed; .handoff/evidence/
     // yft-census-g2-2026-10-25.log): U = 2^16 (w = 16, K = 32, h = 8), C = 664,
@@ -1066,6 +1076,7 @@ async function main() {
     const Y_SPLITS = 40;        // census: per storm cycle
     const Y_MERGES = 40;
     const Y_BORROWS = 0;
+    const Y_CEN = Int32Array.of(Y_SPLITS, Y_MERGES, Y_BORROWS);  // yStormLane census
     const Y_SPLIT_WINDOW = 10000;                       // Y1 abGrowth window, splits
     const Y_STORM_CYCLES = Y_SPLIT_WINDOW / Y_SPLITS;   // 250 cycles
     const Y_ITERS = 1000;       // Y1 measureAllocs iterations per batch
@@ -1164,15 +1175,43 @@ async function main() {
         const set = populateY(new YFastTrie(u, XC), k);
         const step = makeStepY(set, k, cnt);
         for (let i = 0; i < 250000; i++) step(i);
+        // Per-batch floor: measureAllocs restarts i at 0 in every batch (warmup
+        // 0), so the wrapper snapshots `_n` at each batch's first call into
+        // slots 2b / 2b + 1 (b < 8; slot 18 counts the snapshots), and slots
+        // 16 / 17 take the end. Integer writes into a typed array only.
+        const bat = new Int32Array(19);
+        const allocStep = function yAllocStep(i) {
+            if (i === 0) {
+                const c = bat[18];
+                if (c < 8) {
+                    bat[2 * c] = yn(set, 0);
+                    bat[2 * c + 1] = yn(set, 1);
+                }
+                bat[18] = c + 1;
+            }
+            step(i);
+        };
         const a0 = yn(set, 0), a1 = yn(set, 1);
-        const al = measureAllocs(step, { iterations: 250000, batches: 8, warmup: 0 });
+        const al = measureAllocs(allocStep, { iterations: 250000, batches: 8, warmup: 0 });
         const as = yn(set, 0) - a0, am = yn(set, 1) - a1;
+        bat[16] = yn(set, 0);
+        bat[17] = yn(set, 1);
+        let bs = -1;
+        let bm = -1;
+        for (let j = 0; j < 8; j++) {
+            const ds = bat[2 * j + 2] - bat[2 * j], dm = bat[2 * j + 3] - bat[2 * j + 1];
+            if (bs < 0 || ds < bs) bs = ds;
+            if (bm < 0 || dm < bm) bm = dm;
+        }
         const b = al.bytesPerCall;
-        const aOk = b !== null && al.settled === true && Math.round(b) === 0 && as >= 1 && am >= 1;
+        const aOk = b !== null && al.settled === true && Math.round(b) === 0 && as >= 1 && am >= 1 &&
+            bat[18] === 8 && bat[0] === a0 && bat[1] === a1 && bs >= 1 && bm >= 1;
         if (!aOk) {
             fails.push(tag + ' alloc bytesPerCall=' + b + ' settled=' + al.settled +
-                ' splits+' + as + ' merges+' + am +
-                ' (null or unsettled is a FAIL, not 0; splits and merges must be >= 1)');
+                ' splits+' + as + ' merges+' + am + ' batches=' + bat[18] +
+                ' per-batch min splits+' + bs + ' merges+' + bm +
+                ' (null or unsettled is a FAIL, not 0; splits and merges must be >= 1 in' +
+                ' EVERY one of the 8 batches)');
         }
         const ns = nsExcessY(step, set, true);
         const nOk = ns !== null && ns.excess < NS_MAX_EXCESS && ns.bad === 0;
@@ -1205,7 +1244,7 @@ async function main() {
             ' pred=' + cnt[XN_PH] + '/' + cnt[XN_PM] +
             ' has=' + cnt[XN_HH] + '/' + cnt[XN_HM] +
             ' del=' + cnt[XN_DH] + '/' + cnt[XN_DM] + ' (hit/miss)' +
-            ' splits/merges alloc=+' + as + '/+' + am +
+            ' splits/merges alloc=+' + as + '/+' + am + ' (per-batch min +' + bs + '/+' + bm + ')' +
             ' ns=+' + (ns === null ? 'null' : ns.sp + '/+' + ns.mg + ' badWindows=' + ns.bad) +
             ' gc=+' + gs + '/+' + gm +
             ' size=' + set.size +
@@ -1234,8 +1273,11 @@ async function main() {
     }
 
     // Retained lane over Y_ITERS x 5 calls, then the exact abGrowth window of
-    // `cycles` calls. Every `_n` delta must equal the census x calls.
-    function yStormLane(tag, set, step, calls, cycles) {
+    // `cycles` calls. Every `_n` delta must equal the census `cen` (Int32Array
+    // splits / merges / borrows per call) x calls; splits >= 1 in the window,
+    // and when cen[2] >= 1 borrows >= 1 in BOTH windows (floor = false when
+    // that borrows floor missed; Y1b / CY9).
+    function yStormLane(tag, set, step, calls, cycles, cen) {
         const errs = [];
         const c0 = calls[0];
         const a0 = yn(set, 0), a1 = yn(set, 1), a2 = yn(set, 2);
@@ -1246,9 +1288,9 @@ async function main() {
         if (!(b !== null && al.settled === true && Math.round(b) === 0)) {
             errs.push(tag + ' alloc bytesPerCall=' + b + ' settled=' + al.settled);
         }
-        if (n !== Y_ITERS * 5 || d0 !== Y_SPLITS * n || d1 !== Y_MERGES * n || d2 !== Y_BORROWS * n) {
+        if (n !== Y_ITERS * 5 || d0 !== cen[0] * n || d1 !== cen[1] * n || d2 !== cen[2] * n) {
             errs.push(tag + ' alloc-lane counters calls=' + n + ' splits+' + d0 + ' merges+' + d1 +
-                ' borrows+' + d2 + ' (model per call ' + Y_SPLITS + '/' + Y_MERGES + '/' + Y_BORROWS + ')');
+                ' borrows+' + d2 + ' (model per call ' + cen[0] + '/' + cen[1] + '/' + cen[2] + ')');
         }
         const c1 = calls[0];
         const e0 = yn(set, 0), e1 = yn(set, 1), e2 = yn(set, 2);
@@ -1261,20 +1303,26 @@ async function main() {
             errs.push(tag + ' abGrowth=' + ab.growthBytes + ' settled=' + ab.settled + ' verdict=' + rep.verdict);
         }
         if (!(f0 >= 1)) errs.push(tag + ' splits delta ' + f0 + ' < 1: the storm lane is vacuous');
-        if (m !== cycles || f0 !== Y_SPLIT_WINDOW || f0 !== Y_SPLITS * m || f1 !== Y_MERGES * m ||
-            f2 !== Y_BORROWS * m) {
+        const floor = cen[2] < 1 || (d2 >= 1 && f2 >= 1);
+        if (!floor) {
+            errs.push(tag + ' borrows delta alloc+' + d2 + ' window+' + f2 +
+                ' (want >= 1 each): the borrow lane is vacuous');
+        }
+        if (m !== cycles || f0 !== cen[0] * cycles || f0 !== cen[0] * m || f1 !== cen[1] * m ||
+            f2 !== cen[2] * m) {
             errs.push(tag + ' window counters calls=' + m + ' splits+' + f0 + ' merges+' + f1 +
-                ' borrows+' + f2 + ' (want ' + Y_SPLIT_WINDOW + '/' + Y_MERGES * cycles + '/' +
-                Y_BORROWS * cycles + ')');
+                ' borrows+' + f2 + ' (want ' + cen[0] * cycles + '/' + cen[1] * cycles + '/' +
+                cen[2] * cycles + ')');
         }
         for (const e of errs) fails.push(e);
-        return { b, n, d0, d1, d2, ab: ab.growthBytes, settled: ab.settled, m, f0, f1, f2, ok: errs.length === 0 };
+        return { b, n, d0, d1, d2, ab: ab.growthBytes, settled: ab.settled, m, f0, f1, f2, floor,
+            ok: errs.length === 0 };
     }
 
     const yst = new YFastTrie(YSU, YSM);
     const ystCalls = new Int32Array(1);
     const stepYS = makeStormStep(yst, ystCalls);
-    const y1 = yStormLane('Y1', yst, stepYS, ystCalls, Y_STORM_CYCLES);
+    const y1 = yStormLane('Y1', yst, stepYS, ystCalls, Y_STORM_CYCLES, Y_CEN);
     console.log('Y1 U=' + YSU + ' C=' + YSM + ' keys=' + YSM + ' (j x ' + YS_STRIDE + ')' +
         ' storm: alloc=' + (y1.b === null ? 'null' : Math.round(y1.b)) + ' B/op over ' + y1.n +
         ' cycles (splits+' + y1.d0 + ' merges+' + y1.d1 + ' borrows+' + y1.d2 + ')' +
@@ -1383,23 +1431,28 @@ async function main() {
     //       tracker.size() 0 after the drain and one gc later, collected 4,096,
     //       findings 0, leaks 0; the summed `_n` of every instance must equal the
     //       census literals x 4,096 (splits 163,840, merges 81,920, borrows 0).
-    //   Y4  controls that MUST flip, one mutation each: CY1 retaining loop (Y0
-    //       alloc > 0), CY2 transient box (Y0 window excess >= limit), CY3
-    //       ReallocSplit (Y1 abGrowth > 0), CY4 DropSplit (Y1c excess >= limit on
-    //       a measured window, abGrowth still 0), CY5 retained array (Y3 size >
-    //       0), CY6 gc kick (Y0 gc verdict not-ok, gcMajor > 0), CY7 flatKeys
-    //       (Y1's census / split floor FAILS). y0a.step is wrapped ONLY here,
-    //       inside must-fail controls; it is never re-measured as a passing lane.
+    //   Y1b borrow cycle (the Y1B CENSUS below): Y1's gate on a stream that
+    //       splits, borrows and merges once per cycle, plus a transient lane.
+    //   Y4  9 controls that MUST flip, one mutation each: CY1 retaining loop
+    //       (Y0 alloc > 0), CY2 transient box (Y0 window excess >= limit), CY3
+    //       ReallocSplit (Y1 abGrowth > 0), CY4 DropSplit (Y1c excess >= limit
+    //       on a measured window, abGrowth still 0), CY5 retained array (Y3
+    //       size > 0), CY6 gc kick (Y0 gc verdict not-ok, gcMajor > 0), CY7
+    //       flatKeys (Y1's census / split floor FAILS), CY8 AllocBorrow (Y1b
+    //       alloc > 0, census intact), CY9 noRefill (Y1b's borrows floor
+    //       FAILS). y0a.step is wrapped ONLY here, inside must-fail controls;
+    //       it is never re-measured as a passing lane.
     const Y3_SPLITS = 40;       // census: per Y3 fill cycle (B2 census log)
     const Y3_MERGES = 20;
     const Y3_BORROWS = 0;
     const YNS_K = 64;           // Y1c: storm cycles per new-space window
 
     // ---- Y1c: storm transient lane --------------------------------------------
-    // `set` null = baseline (no counter checks). bad = windows whose cycle count
-    // or splits / merges delta missed the census.
-    function nsLaneS(fn, set, calls) {
-        for (let i = 0; i < YNS_K * 2; i++) fn(i);
+    // kc cycles per window; `set` null = baseline (no counter checks). bad =
+    // windows whose cycle count or splits / merges / borrows delta missed the
+    // census `cen` (Int32Array, per cycle) x kc.
+    function nsLaneS(fn, set, calls, cen, kc) {
+        for (let i = 0; i < kc * 2; i++) fn(i);
         let lo = -1;
         let w0 = -1;
         let good = 0;
@@ -1411,10 +1464,10 @@ async function main() {
             const b0 = set === null ? 0 : yn(set, 2);
             globalThis.gc();
             const a = newSpaceUsed();
-            for (let i = 0; i < YNS_K; i++) fn(i);
+            for (let i = 0; i < kc; i++) fn(i);
             const z = newSpaceUsed();
-            if (set !== null && (calls[0] - c0 !== YNS_K || yn(set, 0) - s0 !== Y_SPLITS * YNS_K ||
-                yn(set, 1) - m0 !== Y_MERGES * YNS_K || yn(set, 2) - b0 !== 0)) bad++;
+            if (set !== null && (calls[0] - c0 !== kc || yn(set, 0) - s0 !== cen[0] * kc ||
+                yn(set, 1) - m0 !== cen[1] * kc || yn(set, 2) - b0 !== cen[2] * kc)) bad++;
             if (a < 0 || z < 0 || z < a) continue;
             const d = z - a;
             if (w === 0) { w0 = d; continue; }
@@ -1423,15 +1476,15 @@ async function main() {
         }
         return { min: good >= (NS_W >>> 1) ? lo : null, first: w0, valid: good, bad };
     }
-    const nsBaseS = nsLaneS(emptyFn, null, null);
-    // Excess bytes per YNS_K-cycle window over the baseline; excess null = not
-    // measured.
-    function nsExcessS(fn, set, calls) {
-        const r = nsLaneS(fn, set, calls);
-        const ex = r.min === null || nsBaseS.min === null ? null : r.min - nsBaseS.min;
-        return { excess: ex, first: r.first - nsBaseS.min, valid: r.valid, bad: r.bad };
+    const nsBaseS = nsLaneS(emptyFn, null, null, null, YNS_K);
+    // Excess bytes per kc-cycle window over `base` (an nsLaneS(emptyFn) run of
+    // the SAME kc); excess null = not measured.
+    function nsExcessS(fn, set, calls, cen, kc, base) {
+        const r = nsLaneS(fn, set, calls, cen, kc);
+        const ex = r.min === null || base.min === null ? null : r.min - base.min;
+        return { excess: ex, first: r.first - base.min, valid: r.valid, bad: r.bad };
     }
-    const y1c = nsExcessS(stepYS, yst, ystCalls);
+    const y1c = nsExcessS(stepYS, yst, ystCalls, Y_CEN, YNS_K, nsBaseS);
     const y1cOk = y1c.excess !== null && y1c.excess < NS_MAX_EXCESS && y1c.bad === 0;
     if (!y1cOk) {
         fails.push('Y1c storm transient ' + (y1c.excess === null ? 'not measured (null)' :
@@ -1443,6 +1496,83 @@ async function main() {
         ' badWindows=' + y1c.bad +
         ' (each window ' + YNS_K + ' cycles, splits+' + Y_SPLITS * YNS_K + ' merges+' + Y_MERGES * YNS_K + ')' +
         ' | ' + (y1cOk ? 'ok' : 'FAIL'));
+
+    // ---- Y1b: borrow cycle (borrows allocation-gated) -----------------------
+    // Y1B CENSUS (hand count; a cold untimed replay, 2026-11-01, LogLogN.js
+    // 1f47a2bd, matched it over 5 consecutive cycles): U = 2^16 (w = 16,
+    // K = 32, h = 8), C = 43 (the peak size), b_j = j x 1000 (j <= 32),
+    // r_i = i x 1000 + 500 (i < 10), all < 2^30, from Uint32Array rings. One
+    // cycle on ONE instance:
+    //   add b_0..b_31 (head at K), b_32 -> split at index w (rep b_16 = 16000;
+    //   head 16 keys, right 17); add r_0..r_9 (all < 16000: head 26);
+    //   delete b_32..b_24 (right 17 -> 8), then b_23: underflow at s = h with
+    //   s_p + s - 1 = 26 + 7 = 33 > K -> BORROW (c = (26 + 8) >>> 1 = 17, new
+    //   rep = head[17] = r_8 = 8500; head 17, new bucket 9 + 7 = 16; rep
+    //   16000 dropped); delete the 33 left ascending: the head's 17 (the head
+    //   never merges), 8 of the new bucket (16 -> 8), then at s = h:
+    //   0 + 7 <= K -> merge into the head; the merged 7 go plainly; clear().
+    // Per cycle: splits +1, merges +1, borrows +1, 86 ops (43 adds, 43
+    // deletes) + clear(); identical every cycle (clear() restores the
+    // constructed state, C-6). Gate = Y1's yStormLane: retained 0 B/op over 4
+    // batches of Y_ITERS cycles (the 5th Y_ITERS is the warmup), exact `_n`
+    // over all 5,000 calls, then a stabilize 'deep' window of EXACTLY
+    // YB_CYCLES cycles (1,000 borrows): arrayBuffers growth 0, settled; every
+    // delta = census x cycles, and a borrows delta of 0 in either window is a
+    // FAIL. Plus Y1c's transient kit (nsLaneS): YB_NS_K cycles per new-space
+    // window, excess over an empty-fn baseline of the SAME window size <
+    // NS_MAX_EXCESS (one 16 B box per borrow reads 4,096 B), every window
+    // exactly YB_NS_K cycles with deltas = census x YB_NS_K. Controls: CY8
+    // AllocBorrow flips the alloc check, CY9 noRefill the borrows floor; the
+    // nsLaneS path itself is CY4's (DropSplit).
+    const YBU = 1 << 16;        // Y1b universe, w = 16 (K = 32, h = 8)
+    const YBC = 43;             // Y1b capacity = the cycle's peak size
+    const YB_CEN = Int32Array.of(1, 1, 1);  // census: splits / merges / borrows per cycle
+    const YB_CYCLES = 1000;     // Y1b abGrowth window, cycles (= borrows)
+    const YB_NS_K = 256;        // Y1b transient: cycles per new-space window
+    const ybAdd = new Uint32Array(43);
+    for (let j = 0; j <= 32; j++) ybAdd[j] = j * 1000;
+    for (let j = 0; j < 10; j++) ybAdd[33 + j] = j * 1000 + 500;
+    const ybDel = new Uint32Array(43);
+    for (let j = 0; j < 10; j++) ybDel[j] = (32 - j) * 1000;
+    const ybLeft = Array.from(ybAdd).filter((x) => x < 23000).sort((p, q) => p - q);
+    if (ybLeft.length !== 33) fails.push('Y1b stream: ' + ybLeft.length + ' keys left after the borrow (want 33)');
+    ybDel.set(ybLeft.slice(0, 33), 10);
+
+    // One borrow cycle: add[] in order, delete del[] in order, clear().
+    function makeBorrowStep(set, calls, add, del) {
+        const na = add.length;
+        const nd = del.length;
+        return function borrowStep(i) {
+            for (let j = 0; j < na; j++) set.add(add[j]);
+            SINK[0] = (SINK[0] + set.size + (i & 1)) | 0;
+            for (let j = 0; j < nd; j++) set.delete(del[j]);
+            set.clear();
+            calls[0]++;
+        };
+    }
+
+    const ybs = new YFastTrie(YBU, YBC);
+    const ybCalls = new Int32Array(1);
+    const stepYB = makeBorrowStep(ybs, ybCalls, ybAdd, ybDel);
+    const y1b = yStormLane('Y1b', ybs, stepYB, ybCalls, YB_CYCLES, YB_CEN);
+    const nsBaseB = nsLaneS(emptyFn, null, null, null, YB_NS_K);
+    const y1bt = nsExcessS(stepYB, ybs, ybCalls, YB_CEN, YB_NS_K, nsBaseB);
+    const y1btOk = y1bt.excess !== null && y1bt.excess < NS_MAX_EXCESS && y1bt.bad === 0;
+    if (!y1btOk) {
+        fails.push('Y1b borrow transient ' + (y1bt.excess === null ? 'not measured (null)' :
+            'excess ' + y1bt.excess + ' B per ' + YB_NS_K + ' cycles (limit ' + NS_MAX_EXCESS + ')') +
+            ' valid=' + y1bt.valid + ' badWindows=' + y1bt.bad);
+    }
+    console.log('Y1b U=' + YBU + ' C=' + YBC + ' cycle=' + ybAdd.length + ' adds + ' + ybDel.length +
+        ' deletes + clear()' +
+        ' borrow: alloc=' + (y1b.b === null ? 'null' : Math.round(y1b.b)) + ' B/op over ' + y1b.n +
+        ' cycles (splits+' + y1b.d0 + ' merges+' + y1b.d1 + ' borrows+' + y1b.d2 + ')' +
+        ' window ' + y1b.m + ' cycles splits+' + y1b.f0 + ' merges+' + y1b.f1 + ' borrows+' + y1b.f2 +
+        ' (census ' + YB_CEN[0] + '/' + YB_CEN[1] + '/' + YB_CEN[2] + ' per cycle)' +
+        ' abGrowth=' + y1b.ab + ' settled=' + y1b.settled +
+        ' transient nsExcess=' + y1bt.excess + ' B / ' + YB_NS_K + ' cycles (limit ' + NS_MAX_EXCESS +
+        ') nsWin0=' + y1bt.first + ' valid=' + y1bt.valid + ' badWindows=' + y1bt.bad +
+        ' | ' + (y1b.ok && y1btOk ? 'ok' : 'FAIL'));
 
     // ---- Y3: retention churn (construct / fill / clear / drop) ---------------
     // Same contract as T2 / X3 (noop cleanup, string tag, own frame). Every
@@ -1561,7 +1691,7 @@ async function main() {
     const stepYD = makeStormStep(yd, ydCalls);
     const ry4 = measureOps(stepYD, { ops: Y_STORM_CYCLES, warmup: 0, stabilize: 'deep' });
     const aby4 = ry4.summary.arrayBuffers;
-    const cy4 = nsExcessS(stepYD, yd, ydCalls);
+    const cy4 = nsExcessS(stepYD, yd, ydCalls, Y_CEN, YNS_K, nsBaseS);
     const cy4Flip = cy4.excess !== null && cy4.excess >= NS_MAX_EXCESS && cy4.bad === 0 &&
         aby4.growthBytes === 0 && aby4.settled === true;
 
@@ -1607,10 +1737,56 @@ async function main() {
     const yf = new YFastTrie(YSU, YSM);
     const yfCalls = new Int32Array(1);
     const nFails7 = fails.length;
-    const cy7 = yStormLane('CY7', yf, makeKeyStormStep(yf, yfCalls, yFlatKeys), yfCalls, Y_STORM_CYCLES);
+    const cy7 = yStormLane('CY7', yf, makeKeyStormStep(yf, yfCalls, yFlatKeys), yfCalls, Y_STORM_CYCLES,
+        Y_CEN);
     const cy7Errs = fails.length - nFails7;
     fails.length = nFails7;
     const cy7Flip = !cy7.ok && cy7Errs > 0 && cy7.f0 !== Y_SPLIT_WINDOW;
+
+    // CY8 AllocBorrow: _shrink retains one small array per BORROW (it
+    // allocates only when the borrow branch is taken: s_p + s - 1 > K), driven
+    // by Y1b's stream through yStormLane -- Y1b's gate. Its alloc MUST read
+    // > 0 B/op while the census and the borrows floor still hold (the flip is
+    // the allocation, not a missed borrow); the lane's errors are the flip, so
+    // they are taken back off `fails` (as CY7).
+    class AllocBorrow extends YFastTrie {
+        _shrink(f, j) {
+            if (this._bn[this._x._prev[f]] + this._bn[f] - 1 > this._k) this._hold.push([f]);
+            super._shrink(f, j);
+        }
+    }
+    const ya = new AllocBorrow(YBU, YBC);
+    ya._hold = [];
+    const yaCalls = new Int32Array(1);
+    const nFails8 = fails.length;
+    const cy8 = yStormLane('CY8', ya, makeBorrowStep(ya, yaCalls, ybAdd, ybDel), yaCalls, YB_CYCLES, YB_CEN);
+    const cy8Msgs = fails.slice(nFails8);
+    fails.length = nFails8;
+    const cy8Held = ya._hold.length;
+    ya._hold.length = 0;
+    const cy8Flip = !cy8.ok && cy8Msgs.length > 0 && cy8.b !== null && Math.round(cy8.b) > 0 &&
+        cy8.floor && cy8.d2 === YB_CEN[2] * cy8.n && cy8.f2 === YB_CEN[2] * cy8.m &&
+        cy8Held === cy8.d2 + cy8.f2;
+
+    // CY9 noRefill: Y1b's cycle without the 10 refill keys r_i (adds b_0..b_32,
+    // deletes b_32..b_23 then b_0..b_22): the underflow delete of b_23 meets a
+    // head of 16 keys, 16 + 7 <= K -> it MERGES, so the cycle is 1 / 1 / 0 and
+    // never borrows. Through yStormLane with Y1b's census: its borrows floor
+    // MUST fail (floor false, borrows +0 in both windows); errors taken back.
+    const y9Add = ybAdd.slice(0, 33);
+    const y9Del = new Uint32Array(33);
+    for (let j = 0; j < 10; j++) y9Del[j] = (32 - j) * 1000;
+    for (let j = 0; j < 23; j++) y9Del[10 + j] = j * 1000;
+    const y9 = new YFastTrie(YBU, YBC);
+    const y9Calls = new Int32Array(1);
+    const nFails9 = fails.length;
+    const cy9 = yStormLane('CY9', y9, makeBorrowStep(y9, y9Calls, y9Add, y9Del), y9Calls, YB_CYCLES, YB_CEN);
+    const cy9Msgs = fails.slice(nFails9);
+    fails.length = nFails9;
+    const cy9Flip = !cy9.ok && cy9Msgs.length > 0 && !cy9.floor && cy9.d2 === 0 && cy9.f2 === 0 &&
+        cy9Msgs.some((s) => s.includes('the borrow lane is vacuous'));
+    const yFlips = (cy1Flip ? 1 : 0) + (cy2Flip ? 1 : 0) + (cy3Flip ? 1 : 0) + (cy4Flip ? 1 : 0) +
+        (cy5Flip ? 1 : 0) + (cy6Flip ? 1 : 0) + (cy7Flip ? 1 : 0) + (cy8Flip ? 1 : 0) + (cy9Flip ? 1 : 0);
 
     console.log('Y4 controls' +
         ' retain.alloc=' + (cy1Bpc === null ? 'null' : Math.round(cy1Bpc)) + ' B/op ' +
@@ -1628,7 +1804,14 @@ async function main() {
         (cy6Flip ? 'flipped' : 'PASSED') +
         ' flatKeys.splits=+' + cy7.f0 + '/' + Y_SPLIT_WINDOW + ' errors=' + cy7Errs + ' ' +
         (cy7Flip ? 'flipped' : 'PASSED') +
-        ' | ' + (cy1Flip && cy2Flip && cy3Flip && cy4Flip && cy5Flip && cy6Flip && cy7Flip ? 'ok' : 'FAIL'));
+        ' allocBorrow.alloc=' + (cy8.b === null ? 'null' : Math.round(cy8.b)) + ' B/op (borrows+' +
+        cy8.d2 + '/+' + cy8.f2 + ' held=' + cy8Held + ' errors=' + cy8Msgs.length + ') ' +
+        (cy8Flip ? 'flipped' : 'PASSED') +
+        ' noRefill.borrows=+' + cy9.d2 + '/+' + cy9.f2 + ' (merges+' + cy9.d1 + '/+' + cy9.f1 +
+        ' errors=' + cy9Msgs.length + ') ' + (cy9Flip ? 'flipped' : 'PASSED') +
+        ' flipped ' + yFlips + '/9' +
+        ' | ' + (yFlips === 9 ? 'ok' : 'FAIL'));
+    console.log('Y4 CY8 / CY9 lane errors (expected: the flip): ' + cy8Msgs.concat(cy9Msgs).join(' ; '));
     if (!cy1Flip) fails.push('control yRetain PASSED its check (alloc ' + cy1Bpc + ' B/op): Y0 alloc lane is blind');
     if (!cy2Flip) fails.push('control yBox PASSED its check: Y0 transient lane is blind');
     if (!cy3Flip) {
@@ -1649,15 +1832,25 @@ async function main() {
         fails.push('control flatKeys PASSED its check (splits+' + cy7.f0 + ', errors ' + cy7Errs +
             '): Y1 census / split floor is blind');
     }
+    if (!cy8Flip) {
+        fails.push('control AllocBorrow PASSED its check (alloc ' + cy8.b + ' B/op, borrows+' + cy8.d2 +
+            '/+' + cy8.f2 + ', held ' + cy8Held + ', errors ' + cy8Msgs.length + '): Y1b alloc lane is blind');
+    }
+    if (!cy9Flip) {
+        fails.push('control noRefill PASSED its check (borrows+' + cy9.d2 + '/+' + cy9.f2 + ', floor ' +
+            cy9.floor + ', errors ' + cy9Msgs.length + '): Y1b borrows floor is blind');
+    }
 
     const yAlloc = Math.max(y0a.b === null ? Infinity : Math.round(y0a.b),
         y0b.b === null ? Infinity : Math.round(y0b.b),
-        y1.b === null ? Infinity : Math.round(y1.b));
+        y1.b === null ? Infinity : Math.round(y1.b),
+        y1b.b === null ? Infinity : Math.round(y1b.b));
     const yTrans = y0a.t === null || y0b.t === null || tS === null ? null : Math.max(y0a.t, y0b.t, tS);
-    const yAb = Math.max(y1.ab, aby2.growthBytes);
-    if (yAlloc === Infinity || yTrans === null || y1c.excess === null) {
+    const yAb = Math.max(y1.ab, y1b.ab, aby2.growthBytes);
+    if (yAlloc === Infinity || yTrans === null || y1c.excess === null || y1bt.excess === null) {
         fails.push('yft GATE: a null aggregate (alloc ' + (yAlloc === Infinity ? 'null' : yAlloc) +
-            ', transient ' + yTrans + ', stormExcess ' + y1c.excess + ') is a FAIL, never a 0');
+            ', transient ' + yTrans + ', stormExcess ' + y1c.excess + ', borrowExcess ' + y1bt.excess +
+            ') is a FAIL, never a 0');
     }
 
     const xAlloc = Math.max(x0a.b === null ? Infinity : Math.round(x0a.b),
@@ -1696,6 +1889,8 @@ async function main() {
         ' abGrowth=' + yAb +
         ' stormExcess=' + (y1c.excess === null ? 'null' : y1c.excess) + ' B/' + YNS_K +
         ' splits=+' + y1.f0 + ' merges=+' + y1.f1 + ' borrows=+' + y1.f2 +
+        ' Y1b borrowExcess=' + (y1bt.excess === null ? 'null' : y1bt.excess) + ' B/' + YB_NS_K +
+        ' splits=+' + y1b.f0 + ' merges=+' + y1b.f1 + ' borrows=+' + y1b.f2 +
         ' | ' + (ok ? 'ok' : 'FAIL') + ' (sink=' + SINK[0] + ')');
     if (!ok) {
         for (const f of fails) console.error('  ' + f);

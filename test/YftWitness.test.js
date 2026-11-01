@@ -103,6 +103,20 @@ test('A1 mutant: tail run floor + 1 -> FAIL coverage (tail runs 2 / 3, gc tail w
     assert.ok(failLines(r.stdout)[0].includes('tail runs 2 / 3, gc tail windows 2 / 3'), failLines(r.stdout)[0]);
 });
 
+// T3 (fillers 0.4.1): a skipped probe-series write used to die in an uncaught hostDrift RangeError
+// (printed as "witness: uncaught <stack>"); it must now be a printed FAIL drift line, exit 1, no stack.
+// The site is the yft lane's probe write (unique: yRun(probe ...), the xft lane uses xRun).
+test('T3 mutant: skipped probe-series write -> printed FAIL drift line, exit 1, no uncaught stack', { timeout: T }, () => {
+    const r = mutantRun('SINK[0] ^= yRun(probe, qAA, Q);\n            timeInto(probe, qAA, 0);\n            series[ST.pos++] = TM[0];',
+        'SINK[0] ^= yRun(probe, qAA, Q);\n            timeInto(probe, qAA, 0);');
+    assert.equal(r.status, 1, r.stderr);
+    const fl = failLines(r.stdout);
+    assert.ok(fl.some((l) => l.startsWith('FAIL drift: hostDrift refused the probe series (0 rounds)')), fl.join(' | '));
+    assert.ok(fl.some((l) => l.startsWith('FAIL drift series 0 != 27')), fl.join(' | '));
+    assert.ok(!/uncaught|RangeError|\n\s+at /.test(r.stdout), 'no stack in stdout');
+    assert.ok(!/^YFT SMOKE ok/m.test(r.stdout), 'no SMOKE ok');
+});
+
 test('A2 mutant: retained ArrayBuffer in the w=16 tail window -> FAIL gc window tail w=16 alone', { timeout: T }, () => {
     const r = mutantRun('{ yTailReplay(tk, M, TCA); GTN[0]++; }',
         '{ yTailReplay(tk, M, TCA); GTN[0]++; if (w === 16) GKEEP.push(new ArrayBuffer(4096)); }');

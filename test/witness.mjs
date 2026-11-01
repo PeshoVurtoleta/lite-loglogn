@@ -432,6 +432,25 @@ export function witnessVerdict(input) {
 // --- hostDrift (pure) ---------------------------------------------------------------
 
 /**
+ * Lane-side fail-closed wrapper: hostDrift over series[0 .. n) or, when it would throw (a
+ * skipped probe write leaves n < 8, a non-finite sample), a printed FAIL entry in fails (the
+ * lane's normal exit 1, never an uncaught stack) and a no-drift placeholder so the lane's
+ * remaining checks still print.
+ * @param {Float64Array} series
+ * @param {number} n
+ * @param {string[]} fails
+ * @returns {{ drift: boolean, index: number }}
+ */
+function driftOrFail(series, n, fails) {
+    try {
+        return hostDrift(series.subarray(0, n));
+    } catch (e) {
+        fails.push('drift: hostDrift refused the probe series (' + n + ' rounds): ' + (e && e.message ? e.message : String(e)));
+        return { drift: false, index: -1 };
+    }
+}
+
+/**
  * Page-Hinkley drift over per-round A/A probe timings (ns/op), each normalised by
  * the series median and clamped to [DRIFT_CLAMP_LO, DRIFT_CLAMP_HI], fed in order
  * to a fresh DriftDetector(DRIFT_PH) with latch false. Throws '[lite-loglogn]
@@ -1229,7 +1248,7 @@ function main(argv, env, tier) {
 
     // drift + load
     if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
-    const hd = hostDrift(series.subarray(0, ST.pos));
+    const hd = driftOrFail(series, ST.pos, fails);
     const loadEnd = os.loadavg();
     const load1 = Math.max(loadStart[0], loadEnd[0]);
     say('GATED host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
@@ -1472,7 +1491,7 @@ function tierLane(tier, h) {
 
     // drift + load
     if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
-    const hd = hostDrift(series.subarray(0, ST.pos));
+    const hd = driftOrFail(series, ST.pos, fails);
     const loadEnd = os.loadavg();
     const load1 = Math.max(loadStart[0], loadEnd[0]);
     say('GATED host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
@@ -2154,7 +2173,7 @@ async function xftLane(argv, env, XFastTrie, abVerdict, FLOOR, gcFn) {
 
     // drift + load
     if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
-    const hd = hostDrift(series.subarray(0, ST.pos));
+    const hd = driftOrFail(series, ST.pos, fails);
     const loadEnd = os.loadavg();
     const load1 = Math.max(loadStart[0], loadEnd[0]);
     say('host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
@@ -2514,6 +2533,15 @@ function yTailTimed(keys, M, lat, td, cb) {
         yTailDelta(s, cb, td, 5 * (M + i));
     }
     yTailSnap(s, cb, 10);
+}
+
+// T1 warm-up of the timed instance B: ONE untimed add + delete of key k (the run's first key, so
+// op #0 no longer carries the cold first touch). It runs BEFORE yTailTimed's start snapshot
+// (cb[5..9]), so no counted delta moves, and B is left empty exactly as built.
+function yTailWarm(k) {
+    const s = YTAIL[1];
+    s.add(k);
+    s.delete(k);
 }
 
 // sizes after the run, read without handing an instance to the async frame
@@ -3015,6 +3043,7 @@ async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, 
             fails.push('gc window tail w=' + w + ': ' + (wT.majorBad ? 'gc.major ' + wT.major + ' (observed ' + wT.observed + ')' : '') +
                 (wT.majorBad && wT.abBad ? ', ' : '') + (wT.abBad ? 'arrayBuffers growth ' + wT.growth + ' B > 0' : ''));
         }
+        yTailWarm(tk[0]);
         yTailTimed(tk, M, TLAT, TD, TCB);
         yTailSizes(TSZ);
         // attribution (cold): kind per op, per-kind count / max, summed per-op deltas
@@ -3112,7 +3141,7 @@ async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, 
 
     // drift + load
     if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
-    const hd = hostDrift(series.subarray(0, ST.pos));
+    const hd = driftOrFail(series, ST.pos, fails);
     const loadEnd = os.loadavg();
     const load1 = Math.max(loadStart[0], loadEnd[0]);
     say('host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
@@ -3121,7 +3150,7 @@ async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, 
 
     // coverage floors: every scenario ran, every ABBA ran K rounds, every latency and foil median ran
     const yWantLat = 2 * (NS.length + WS.length);
-    const cov = ['n-sweep ' + NS.length + ' points (A/B ' + nAB + ')', 'U-sweep ' + WS.length + ' widths',
+    const cov = ['cfg n-sweep ' + NS.length + ' points (A/B ' + nAB + ')', 'cfg U-sweep ' + WS.length + ' widths',
         'ABBA runs ' + ST.abba + ' / ' + nAbba + ' (K ' + K + ' rounds each)', 'probe rounds ' + ST.pos,
         'latency runs ' + ST.lat + ' / ' + yWantLat, 'foil medians ' + ST.med + ' / ' + wantMed];
     for (const c of COV_MID) cov.push(c);

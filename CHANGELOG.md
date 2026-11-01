@@ -6,6 +6,68 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Inlining tool (repo-only, not shipped).**
+  `test/tools/inlining-budget-diff.sh` is a copy of
+  LiteUtils/inlining-budget-diff.sh (source sha256 740da13b) cut to DRIVER mode:
+  a TurboFan + Maglev inlining-DECISION diff (multiset compare, null control,
+  NO-VERDICT guard; exit 0 SAME / 1 DIFF / 2 NO-VERDICT) plus a REPORTED budget
+  report, with drivers `inl-yft` / `inl-xft` / `inl-sb` and `inl-stage.mjs`
+  (freezes a LogLogN.js copy per side). Real comparisons are REPORTED and run
+  under the host quiet lock, never in `npm test`; only `--self-test` (canned
+  trace text) is gated, by `test/InliningTool.test.js` (3 tests). No
+  devDependency, not in `files[]`.
+- **Torture lane Y1b: YFastTrie borrows are now ALLOCATION-gated.** U = 2^16 (w
+  = 16, K = 32, h = 8), C = 43; a cycle is 43 adds + 43 deletes + clear(),
+  census per cycle 1 split / 1 merge / 1 borrow. Line: `alloc=0 B/op over 5000
+  cycles (splits+5000 merges+5000 borrows+5000) ... abGrowth=0 settled=true
+  transient nsExcess=0 B / 256 cycles (limit 1024) ... badWindows=0 | ok`
+  (torture, 2 runs, 2026-11-01, Node v26.8.2, load1 4.0-4.6 with other node
+  processes busy: a PRELIMINARY host, but these are COUNT gates). Two new Y4
+  must-fail controls: CY8 AllocBorrow (56 B/op, flips the Y1b allocation gate)
+  and CY9 noRefill (borrows +0, flips the borrows floor); must-fail controls are
+  now 5 (T3) + 6 (X4) + 9 (Y4) = 20 (was 18). The docs' "no Y lane fires a
+  borrow" wording is replaced; inner reseeds are still fired by no Y lane
+  (XFastTrie's X2 lane covers kicks and reseeds). Test / tooling only, no
+  shipped code.
+- **`test/YftSmallScope.test.js` (DB-2 exhaustive small-scope).** Idea from the
+  sibling LiteYggdrasil ROADMAP section 4, no code import. YFastTrie at w = 4 (U
+  = 12..16, K = 8, h = 2): every add / delete sequence to a fixed depth around
+  fixed prefixes, deduplicated on ALL steering state (inner trie typed arrays,
+  bucket layout), with a Set oracle and an invariant walker after every op;
+  split / merge / borrow / full-capacity floors per U; a dedup hit also
+  compares the oracle set stored with the state; three mutants must fail
+  (MergeOffByOne, LostDelete, WrongDelete2), plus a clean control. 30 tests (1
+  skipped: the opt-in `LOGLOGN_SMALLSCOPE_DEEP=1` run, which reached CLOSURE at
+  U = 12, C = 12, seed 0: 644,632 states, depth 65, no violation -- REPORTED,
+  one run, 2026-11-01, Node v26.8.2, made BEFORE the dedup-hit oracle compare
+  was added and not re-run). Adds about 2.5 s to `npm test` (nominal).
+
+### Changed
+
+- **Witness `--yft` (test / tooling only).** An untimed warm-up of the timed
+  tail instance (op #0 no longer carries the cold first touch); the COVERAGE
+  fields n-sweep / U-sweep are relabelled `cfg` (config sizes); a short or bad
+  probe series is now a printed FAIL (exit 1) at all four hostDrift sites
+  instead of an uncaught RangeError (+1 YftWitness test).
+- **Torture Y0 coverage floor.** The split / merge floor is now checked per
+  measureAllocs batch (floor >= 1 / >= 1 per batch; measured minimum 12 / 12 at
+  U = 2^20, 3 / 3 at U = 2^30).
+- **Test and doc housekeeping.** QaAudit XFastTrie row fakes deduplicated into
+  rowFakes(); the XFT_BAD source-slice asserts its '[' index. ADR 0008 prose
+  rewrapped, with a dated 0.4.1 amendment (borrows allocation-gated by Y1b);
+  YFastTrieBoundary / yftStream comment nits; the YFastTriePerf SideBufferYft
+  JSDoc corrected (the retained ~33 KB is the scenario's fixed offset;
+  arrayBuffers 36 KB vs the 0 KB budget, 3 runs, 2026-11-01, PRELIMINARY host
+  load1 14-20).
+- **Engine comments (no code change).** The YFastTrie cost legend now defines
+  s_L (the left neighbour bucket's size); the planning ids (A3, C-4, C-7) are
+  removed from shipped comments; the XFastTrie `byteLength` JSDoc names the
+  constant 16 B of `_q`. Proven comment-only: the esbuild whitespace-minified
+  re-print (`--minify-whitespace`, comments dropped) is byte-identical to the
+  0.4.0 build's.
+
 ## [0.4.0] - 2026-10-25
 
 ### Added
@@ -30,8 +92,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RangeError` with the set UNCHANGED (so `delete` can throw too); a failed
   inner rollback POISONS the instance until `clear()`.
 - **YFastTrie cost model (DETERMINISTIC, gated in `npm test`).** Exact inner
-  touches, `_bk` / `_bn` reads and contiguous word moves, counted through a Proxy
-  over all ten columns and checked against an independent policy model
+  touches, `_bk` / `_bn` reads and contiguous word moves, counted through a
+  Proxy over all ten columns and checked against an independent policy model
   (`test/YftCount.test.js`; the split row replaces the plain add row and the
   merge / borrow rows replace the plain delete row): an absent successor from a
   bucket of 2w - 1 keys costs touches + bucket reads = 4, 6, 8, 10, 12 at
@@ -55,17 +117,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   --yft` (REPORTED, release-time, quiet host, 2% effect floor): YFastTrie vs
   XFastTrie `successor` A/B in an n-sweep and a U-sweep, with the foils, the
   add+delete lane, fits and latency REPORTED, and a TAIL run per width whose MAX
-  single-op time is printed with attribution (reseed > split > merge incl. borrow
-  > plain) and carries NO timing verdict (the stated bound is the count-gated
-  work bound: a split / merge / borrow moves <= 2w words, an inner reseed <= 32
-  tries). One QUIET run, 2026-10-25 (HEAD 568cd25): successor ratio vs XFastTrie
-  0.5178 at n = 1,000,000 and 0.9154 at n = 1,000 (w = 28), a loss (1.0444,
-  0 / 15 / 0) at w = 16; byteLength YFT / XFT 0.1064 to 0.1441; slower than a
-  local binary search at every n. README, llms.txt.
+  single-op time is printed with attribution (reseed > split > merge incl.
+  borrow > plain) and carries NO timing verdict (the stated bound is the
+  count-gated work bound: a split / merge / borrow moves <= 2w words, an inner
+  reseed <= 32 tries). One QUIET run, 2026-10-25 (HEAD 568cd25): successor
+  ratio vs XFastTrie 0.5178 at n = 1,000,000 and 0.9154 at n = 1,000 (w = 28),
+  a loss (1.0444, 0 / 15 / 0) at w = 16; byteLength YFT / XFT 0.1064 to
+  0.1441; slower than a local binary search at every n. README, llms.txt.
 - **`--yft --smoke` gate.** `test/YftWitness.test.js` runs the counts-only smoke
   in `npm test` (counts and strings only) with five must-fail fakes
-  (`test/fakes/yftw-empty|exit1|garbage|kill|nan.mjs`) plus a good-child positive
-  control.
+  (`test/fakes/yftw-empty|exit1|garbage|kill|nan.mjs`) plus a good-child
+  positive control.
 - **Docs.** README, llms.txt, GUIDE.md gain the YFastTrie sections; ADR 0008
   (ACCEPTED) with the corrected cost table (plan addendum A3); ADR 0007
   Amendment 1 accepted; the z-fast question is decided (y-fast; z-fast stays
@@ -79,7 +141,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   cold code only, no hot body changed.
 - **`clear()` restores the CONSTRUCTED state** on both tries, a caller seed
   included (with no seed this is the default seeds, as in 0.3.0).
-- **Package description** now lists YFastTrie as shipped (vEBTree stays planned).
+- **Package description** now lists YFastTrie as shipped (vEBTree stays
+  planned).
 - **JSDoc (comments only, no code token changed).** The YFastTrie cost table in
   `LogLogN.js` now gives whole-op rows (a split replaces the plain add row, a
   merge / borrow replaces the plain delete row), matching `YftCount`; the
@@ -87,30 +150,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Tests
 
-- **`npm test` = 535 tests** (0.3.0: 343), 0 fail. New files: `YftVectors` (policy
-  replay against an independent model, size-band histograms), `YftCount` (the
-  cost model; seven must-fail mutant controls plus a hang control),
-  `YFastTrieOracle` / `YFastTrieBoundary` (invariants, failure modes, bad keys,
-  key 4294967295, 'YFastTrie is full', poison and revive), `YFastTrieSpace`
-  (byteLength from a test-owned model), `YftBytecode` (every hot body <= 460 B),
-  `XftSeed` (seed validation, seed 0 == omitted, `clear()` restoring the
-  constructed seeds, the `xft-seed.json` replay), `YftWitness`, `PeelOutcome`,
-  `WorkerFakes`.
-- **FILLERS (test-only).** `PeelOutcome` (+14: every StratifiedBitset successor /
-  predecessor classified FOUND / PAST / FALL, a must-diverge mutant), `WorkerFakes`
-  (+27: empty / exit1 / garbage / kill / nan fakes (+ skip on the launcher) fail the startFn, sibling, big and
-  launcher runners); `LOGLOGN_SEED` is fail-closed in the oracle tests;
+- **`npm test` = 535 tests** (0.3.0: 343), 0 fail. New files: `YftVectors`
+  (policy replay against an independent model, size-band histograms),
+  `YftCount` (the cost model; seven must-fail mutant controls plus a hang
+  control), `YFastTrieOracle` / `YFastTrieBoundary` (invariants, failure modes,
+  bad keys, key 4294967295, 'YFastTrie is full', poison and revive),
+  `YFastTrieSpace` (byteLength from a test-owned model), `YftBytecode` (every
+  hot body <= 460 B), `XftSeed` (seed validation, seed 0 == omitted, `clear()`
+  restoring the constructed seeds, the `xft-seed.json` replay), `YftWitness`,
+  `PeelOutcome`, `WorkerFakes`.
+- **FILLERS (test-only).** `PeelOutcome` (+14: every StratifiedBitset
+  successor / predecessor classified FOUND / PAST / FALL, a must-diverge
+  mutant), `WorkerFakes` (+27: empty / exit1 / garbage / kill / nan fakes
+  (+ skip on the launcher) fail the startFn, sibling, big and launcher
+  runners); `LOGLOGN_SEED` is fail-closed in the oracle tests;
   `test/big/run.mjs` now needs >= 1 real passing test; torture T3w pins the
   gcLane -> gcVerdict wiring.
-- **Torture lanes** (`npm run torture`): T0-T3, X0-X4 and the new Y0a / Y0b / Y1
-  (+ Y1c) / Y2 / Y3 / Y4 (splits and merges at 0 B/op, no lane fires a borrow; Y2 includes a
-  straddle step with keys >= 2^31 on the transient lane); must-fail controls
-  5 (T3) + 6 (X4) + 7 (Y4) = 18, all flip.
+- **Torture lanes** (`npm run torture`): T0-T3, X0-X4 and the new Y0a / Y0b /
+  Y1 (+ Y1c) / Y2 / Y3 / Y4 (splits and merges at 0 B/op, no lane fires a
+  borrow; Y2 includes a straddle step with keys >= 2^31 on the transient
+  lane); must-fail controls 5 (T3) + 6 (X4) + 7 (Y4) = 18, all flip.
 - **`npm run test:perf` = 51** (PerfGate 15 + XFastTriePerf 17 + YFastTriePerf
   19; YFastTriePerf's three must-fail teeth: a fresh-array loop flips the
-  scavenge lane only, GrowingYft flips grows and arrayBuffers, SideBufferYft flips
-  arrayBuffers only). verify run 2026-10-25 (load1 6.58, a PRELIMINARY host; these
-  are allocation-count gates), Node v26.8.2, 1 run.
+  scavenge lane only, GrowingYft flips grows and arrayBuffers, SideBufferYft
+  flips arrayBuffers only). verify run 2026-10-25 (load1 6.58, a PRELIMINARY
+  host; these are allocation-count gates), Node v26.8.2, 1 run.
 
 ## [0.3.0] - 2026-10-23
 

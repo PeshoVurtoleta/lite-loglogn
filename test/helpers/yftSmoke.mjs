@@ -1,7 +1,7 @@
 // yftSmoke.mjs -- pure verdict over a `node test/witness.mjs --yft --smoke` run (Y-B2, G3-5).
 // Counts / strings only: no timing value is judged (C-10 / C-11). No I/O, no side effects.
 
-export const YFT_COVERAGE_LITERAL = 'COVERAGE: n-sweep 2 points (A/B 2), U-sweep 2 widths, ABBA runs 9 / 9 (K 3 rounds each), probe rounds 27, latency runs 8 / 8, foil medians 17 / 17, tail runs 2 / 2, A/B scenarios 4, pre-pass queries 179119, gc window blocks 16 / 16, gc tail windows 2 / 2';
+export const YFT_COVERAGE_LITERAL = 'COVERAGE: cfg n-sweep 2 points (A/B 2), cfg U-sweep 2 widths, ABBA runs 9 / 9 (K 3 rounds each), probe rounds 27, latency runs 8 / 8, foil medians 17 / 17, tail runs 2 / 2, A/B scenarios 4, pre-pass queries 179119, gc window blocks 16 / 16, gc tail windows 2 / 2';
 
 export const RE_MAX = /^REPORTED MAX single-op tail w=(\d+) M=4096: max (\S+) ns at op #(\d+) phase (fill|drain) kind (plain|split|merge|reseed) deltas splits \+(\d+) merges \+(\d+) borrows \+(\d+) kicks \+(\d+) reseeds \+(\d+) \| p50 (\S+) p99 (\S+) \| per-kind max plain (\S+), split (\S+), merge (\S+), reseed (\S+) \| max\/p50 (\S+) \[(#*)\] \(4 # per doubling, cap 64\)$/gm;
 export const RE_COUNTS = /^COUNTS tail w=(\d+) M=4096: splits (\S+) merges (\S+) inner kicks (\S+) inner reseeds (\S+) \| per-kind ops plain (\S+) split (\S+) merge (\S+) reseed (\S+) \| borrows (\S+) \(tagged merge\)$/gm;

@@ -488,7 +488,7 @@ function poisonVia(t, op) {
 }
 
 test('YFastTrieBoundary: C-7 poison -- failed rollback inside a SPLIT poisons; clear() revives both', () => {
-    const { t, U } = splitState(YFastTrie);
+    const { t } = splitState(YFastTrie);
     const nBefore = Array.from(t._n);
     poisonVia(t, () => t.add(11));
     assertPoisoned(t);
@@ -497,7 +497,7 @@ test('YFastTrieBoundary: C-7 poison -- failed rollback inside a SPLIT poisons; c
 });
 
 test('YFastTrieBoundary: C-7 poison -- failed rollback inside a BORROW poisons; clear() revives both', () => {
-    const { t, U } = borrowState(YFastTrie);
+    const { t } = borrowState(YFastTrie);
     const nBefore = Array.from(t._n);
     poisonVia(t, () => t.delete(140));
     assertPoisoned(t);
@@ -514,7 +514,7 @@ test('YFastTrieBoundary: C-7 poison control -- a clear() that skips the inner re
         }
     }
     for (const mkState of [splitState, borrowState]) {
-        const { t, U } = mkState(NoRevive);
+        const { t } = mkState(NoRevive);
         const nBefore = Array.from(t._n);
         poisonVia(t, mkState === splitState ? () => t.add(11) : () => t.delete(140));
         assertPoisoned(t);

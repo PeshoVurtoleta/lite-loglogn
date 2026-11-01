@@ -377,7 +377,7 @@ Blockers, precisely:
 ---
 package: "@zakkster/lite-loglogn"
 version_target: n/a (no code; a decisions + scaffolding session)
-status: planned
+status: done
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -451,7 +451,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.2.0
-status: planned
+status: shipped (0.2.0)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -531,7 +531,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.3.0
-status: planned
+status: shipped (0.3.0)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -601,7 +601,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.4.0
-status: planned
+status: shipped (0.4.0, 2026-10-25; ADR 0008 + ADR 0007 Amendment 1 accepted)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -643,7 +643,9 @@ TASKS
     BEHAVIOR-identical with the seed omitted / undefined / 0 (its only diff = the seed hunks, cold).
   - Extend witness.mjs: n-sweep + the U-sweep fit AND **print MAX single-op time** with
     attribution so a split/merge or reseed spike shows as a tall bar (honesty hook b); REPORTED.
-  - Extend torture (split/merge must not allocate per steady-state op), perf, SPACE (assert
+  - Extend torture (split/merge must not allocate per steady-state op; AS BUILT no Y torture lane
+    fires a borrow or an inner reseed -- those are COUNT-gated in YftCount, not allocation-gated),
+    perf, SPACE (assert
     O(n), the space fix).
   - Docs: member section stating queries O(log log U), updates O(log log U) probes + O(w)
     word moves (split / merge / borrow amortized) + O(n) space + the tail; CHANGELOG 0.4.0;
@@ -656,11 +658,16 @@ ASSERTIONS
     2026-10-25: no RNG, so it would be vacuous.)
   - Exact split / merge / borrow / probe COUNTS gate the work bound (<= 2w word moves per
     split / merge / borrow; an inner reseed <= 32 tries).
-  - witness: MAX single-op time PRINTED with attribution, REPORTED only (no timing verdict);
-    the amortized mean still fits the double-log; n-sweep crossover reported.
-  - torture 0 B/op steady-state (splits/merges amortized, not per-op alloc); all prior
-    members still 0 B/op; controls fail.
-  - SPACE: O(n) asserted (grows with n, not U) -- the fix over x-fast's O(n*w).
+  - witness (`npm run witness:yft`): MAX single-op time PRINTED with attribution (reseed > split >
+    merge incl. borrow > plain), REPORTED only (no timing verdict; the bound is the count-gated work
+    bound, C-10); `--yft --smoke` is gated in npm test by YftWitness on counts / strings only; the
+    amortized mean still fits the double-log; n-sweep crossover reported.
+  - torture 0 B/op steady-state (splits/merges amortized, not per-op alloc): lanes Y0a / Y0b /
+    Y1 (+ the Y1c storm, TRANSIENT) / Y2 / Y3 / Y4 with 7 must-fail controls (suite total
+    5 + 6 + 7 = 18); all prior members still 0 B/op.
+  - SPACE: O(n) asserted (grows with n, not U) -- the fix over x-fast's O(n*w). Gate A: flat in U
+    (ratio <= 2.0); gate B: linear in C (ratio in [3.0, 5.0]). The xftSized control margin is gated
+    at C in {2^12, 2^14, 2^16} (PLAN C-19); the 2.0 gate is not re-tuned.
 
 HOT PATH
   Steady-state successor/add/delete: the x-fast representative probe + an in-bucket binary
@@ -707,7 +714,9 @@ PURPOSE
 
 TASKS
   - **Settle L-06 (flattening strategy) with the user:** a vEB-layout typed array vs an
-    iterative high/low-word split. Requirement: worst-case O(log log U) AND 0 B/op AND
+    iterative high/low-word split. Read RESEARCH.md section 14 first (2026-11-01 intake: a
+    fuzz-verified one-Int32Array sketch, per-width bitmap-leaf cutoff, measured memory vs
+    StratifiedBitset, the expected loss row). Requirement: worst-case O(log log U) AND 0 B/op AND
     readable enough to teach. Record in decisions/NNNN-veb-flattening.md; prove the flattened
     form against a recursive reference for correctness.
   - Implement vEBTree flattened: summary + clusters in flat Uint32Array(s) with implicit index

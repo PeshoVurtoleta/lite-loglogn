@@ -1016,6 +1016,88 @@ wrong-level hash probe (rows 1, 2), a model error past eps (row 3), and a promot
 
 ---
 
+## 14. vEBTree research intake (2026-11-01) -- for the 0.5.0 planner
+
+Source: maintainer-supplied notes from an outside LLM (two drafts plus its own audit round, and a hybrid
+question), kept verbatim at `.handoff/research/veb-notes-2026-11-01.md`. Everything below is marked
+VERIFIED (checked here, how) or UNVERIFIED. Treat the notes as leads, not verdicts.
+
+### 14.1 Verified
+
+- **A flat vEB sketch that passes an oracle fuzz.** The notes' final code (`.handoff/research/veb-sketch.mjs`)
+  keeps the whole tree in ONE Int32Array: internal nodes hold a [min, max] header with min NOT stored in
+  its cluster; bitmap leaves at w <= 5 (1 word) and w = 6 (2 words) carry no header; child offsets come
+  from a precomputed size table (summary at base + 2, cluster i at base + 2 + S(ceil(w/2)) + i * S(floor(w/2))).
+  add is single-path (an empty cluster gets an O(1) singleton write, then only the summary is entered);
+  delete is single-path via the singleton test (header min === max, or `(v & (v - 1)) === 0` on a leaf
+  word) plus a <= 4-frame preallocated `_path` to refresh max on the way up. VERIFIED 2026-11-01 by
+  `.handoff/research/veb-fuzz.mjs`: a seeded fuzz against a `Set` over 22 universes (2 .. 2^20 + 7,
+  odd and non-power-of-two) on add / delete / has / successor / predecessor / min / max / size, 0
+  divergences. A scratch check, not a shipped gate.
+- **Memory** (measured `byteLength`, both built here):
+
+  | U    | flat vEB (leaf w <= 6) | flat vEB (leaf w <= 5 only) | StratifiedBitset 0.2.0 |
+  |------|------------------------|-----------------------------|------------------------|
+  | 2^16 | 19,540 B               | 19,540 B                    | 8,460 B                |
+  | 2^20 | 143,508 B              | 143,508 B                   | 135,300 B              |
+  | 2^24 | 2,163,224 B            | 11,750,204 B (5.4x)         | 2,164,804 B            |
+  | 2^28 | 160,769,628 B (computed) | same                      | ~34.7 MB (formula)     |
+  | 2^32 | 1,280,592,988 B (computed) | same                    | ~555 MB (formula)      |
+
+  NEW (computed here, not in the notes): the leaf cutoff must be a per-width table, not "5 or 6". With
+  bitmap leaves up to w <= 8 (8 words = 256 bits), the flat vEB is AT OR BELOW StratifiedBitset's memory
+  at every width: 8,232 B at 2^16, 143,508 B at 2^20, 2,163,224 B at 2^24, 33,949,728 B at 2^28,
+  539,500,592 B at 2^32. The price is a leaf scan of <= 8 words (or a 1-word summary per leaf, as in
+  Stree's L3 tops); still O(1) per leaf, so the worst-case O(log log U) bound holds.
+- **Siblings:** FastBit1024 has `nextSetBit` but no `prevSetBit` (LiteFastBit32/FastBit32.js:540-705);
+  lite-o1 BitSet is successor-only; both are design-parity only, never runtime imports. The notes' first
+  code round broke all of this (imports, a `new FlatVEB` per level per op, leaf objects detached from
+  the store, -1 vs `undefined`, `delete` returning `this`); its own audit round caught it.
+- **Sources exist** (abstracts / records found 2026-11-01): Dementiev, Kettner, Mehnert, Sanders, ALENEX
+  2004 (abstract: direct vEB implementations do not compete with good comparison-based trees; their
+  tuned non-recursive 3-level structure beats them on SEARCH); Nash and Gregg, ACM JEA 15 (2010),
+  "Comparing integer data structures for 32- and 64-bit keys"; Dinklage, Fischer, Herlez, SEA 2021,
+  arXiv 2104.06740 (engineered predecessor structures incl. universe reduction and y-fast, up to 4x
+  faster than STL with under a third of the memory).
+
+### 14.2 Corrections to the notes
+
+- **Stree is not a vEB.** Dementiev's structure is a fixed 16-8-8 radix split with hashed L2 / L3 tables
+  (expected, not worst-case) and flat 32-ary bit-array "tops" -- a StratifiedBitset-style pyramid. Its
+  delete is not the vEB delete. The notes' first round conflated the two; their audit round fixed it.
+- **"StratifiedBitset uses half the memory of a flat vEB"** holds only at 2^16 (2.3x); parity at 2^20 /
+  2^24 with w = 6 leaves; 4.6x / 2.3x the other way at 2^28 / 2^32 unless leaves widen (14.1).
+- **"Iterative"** is not quite true: successor's summary step (`_succFrom`) and `predecessor` (`_predFrom`)
+  recurse (bounded depth <= 3, no allocation). `successor` carries a dead `shift` variable; `add` calls
+  `has` first (a second descent -- count it). The sketch caps U at 2^24.
+- **The benchmark table** (hardware, dates, ops/s per study) is UNVERIFIED: none of it appears in the
+  abstracts found. Cite the papers' conclusions, never those numbers.
+- **The word-count crossover** ("vEB reads fewer words only from w >= 36") is derived in the notes and
+  UNVERIFIED here. Our count gates are the arbiter: the planner derives exact per-op counts from the
+  chosen layout (as XftCount / YftCount do) and the README's loss row cites measured counts plus
+  REPORTED timings against StratifiedBitset.
+
+### 14.3 What this means for the vEBTree 0.5.0 planner
+
+- **Expected loss row:** every source found agrees a direct vEB loses on time to word-parallel bit
+  structures at practical U; expect vEBTree to lose to StratifiedBitset for all w <= 32. That is not a
+  reason to drop it: it is the deterministic worst-case reference (no hashing, no reseeds, no amortized
+  splits) and its witness MAX bar is the flat one (ROADMAP gate_note). Publish the loss row up front.
+- **L-06 (flattening) candidate:** the sketch's layout -- one Int32Array, size-table offsets, header-free
+  bitmap leaves -- with the leaf cutoff chosen PER WIDTH (up to 256-bit leaves) so space never exceeds
+  StratifiedBitset's, and the sketch kept as an independent oracle, not as the engine.
+
+### 14.4 Hybrids proposed in the notes (candidates only; none scheduled)
+
+- H1 dual-width / wider bitmap leaves: part of L-06 above.
+- H2 bit-bucketed y-fast (an upper XFastTrie over 1024-key chunks, FastBit1024-parity pages): a real
+  idea (Dinklage et al. study bucketed universe reduction). Density-dependent: one key per chunk costs
+  ~132 B / key vs YFastTrie's ~32 B / key measured; "beats y-fast at all densities" is UNVERIFIED. Tier 3.
+- H3 paged StratifiedBitset (a pyramid top + pooled 1024-bit pages): overlaps RoaringSet (Tier 2,
+  section 12); fold into the RoaringSet notes, not a new member.
+- H4 Stree-style (vEB min / max headers + bitset summaries): this IS Stree, and likely converges on
+  StratifiedBitset plus headers; consider only if the measured vEBTree is disappointing.
+
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
 candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference
 implementations, and the demo direction for the lite-loglogn project. It is an internal research

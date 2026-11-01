@@ -716,7 +716,10 @@ TASKS
   - **Settle L-06 (flattening strategy) with the user:** a vEB-layout typed array vs an
     iterative high/low-word split. Read RESEARCH.md section 14 first (2026-11-01 intake: a
     fuzz-verified one-Int32Array sketch, per-width bitmap-leaf cutoff, measured memory vs
-    StratifiedBitset, the expected loss row). Requirement: worst-case O(log log U) AND 0 B/op AND
+    StratifiedBitset, the expected loss row) and 14.5 (settled 2026-11-01: leaf cutoff w <= 8 plus a
+    per-width SPLIT table, depth ceil(log2(w/8)) <= 2, space <= StratifiedBitset at every w except
+    9 / 10; literature cited by conclusion only; per-op word counts go to the count gate, not prose).
+    Requirement: worst-case O(log log U) AND 0 B/op AND
     readable enough to teach. Record in decisions/NNNN-veb-flattening.md; prove the flattened
     form against a recursive reference for correctness.
   - Implement vEBTree flattened: summary + clusters in flat Uint32Array(s) with implicit index

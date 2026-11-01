@@ -1045,10 +1045,11 @@ VERIFIED (checked here, how) or UNVERIFIED. Treat the notes as leads, not verdic
   | 2^32 | 1,280,592,988 B (computed) | same                    | ~555 MB (formula)      |
 
   NEW (computed here, not in the notes): the leaf cutoff must be a per-width table, not "5 or 6". With
-  bitmap leaves up to w <= 8 (8 words = 256 bits), the flat vEB is AT OR BELOW StratifiedBitset's memory
-  at every width: 8,232 B at 2^16, 143,508 B at 2^20, 2,163,224 B at 2^24, 33,949,728 B at 2^28,
-  539,500,592 B at 2^32. The price is a leaf scan of <= 8 words (or a 1-word summary per leaf, as in
-  Stree's L3 tops); still O(1) per leaf, so the worst-case O(log log U) bound holds.
+  bitmap leaves up to w <= 8 (8 words = 256 bits) and the sketch's balanced split: 8,232 B at 2^16,
+  143,508 B at 2^20, 2,163,224 B at 2^24, 33,949,728 B at 2^28, 539,500,592 B at 2^32. CORRECTED in 14.5:
+  that is NOT "at or below StratifiedBitset at every width" (2^20 is 1.06x, and w = 18 / 19 are 2.12x);
+  the bound needs a per-width SPLIT table too. The price of 256-bit leaves is a leaf scan of <= 8 words;
+  still O(1) per leaf, so the worst-case O(log log U) bound holds.
 - **Siblings:** FastBit1024 has `nextSetBit` but no `prevSetBit` (LiteFastBit32/FastBit32.js:540-705);
   lite-o1 BitSet is successor-only; both are design-parity only, never runtime imports. The notes' first
   code round broke all of this (imports, a `new FlatVEB` per level per op, leaf objects detached from
@@ -1097,6 +1098,50 @@ VERIFIED (checked here, how) or UNVERIFIED. Treat the notes as leads, not verdic
   section 12); fold into the RoaringSet notes, not a new member.
 - H4 Stree-style (vEB min / max headers + bitset summaries): this IS Stree, and likely converges on
   StratifiedBitset plus headers; consider only if the measured vEBTree is disappointing.
+
+### 14.5 Settled with the maintainer (2026-11-01, second round)
+
+The maintainer's outside reviewer agreed with 14.2's three critiques and extended the leaf finding.
+Checked here; what holds is settled, what does not is marked.
+
+- **Literature: conclusions only.** Docs cite a paper's qualitative conclusion, never its hardware,
+  dates or ops/s. VERIFIED (abstract): ALENEX 2004 -- direct recursive vEB implementations trail good
+  comparison trees; their non-recursive 3-level bit-top structure (Stree) wins on locate. UNVERIFIED
+  paraphrase: "SEA 2021 shows two-level bit-vector hierarchies beating O(log log U) tries" -- not in
+  the abstract found; do not cite it until checked against the paper.
+- **Word counts belong to the count gates** (decisions/0004 Amendment 1), never to prose. The notes'
+  per-op counts are ASSERTION candidates for the vEBTree count test, to be derived from the chosen
+  layout: vEB `min` / `max` = 1 header read vs StratifiedBitset's top-to-level-0 walk (4, 4, 5, 6, 7
+  reads at w = 16 .. 32; LogLogN.js:275-305); StratifiedBitset `has` = 1 read (LogLogN.js:155-157) vs
+  vEB's per-level header checks (min is not in its cluster, so has / add / delete start at the root);
+  vEB `successor(x < min)` = 1 read. Expected verdict stays 14.3's loss row; the counts decide the
+  per-op table.
+- **L-06 leaf cutoff + split table (computed; `.handoff/research/veb-size.mjs`, words, exact).** Leaf
+  cutoff w <= 8. Depth D(w) = ceil(log2(w / 8)): 0 for w <= 8, 1 for 9 .. 16, 2 for 17 .. 32 -- the same
+  depth as balanced halving, so the bound is unchanged. Within that depth the space-minimal split makes
+  the clusters whole 8- or 16-bit subtrees (lo = 8 for w <= 24 at depth 2 and for w <= 16 at depth 1,
+  else lo = 16) and gives the summary the rest (hi = w - lo). Result vs StratifiedBitset:
+
+  | split rule (leaf w <= 8)     | worst ratio            | above StratifiedBitset at        | w >= 16  |
+  |------------------------------|------------------------|----------------------------------|----------|
+  | balanced, hi = ceil(w / 2)   | 2.12x (w = 18, 19)     | w = 9, 10, 11, 18 .. 23          | 0.97 - 2.12x |
+  | per-width table (above)      | 1.118x (w = 9)         | w = 9 (19 vs 17 words), 10 (35 vs 33) | 0.973x |
+
+  w = 9 / 10 are inherent at cutoff 8 (8 bytes each); a whole-tree leaf up to w <= 10 would close them
+  at the price of a 32-word scan -- the planner's call. A 1-word summary per leaf (Stree tops) costs
+  +12.5% and puts the vEB above StratifiedBitset (~1.09x); not free.
+- **Notes' numbers rechecked:** the w = 16 / 24 / 28 / 32 word totals and the 4.64x / 2.31x w <= 6 bloat
+  match 14.1. "14.69 MiB smaller at 2^32" is 14,688,740 B = 14.69 MB = 14.01 MiB. Its w = 20 alternatives
+  (8 / 12 -> 33,802 words; 4 / 16 -> 32,931) are right; the table above finds 32,901 (12 / 8).
+- **Where vEB wins, where it cannot** (structural, EXPECTED until counted and timed): wins on `min` /
+  `max`, out-of-range successor / predecessor, and singleton clusters answered from the header; loses on
+  `has`, same-word neighbours and common-case add / delete, which StratifiedBitset does in one word.
+  Keeping min inside the leaf bitmaps to fix that turns the structure back into a bit pyramid.
+- **Industry context: prose only, UNVERIFIED, never cited.** Fixed / dense domains use multi-level
+  word bitmaps (Linux sbitmap, TLSF's two-level bitmaps); sparse ones use radix / B-tree hybrids (Linux
+  XArray re-implements the radix tree; the Maple Tree replaced the VMA rbtree) and Roaring-style
+  containers (array / bitmap / run). The reviewer's "Linux has zero vEB trees" and "IBM DB2 BLU" lines
+  are not checked here.
 
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
 candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference

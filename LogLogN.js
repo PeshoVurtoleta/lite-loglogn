@@ -69,7 +69,7 @@
  */
 
 /** Package version. One of the three version sites (package.json / VERSION / llms.txt). */
-export const VERSION = '0.4.0';
+export const VERSION = '0.4.1';
 
 // --- members land here, append-only, one tree-shakeable class each -----------
 // StratifiedBitset (v0.2.0)         -- array-embedded O(log_w U) successor / predecessor

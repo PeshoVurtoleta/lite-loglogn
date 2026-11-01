@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-01
+
 ### Added
 
 - **Inlining tool (repo-only, not shipped).**
@@ -15,9 +17,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   NO-VERDICT guard; exit 0 SAME / 1 DIFF / 2 NO-VERDICT) plus a REPORTED budget
   report, with drivers `inl-yft` / `inl-xft` / `inl-sb` and `inl-stage.mjs`
   (freezes a LogLogN.js copy per side). Real comparisons are REPORTED and run
-  under the host quiet lock, never in `npm test`; only `--self-test` (canned
-  trace text) is gated, by `test/InliningTool.test.js` (3 tests). No
-  devDependency, not in `files[]`.
+  under the host quiet lock, never in `npm test`; `test/InliningTool.test.js`
+  (18 tests, the LiteSignal test/94 shape) gates only `--self-test` (canned
+  trace text, its 41 `ok` checks pinned; an unmodified copy outside the repo
+  must also pass) and two NO-VERDICT exits (a missing driver; no `--fn` or a
+  removed mode), plus 13 must-fail mutants of the script (8 of LiteSignal's 12
+  that apply to driver mode, 5 on this copy's own guard / null-control /
+  driver-exit / removed-mode / worst-verdict paths), each of which must turn the
+  self-test red on its named check. `npm run inline-budget-diff -- ...` runs
+  it. No devDependency, not in `files[]`.
 - **Torture lane Y1b: YFastTrie borrows are now ALLOCATION-gated.** U = 2^16 (w
   = 16, K = 32, h = 8), C = 43; a cycle is 43 adds + 43 deletes + clear(),
   census per cycle 1 split / 1 merge / 1 borrow. Line: `alloc=0 B/op over 5000
@@ -385,7 +393,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   / cross-linked recipe, never a drifting reimplementation). Each carries the
   "Recommended resolution -- PENDING USER RATIFICATION at review" stamp.
 
-[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/PeshoVurtoleta/lite-loglogn/releases/tag/v0.1.0

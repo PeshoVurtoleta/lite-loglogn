@@ -1,6 +1,6 @@
 # @zakkster/lite-loglogn
 
-Version: 0.4.0
+Version: 0.4.1
 License: MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
 Runtime dependencies: none. ESM only. ASCII-only source. sideEffects: false.
 Node: >= 18.
@@ -257,7 +257,7 @@ COVERAGE: n-sweep 9 (A/B 7), U-sweep 4, ABBA runs 20/20, probe rounds 300, laten
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 569 tests, 568 pass, 1 skipped, 0 fail, 2026-11-01, Node v26.8.2; also
+- DETERMINISTIC (npm test = 584 tests, 583 pass, 1 skipped, 0 fail, 2026-11-01, Node v26.8.2; also
   npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;

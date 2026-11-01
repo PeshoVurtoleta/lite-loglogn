@@ -1143,6 +1143,63 @@ Checked here; what holds is settled, what does not is marked.
   containers (array / bitmap / run). The reviewer's "Linux has zero vEB trees" and "IBM DB2 BLU" lines
   are not checked here.
 
+## 15. Cross-primitive intake (2026-11-01) -- FastBit32 / FastBit1024 / lite-o1 BitSet / StratifiedBitset
+
+Source: a maintainer-supplied outside review comparing `LogLogN.js`, lite-fastbit32 `FastBit32.js` and
+lite-o1 `O1.js`, with a PagedBitset sketch. Checked here against the live files (`LogLogN.js` at
+e0d3191, `../LiteO1/O1.js` at 1.11.3, `../LiteFastBit32/FastBit32.js`). Leads, not verdicts.
+
+### 15.1 What holds
+
+- StratifiedBitset already uses the FastBit32 word idioms (`31 - Math.clz32(v & -v)` / `31 -
+  Math.clz32(v)`, LogLogN.js:275-305) and its pyramid ends in one top word. Nothing to port there.
+- lite-o1 BitSet (`O1.js:3739-4158`): the summary stops at `_s3` (<= 32 words), `_firstWordFrom`
+  scans the rest of `_s3` in a loop (`:4026-4069`), `clear()` fills all four arrays (`:3828-3833`),
+  `size` is a full popcount (`:3766`), there is no `lastSet` / `prevSet`, and `and` / `or` / `xor` /
+  `andNot` run over every word then rebuild the summary. All as the review says.
+- FastBit1024 (`FastBit32.js:540-710`) keeps `_n`, `_active`, `_full` incrementally and clears /
+  intersects by walking `_active` -- the patterns the review proposes to copy.
+- Drop the runtime facade that swaps BitSet <-> StratifiedBitset by density: both preallocate
+  Theta(U / 32) words, so a swap saves nothing, and a swap after construction allocates.
+- **The PagedBitset sketch is correct.** `.handoff/research/paged-sketch.mjs` (its logic, verbatim,
+  over the shipped StratifiedBitset) passes `.handoff/research/paged-fuzz.mjs`: a seeded fuzz vs a
+  `Set` over 9 universe / pool shapes (U = 1 .. 70,000, pool-full throws included) plus the 2^31 /
+  2^32 - 1 edge keys, 0 divergences. Pool exhaustion fails closed before any write.
+
+### 15.2 Corrections
+
+- **"nextSet drops from 35 word reads to 4" with a 1-word `_s4` root:** counted from the code it is
+  <= 38 -> <= 9 typed-array reads (from-word, `_s1`, `_s2`, `_s3`, then the 31-word loop, the
+  descent and the data word; with `_s4`: one field read replaces the loop). And it only matters for
+  nbits > 2^20 (below that `_s3` is one word and the loop never runs). A constant-factor cut; the
+  bound is already worst-case O(1) because the 2^25 cap fixes the loop length.
+- **PagedBitset space, "554 MiB -> a few MiB" at 2^32: false.** Measured `byteLength`: the page table
+  alone (`Int32Array(2^22)`) is 16 MiB, so the floor is 17,318,692 B with one page; 26,231,452 B with
+  65,536 pages (scattered keys) -- about XFastTrie's footprint and ~12x YFastTrie's ~32 B / key. At
+  2^24 with every page live it is 2,296,012 B vs StratifiedBitset's 2,164,804 (1.06x). Its win is
+  CLUSTERED keys in a huge universe with hash-free worst-case O(log_32 U) ops, not sparse space.
+  Fixes worth a planner's look: a `Uint16Array` page table when maxPages < 2^16 (halves the floor),
+  or a two-level page table (directory + pooled leaf tables, a second capacity knob, one more read).
+- **Top-down pruned intersection is not O(k log_32 U).** Pruning only skips subtrees where one side's
+  summary bit is 0. Evens vs odds: every summary word ANDs non-zero, every data word ANDs to 0, so
+  `intersects` / `forEachIntersection` read every word: worst case O(U / 32), output-insensitive.
+  "Disjoint in 1 read" holds only when the sets are disjoint at the top word's granularity.
+- **A `_full` pyramid** (FastBit1024's `_full`, scaled up) gives bounded `nextClear` / `acquire`, but
+  it taxes every add / delete with a second summary update and ~3% more words. lite-o1 already holds
+  this exact idea as Q1 (`../LiteO1/ROADMAP.md` section 10: maintainer decision, hold for a
+  consumer); it is the same decision for StratifiedBitset.
+
+### 15.3 Where each idea lands
+
+| idea | home | status |
+| --- | --- | --- |
+| BitSet `_s4` root scalar; O(1) `size` counter; summary-guided bulk ops; `lastSet` / `prevSet` | lite-o1 (`../LiteO1/ROADMAP.md` section 11) | proposed there |
+| BitSet summary-guided `clear()` | lite-o1 P2 | already planned |
+| `nextClear` / `acquire` via a "not full" pyramid | lite-o1 Q1 + StratifiedBitset (same hold) | hold for a consumer |
+| StratifiedBitset `intersects` / `intersectionSize` (pruned, materialize nothing) | lite-loglogn, beside RoaringSet R2's counting forms | candidate (ROADMAP section 10) |
+| PagedBitset (StratifiedBitset directory + pooled FastBit1024 pages) | lite-loglogn RoaringSet line: the bitmap-only, fixed-pool core | candidate D-R5 (ROADMAP section 10) |
+| BitSet <-> StratifiedBitset facade | -- | dropped |
+
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
 candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference
 implementations, and the demo direction for the lite-loglogn project. It is an internal research

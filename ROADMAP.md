@@ -1120,6 +1120,19 @@ which fits this family's bounded-in-U theme (section 2).
 - **D-R3 pool sizing.** Capacity classes for array and run containers, and how the pool grows.
   Growth is a cold, disclosed allocation, never on a hot op. Peer: lite-arena, by design parity.
 - **D-R4 scope.** `run` containers in R1, or a later `runOptimize()` milestone.
+- **D-R5 a bitmap-only first cut (added 2026-11-01, RESEARCH.md section 15).** PagedBitset: a
+  StratifiedBitset directory over 2^22 pages of 1,024 bits, each page a pooled FastBit1024-style
+  33-word block (`_active` + 32 words), a direct page table, a LIFO free list, a fixed `maxPages`
+  that fails closed when full. No arrays, no shifts, no hashing: worst-case O(log_32 U) on every op.
+  A fuzz-verified sketch exists (`.handoff/research/paged-sketch.mjs`). Measured space: 17.3 MB floor
+  at 2^32 (the 16 MiB page table), 26.2 MB with 65,536 scattered pages -- it wins on CLUSTERED keys,
+  not sparse ones. Decide: (a) ship it as R1's core and add array / run containers in R1b, (b) keep it
+  as R1's devDep-free oracle and baseline only, or (c) drop it. Page-table floor options: a
+  `Uint16Array` table when maxPages < 2^16, or a two-level table with a second capacity knob.
+- **StratifiedBitset counting forms (candidate, 2026-11-01).** `intersects(other)` /
+  `intersectionSize(other)` by a top-down summary-pruned walk, materializing nothing (the R2 API
+  rule). Honest bound: worst case O(U / 32) (evens vs odds read every word); fast only when the
+  summaries are disjoint high up. Unscheduled; pairs with R2.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

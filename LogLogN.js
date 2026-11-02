@@ -11,8 +11,8 @@
  * O(log log U), NOT a strict "O(log log U) only" package. The headline first
  * member is StratifiedBitset -- the honest, teachable entry point (array-embedded,
  * zero-GC with no substrate to settle), an O(log_w U) hierarchical bit tree; the
- * strict O(log log U) members (x-fast / y-fast / vEB) follow. The witness's
- * PRIMARY axis is the universe BIT-WIDTH w, never a copied log2(n).
+ * strict O(log log U) members (x-fast / y-fast / vEB) are appended after it.
+ * The witness's PRIMARY axis is the universe BIT-WIDTH w, never a copied log2(n).
  *
  * v0.1.0 was the SCAFFOLD release (the `VERSION` const only). Members are
  * appended below append-only: this header, the roster comment and the `VERSION`
@@ -26,8 +26,10 @@
  * bucket of <= 2w keys; an update is O(log log U) probes plus at most 2w - 1
  * contiguous word moves, and a bucket split / merge / borrow is AMORTIZED
  * (deterministic buckets, no RNG); O(n) space, preallocated at a FIXED capacity.
- * Still planned: vEBTree (a flattened van Emde Boas keeping worst-case
- * O(log log U) and 0 B/op).
+ * vEBTree (0.5.0): a flattened van Emde Boas tree in ONE preallocated
+ * Uint32Array; worst-case O(log log U) has / add / delete / successor /
+ * predecessor and O(1) min / max, with no hashing, no reseed and no amortized
+ * split; O(U) space, the whole universe allocated up front.
  * Members are independent (no shared mutable module state), so a bundler that
  * imports one drops the others (`sideEffects: false`).
  *
@@ -50,8 +52,9 @@
  * queries and O(log log U)-probe updates with at most 2w - 1 word moves
  * (YFastTrie; a bucket split / merge / borrow is amortized and adds one inner
  * XFastTrie update (a borrow two: an inner add, then an inner delete)),
- * worst-case unless labelled expected / amortized -- and allocates ZERO bytes
- * after construction.
+ * O(log log U) has / add / delete / successor / predecessor and O(1) min / max
+ * (vEBTree; no hashing, no amortized step), worst-case unless labelled
+ * expected / amortized -- and allocates ZERO bytes after construction.
  *
  * The SPACE price is a co-headline, stated on every member with the same
  * prominence as the time bound (vEB O(U), x-fast O(n*w), y-fast O(n),
@@ -60,10 +63,16 @@
  * keys present: byteLength = 13 TS + 12 (C+1) + 16 (w+1) + 16 (see its class
  * comment). YFastTrie allocates O(C) words up front: byteLength = 4 (Cr+1) K +
  * (Cr+1) + 16 + the inner XFastTrie(U, Cr).byteLength, Cr = min(2 + floor(C/h),
- * U), K = 2w, h = ceil(w/2) (see its class comment). The witness harness (never
- * imported here) REPORTS fits on both the log2(w) and the w axis and gates on
- * neither: the w axis fit StratifiedBitset better in the 2026-10-22 run (R^2
- * 0.7293 vs 0.6589), as its O(log_32 U) label predicts.
+ * U), K = 2w, h = ceil(w/2) (see its class comment). vEBTree allocates its O(U)
+ * words up front, the whole universe, independent of the keys present:
+ * byteLength = 4 ceil(2^w / 32) for w <= 8, else
+ * 4 (2 + S(hi) + ceil(U / 2^lo) S(lo)), S(w) = 2 + S(hi) + 2^hi S(lo) for
+ * w >= 9 and ceil(2^w / 32) for w <= 8, lo = w > 24 ? 16 : 8, hi = w - lo (only
+ * the root's cluster count is trimmed to ceil(U / 2^lo); see its class
+ * comment). The witness harness (never imported here) REPORTS fits on both the
+ * log2(w) and the w axis and gates on neither: the w axis fit StratifiedBitset
+ * better in the 2026-10-22 run (R^2 0.7293 vs 0.6589), as its O(log_32 U) label
+ * predicts.
  *
  * @license MIT
  */
@@ -1360,5 +1369,608 @@ export class YFastTrie {
         bn[f] = 0;
         t.delete(t._key[f]);
         this._n[2] = (this._n[2] + 1) | 0;
+    }
+}
+
+// --- vEBTree (0.5.0) ---------------------------------------------------------
+
+/**
+ * Cold. S(w): Uint32 words of an untrimmed vEBTree node of width w (decisions/
+ * 0009 L1). A leaf (w <= 8) is a plain bitmap of ceil(2^w / 32) words; an
+ * internal node (w >= 9) is [min, max] + the summary (width hi) + 2^hi clusters
+ * (width lo), lo = (w > 24 ? 16 : 8), hi = w - lo.
+ * @param {number} w
+ * @returns {number}
+ */
+function vebWords(w) {
+    if (w <= 8) return w <= 5 ? 1 : 1 << (w - 5);
+    const lo = w > 24 ? 16 : 8;
+    return 2 + vebWords(w - lo) + 2 ** (w - lo) * vebWords(lo);
+}
+
+/**
+ * vEBTree -- a flattened van Emde Boas tree: worst-case O(log log U) has / add /
+ * delete / successor / predecessor and O(1) min / max over a FIXED universe
+ * [0, U), 2 <= U <= 2^32, in ONE preallocated Uint32Array (decisions/0009).
+ * No hashing, no reseed, no amortized split. SPACE is O(U): the whole universe
+ * is allocated up front (byteLength below); a sparse large universe belongs to
+ * YFastTrie (O(n) space).
+ *
+ * Layout (L1, L2). Node of width w <= 8 = LEAF: a bitmap of ceil(2^w / 32)
+ * words, key k = bit (k & 31) of word (k >>> 5), no header. Node of width w >= 9
+ * = INTERNAL at base: `_t[base]` = min, `_t[base + 1]` = max (node-relative; the
+ * root's are full keys), EMPTY = min > max, stored [0xFFFFFFFF, 0]; min is NOT
+ * stored in its cluster; the summary (width hi) at base + 2; cluster j at
+ * base + `_g[w]` + j * S(lo), `_g[w]` = 2 + S(hi), S(lo) in {8, 2058}. Only the
+ * ROOT's cluster count is trimmed to ceil(U / 2^lo). Depth <= 2 internal levels.
+ * byteLength = 4 x words: w <= 8 -> 4 ceil(2^w / 32); else
+ * 4 (2 + S(hi) + ceil(U / 2^lo) S(lo)), S(w) = 2 + S(hi) + 2^hi S(lo).
+ *
+ * Reads (L4, exact; `_t` only unless named). Header slots compare as uint32,
+ * bitmap words are read `| 0`. A leaf "scan" reads words one at a time and stops
+ * at the first nonzero (masked) word: ascending for min / successor, descending
+ * for max / predecessor; a scan whose start bit is past the leaf reads nothing.
+ * - `_g`: one read of `_g[w]` per internal node left through a cluster or
+ *   whose cluster / summary is examined (successor / predecessor: past the
+ *   header tests; delete: also per refreshed frame unless max becomes min).
+ * - has / add / delete: min then max at every internal node on the path; the
+ *   leaf: its target word. No has pre-pass; `_t` / `_p` writes only once presence (delete) or
+ *   absence (add) is proven by a read.
+ * - add: an internal node that is EMPTY takes [x, x] and stops (a cluster: then
+ *   its parent's summary takes j). x < min swaps x with min, x > max sets max;
+ *   then x enters cluster j = x >>> lo. A leaf cluster: target word, then (only
+ *   when it was 0) the other words ascending -- all 0 means the cluster was empty
+ *   and the parent's summary takes j. One path; the summary is entered only from
+ *   an emptied-before cluster.
+ * - delete: a node holding only x (internal min === max; a leaf cluster whose
+ *   target word is the bit alone, then the other words ascending all 0) is
+ *   emptied in O(1) and the parent's summary loses j. x === min (>= 2 keys):
+ *   the summary's min (internal: its min slot; leaf: ascending scan), then that
+ *   cluster's min (same rule) become the new min. Where x was a node's max, a
+ *   frame [base, w, acc, mode] goes to `_p` (4 writes; <= 2 frames) when the
+ *   child's outcome is known; after the walk each frame is read back (4 `_p`
+ *   reads, LIFO) and refreshes max: mode 2 (cluster acc = j kept keys)
+ *   -> j's max (internal: max slot; leaf: descending scan); mode 1 (cluster
+ *   emptied, acc = the node's min) -> the summary's max (internal: its max slot,
+ *   0 reads when that summary was the node emptied last; leaf: descending scan)
+ *   and that cluster's max, or min when the summary is empty.
+ * - successor: 0 reads when empty; min, then max only if x >= min (x < min ->
+ *   min; x >= max -> none). Leaf cluster: an ascending scan from xl + 1 inside
+ *   it; internal cluster: its max slot, then (xl < it) the cluster is visited
+ *   like a node (min, max again). Otherwise the summary is visited for j, and
+ *   the answer cluster's min (internal: min slot; leaf: ascending scan) ends it.
+ * - predecessor: the mirror -- max, then min only if x <= max; leaf cluster: a
+ *   descending scan from xl - 1; internal cluster: its min slot; a summary with
+ *   no predecessor of j falls back to that node's min (no read).
+ * - min / max: 0 reads when empty; else the root's slot (1 read), or a scan of
+ *   a root leaf (U <= 256).
+ * Hot methods (the 7 above) allocate 0 bytes; a returned key >= 2^31 (>= 2^30
+ * on a pointer-compressed engine) may box as a HeapNumber when the call is not
+ * inlined. successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A
+ * bad key (not a number, not an integer in [0, U)) touches no column: has /
+ * delete -> false, successor / predecessor -> undefined, add -> RangeError.
+ */
+export class vEBTree {
+    /** @param {number} universe integer in [2, 2^32] */
+    constructor(universe) {
+        if (typeof universe !== 'number' || !Number.isInteger(universe) ||
+            universe < 2 || universe > 4294967296) {
+            throw new RangeError('[lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got ' +
+                (typeof universe === 'number' ? String(universe) : typeof universe));
+        }
+        const w = 32 - Math.clz32(universe - 1);
+        const g = new Int32Array(33);
+        for (let k = 9; k <= 32; k++) g[k] = 2 + vebWords(k - (k > 24 ? 16 : 8));
+        let words = vebWords(w);
+        if (w > 8) {
+            const lo = w > 24 ? 16 : 8;
+            words = g[w] + Math.ceil(universe / 2 ** lo) * vebWords(lo);
+        }
+        this._u = universe;
+        this._w = w;
+        this._size = 0;
+        this._g = g;
+        this._p = new Int32Array(8);
+        this._t = new Uint32Array(words);
+        this._init();
+    }
+
+    /** Number of keys present. */
+    get size() { return this._size; }
+
+    /** The fixed universe U (keys are integers in [0, U)). */
+    get universe() { return this._u; }
+
+    /** Key bit-width w = ceil(log2 U). */
+    get bits() { return this._w; }
+
+    /** Bytes of the tree `_t` (4 x words; `_g`, `_p` and the object not counted). */
+    get byteLength() { return this._t.byteLength; }
+
+    /**
+     * Cold. Writes the EMPTY header [0xFFFFFFFF, 0] at every internal node of a
+     * zeroed `_t`: the root, the root's summary when hi >= 9, every root cluster
+     * when lo = 16 (deeper nodes are all leaves).
+     */
+    _init() {
+        const t = this._t;
+        const w = this._w;
+        if (w <= 8) return;
+        const lo = w > 24 ? 16 : 8;
+        t[0] = 0xFFFFFFFF;
+        t[1] = 0;
+        if (w - lo > 8) {
+            t[2] = 0xFFFFFFFF;
+            t[3] = 0;
+        }
+        if (lo > 8) {
+            const cb = this._g[w];
+            const nc = Math.ceil(this._u / 65536);
+            for (let j = 0; j < nc; j++) {
+                t[cb + j * 2058] = 0xFFFFFFFF;
+                t[cb + j * 2058 + 1] = 0;
+            }
+        }
+    }
+
+    /** @param {number} x @returns {boolean} */
+    has(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        const t = this._t;
+        const g = this._g;
+        let b = 0;
+        let w = this._w;
+        while (w > 8) {
+            const mn = t[b];
+            const mx = t[b + 1];
+            if (mn > mx) return false;
+            if (x === mn || x === mx) return true;
+            const lo = w > 24 ? 16 : 8;
+            b = b + g[w] + (x >>> lo) * (lo > 8 ? 2058 : 8);
+            x &= (1 << lo) - 1;
+            w = lo;
+        }
+        return ((t[b + (x >>> 5)] | 0) & (1 << (x & 31))) !== 0;
+    }
+
+    /** @param {number} x @returns {this} throws RangeError on a bad key (no state touched) */
+    add(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) throwKey(x, this._u);
+        const t = this._t;
+        const g = this._g;
+        let b = 0;
+        let w = this._w;
+        let ps = -1;
+        let pw = 0;
+        let pj = 0;
+        for (;;) {
+            if (w <= 8) {
+                const p = b + (x >>> 5);
+                const m = 1 << (x & 31);
+                const v = t[p] | 0;
+                if ((v & m) !== 0) return this;
+                t[p] = v | m;
+                if (ps < 0 || v !== 0) break;
+                let k = b;
+                while (k < b + 8 && (k === p || (t[k] | 0) === 0)) k++;
+                if (k < b + 8) break;
+            } else {
+                const mn = t[b];
+                const mx = t[b + 1];
+                if (mn > mx) {
+                    t[b] = x;
+                    t[b + 1] = x;
+                    if (ps < 0) break;
+                } else {
+                    if (x === mn || x === mx) return this;
+                    if (x < mn) {
+                        t[b] = x;
+                        x = mn;
+                    } else if (x > mx) {
+                        t[b + 1] = x;
+                    }
+                    const lo = w > 24 ? 16 : 8;
+                    ps = b + 2;
+                    pw = w - lo;
+                    pj = x >>> lo;
+                    b = b + g[w] + pj * (lo > 8 ? 2058 : 8);
+                    x &= (1 << lo) - 1;
+                    w = lo;
+                    continue;
+                }
+            }
+            b = ps;
+            w = pw;
+            x = pj;
+            ps = -1;
+        }
+        this._size++;
+        return this;
+    }
+
+    /** @param {number} x @returns {boolean} true if x was present */
+    delete(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        const t = this._t;
+        const g = this._g;
+        const q = this._p;
+        let b = 0;
+        let w = this._w;
+        let pb = -1;
+        let pw = 0;
+        let pj = 0;
+        let pm = 0;
+        let pr = false;
+        let n = 0;
+        let fe = false;
+        for (;;) {
+            let one = false;
+            let mn = 0;
+            let mx = 0;
+            if (w <= 8) {
+                const p = b + (x >>> 5);
+                const m = 1 << (x & 31);
+                const v = t[p] | 0;
+                if ((v & m) === 0) return false;
+                if (pb >= 0 && v === m) {
+                    let k = b;
+                    while (k < b + 8 && (k === p || (t[k] | 0) === 0)) k++;
+                    one = k === b + 8;
+                }
+                t[p] = v ^ m;
+            } else {
+                mn = t[b];
+                mx = t[b + 1];
+                if (mn > mx || x < mn || x > mx) return false;
+                if (mn === mx) {
+                    one = true;
+                    t[b] = 0xFFFFFFFF;
+                    t[b + 1] = 0;
+                }
+            }
+            if (pr) {
+                const o = n << 2;
+                q[o] = pb;
+                q[o + 1] = pw;
+                q[o + 2] = one ? pm : pj;
+                q[o + 3] = one ? 1 : 2;
+                n++;
+                pr = false;
+            }
+            if (one) {
+                if (pb < 0) {
+                    fe = true;
+                    break;
+                }
+                b = pb + 2;
+                w = pw - (pw > 24 ? 16 : 8);
+                x = pj;
+                pb = -1;
+                continue;
+            }
+            if (w <= 8) break;
+            const lo = w > 24 ? 16 : 8;
+            const st = lo > 8 ? 2058 : 8;
+            const cb = b + g[w];
+            if (x === mn) {
+                let j0;
+                if (w - lo > 8) {
+                    j0 = t[b + 2];
+                } else {
+                    let p = b + 2;
+                    let v = t[p] | 0;
+                    while (v === 0) v = t[++p] | 0;
+                    j0 = ((p - b - 2) << 5) | (31 - Math.clz32(v & -v));
+                }
+                const c = cb + j0 * st;
+                let m0;
+                if (lo > 8) {
+                    m0 = t[c];
+                } else {
+                    let p = c;
+                    let v = t[p] | 0;
+                    while (v === 0) v = t[++p] | 0;
+                    m0 = ((p - c) << 5) | (31 - Math.clz32(v & -v));
+                }
+                x = ((j0 << lo) | m0) >>> 0;
+                t[b] = x;
+                mn = x;
+            }
+            pb = b;
+            pw = w;
+            pj = x >>> lo;
+            pm = mn;
+            pr = x === mx;
+            b = cb + pj * st;
+            x &= (1 << lo) - 1;
+            w = lo;
+        }
+        this._size--;
+        while (n > 0) {
+            n--;
+            const o = n << 2;
+            const fb = q[o];
+            const fw = q[o + 1];
+            const fa = q[o + 2];
+            const md = q[o + 3];
+            const top = fe;
+            fe = false;
+            const lo = fw > 24 ? 16 : 8;
+            let j = fa;
+            if (md === 1) {
+                const hi = fw - lo;
+                if (hi > 8) {
+                    j = top ? -1 : t[fb + 3];
+                } else {
+                    const s = fb + 2;
+                    let p = s + (hi > 5 ? 1 << (hi - 5) : 1) - 1;
+                    let v = t[p] | 0;
+                    while (v === 0 && p > s) v = t[--p] | 0;
+                    j = v === 0 ? -1 : ((p - s) << 5) | (31 - Math.clz32(v));
+                }
+                if (j < 0) {
+                    t[fb + 1] = fa >>> 0;
+                    continue;
+                }
+            }
+            let m;
+            if (lo > 8) {
+                m = t[fb + g[fw] + j * 2058 + 1];
+            } else {
+                const c = fb + g[fw] + (j << 3);
+                let p = c + 7;
+                let v = t[p] | 0;
+                while (v === 0) v = t[--p] | 0;
+                m = ((p - c) << 5) | (31 - Math.clz32(v));
+            }
+            t[fb + 1] = ((j << lo) | m) >>> 0;
+        }
+        return true;
+    }
+
+    /** Smallest key > x, or undefined. @param {number} x @returns {number|undefined} */
+    successor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        if (this._size === 0) return undefined;
+        const t = this._t;
+        const g = this._g;
+        let b = 0;
+        let w = this._w;
+        let a = 0;
+        let r = 0;
+        let n = 0;
+        let c1 = 0;
+        let l1 = 0;
+        let a1 = 0;
+        let c2 = 0;
+        let l2 = 0;
+        let a2 = 0;
+        for (;;) {
+            if (w <= 8) {
+                const s = x + 1;
+                if (s >= 1 << w) return undefined;
+                const e = b + (w > 5 ? 1 << (w - 5) : 1);
+                let p = b + (s >>> 5);
+                let v = (t[p] | 0) & (-1 << (s & 31));
+                while (v === 0) {
+                    if (++p === e) return undefined;
+                    v = t[p] | 0;
+                }
+                r = ((p - b) << 5) | (31 - Math.clz32(v & -v));
+                break;
+            }
+            const mn = t[b];
+            if (x < mn) {
+                r = mn;
+                break;
+            }
+            if (!(x < t[b + 1])) return undefined;
+            const lo = w > 24 ? 16 : 8;
+            const j = x >>> lo;
+            const xl = x & ((1 << lo) - 1);
+            const cb = b + g[w];
+            if (lo > 8) {
+                const c = cb + j * 2058;
+                if (xl < t[c + 1]) {
+                    a |= j << 16;
+                    b = c;
+                    w = 16;
+                    x = xl;
+                    continue;
+                }
+            } else if (xl < 255) {
+                const c = cb + (j << 3);
+                const s = xl + 1;
+                let p = c + (s >>> 5);
+                let v = (t[p] | 0) & (-1 << (s & 31));
+                while (v === 0 && ++p < c + 8) v = t[p] | 0;
+                if (v !== 0) {
+                    r = (j << 8) | ((p - c) << 5) | (31 - Math.clz32(v & -v));
+                    break;
+                }
+            }
+            if (n === 0) {
+                c1 = cb;
+                l1 = lo;
+                a1 = a;
+            } else {
+                c2 = cb;
+                l2 = lo;
+                a2 = a;
+            }
+            n++;
+            a = 0;
+            b += 2;
+            w -= lo;
+            x = j;
+        }
+        r |= a;
+        while (n > 0) {
+            let cb = c1;
+            let lo = l1;
+            let fa = a1;
+            if (n === 2) {
+                cb = c2;
+                lo = l2;
+                fa = a2;
+            }
+            n--;
+            let m;
+            if (lo > 8) {
+                m = t[cb + r * 2058];
+            } else {
+                const c = cb + (r << 3);
+                let p = c;
+                let v = t[p] | 0;
+                while (v === 0) v = t[++p] | 0;
+                m = ((p - c) << 5) | (31 - Math.clz32(v & -v));
+            }
+            r = fa | (r << lo) | m;
+        }
+        return r >>> 0;
+    }
+
+    /** Largest key < x, or undefined. @param {number} x @returns {number|undefined} */
+    predecessor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        if (this._size === 0) return undefined;
+        const t = this._t;
+        const g = this._g;
+        let b = 0;
+        let w = this._w;
+        let a = 0;
+        let r = 0;
+        let n = 0;
+        let c1 = 0;
+        let l1 = 0;
+        let a1 = 0;
+        let m1 = 0;
+        let c2 = 0;
+        let l2 = 0;
+        let a2 = 0;
+        let m2 = 0;
+        for (;;) {
+            if (w <= 8) {
+                if (x !== 0) {
+                    const s = x - 1;
+                    let p = b + (s >>> 5);
+                    let v = (t[p] | 0) & ~(-2 << (s & 31));
+                    while (v === 0 && p > b) v = t[--p] | 0;
+                    if (v !== 0) {
+                        r = ((p - b) << 5) | (31 - Math.clz32(v));
+                        break;
+                    }
+                }
+            } else {
+                const mx = t[b + 1];
+                if (x > mx) {
+                    r = mx;
+                    break;
+                }
+                const mn = t[b];
+                if (x > mn) {
+                    const lo = w > 24 ? 16 : 8;
+                    const j = x >>> lo;
+                    const xl = x & ((1 << lo) - 1);
+                    const cb = b + g[w];
+                    if (lo > 8) {
+                        const c = cb + j * 2058;
+                        if (xl > t[c]) {
+                            a |= j << 16;
+                            b = c;
+                            w = 16;
+                            x = xl;
+                            continue;
+                        }
+                    } else if (xl !== 0) {
+                        const c = cb + (j << 3);
+                        const s = xl - 1;
+                        let p = c + (s >>> 5);
+                        let v = (t[p] | 0) & ~(-2 << (s & 31));
+                        while (v === 0 && p > c) v = t[--p] | 0;
+                        if (v !== 0) {
+                            r = (j << 8) | ((p - c) << 5) | (31 - Math.clz32(v));
+                            break;
+                        }
+                    }
+                    if (n === 0) {
+                        c1 = cb;
+                        l1 = lo;
+                        a1 = a;
+                        m1 = mn;
+                    } else {
+                        c2 = cb;
+                        l2 = lo;
+                        a2 = a;
+                        m2 = mn;
+                    }
+                    n++;
+                    a = 0;
+                    b += 2;
+                    w -= lo;
+                    x = j;
+                    continue;
+                }
+            }
+            if (n === 0) return undefined;
+            n--;
+            r = n === 1 ? a2 | m2 : a1 | m1;
+            a = 0;
+            break;
+        }
+        r |= a;
+        while (n > 0) {
+            let cb = c1;
+            let lo = l1;
+            let fa = a1;
+            if (n === 2) {
+                cb = c2;
+                lo = l2;
+                fa = a2;
+            }
+            n--;
+            let m;
+            if (lo > 8) {
+                m = t[cb + r * 2058 + 1];
+            } else {
+                const c = cb + (r << 3);
+                let p = c + 7;
+                let v = t[p] | 0;
+                while (v === 0) v = t[--p] | 0;
+                m = ((p - c) << 5) | (31 - Math.clz32(v));
+            }
+            r = fa | (r << lo) | m;
+        }
+        return r >>> 0;
+    }
+
+    /** Smallest key, or undefined if empty. @returns {number|undefined} */
+    min() {
+        if (this._size === 0) return undefined;
+        const t = this._t;
+        if (this._w > 8) return t[0] >>> 0;
+        let p = 0;
+        let v = t[0] | 0;
+        while (v === 0) v = t[++p] | 0;
+        return ((p << 5) | (31 - Math.clz32(v & -v))) >>> 0;
+    }
+
+    /** Largest key, or undefined if empty. @returns {number|undefined} */
+    max() {
+        if (this._size === 0) return undefined;
+        const t = this._t;
+        const w = this._w;
+        if (w > 8) return t[1] >>> 0;
+        let p = (w > 5 ? 1 << (w - 5) : 1) - 1;
+        let v = t[p] | 0;
+        while (v === 0) v = t[--p] | 0;
+        return ((p << 5) | (31 - Math.clz32(v))) >>> 0;
+    }
+
+    /** Cold. Removes every key. */
+    clear() {
+        this._t.fill(0);
+        this._init();
+        this._size = 0;
     }
 }

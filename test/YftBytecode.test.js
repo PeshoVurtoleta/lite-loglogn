@@ -14,7 +14,8 @@
  * XFastTrie `_x` compiles its own add / delete. Every printed header is
  * attributed by its first source position to a region of the loaded source
  * (a `// --- <Member>` marker to the next `// --- ` marker or EOF):
- * - Y = `// --- YFastTrie (0.4.0)` (the last marker, so it runs to EOF);
+ * - Y = `// --- YFastTrie (0.4.0)` (it runs to the `// --- vEBTree (0.5.0)` marker,
+ *   or to EOF before that member exists -- asserted below);
  * - X = `// --- XFastTrie (0.3.0)` (the inner trie's own methods).
  * Fail closed (GATE TEETH): every header must carry the filtered name, a
  * parseable length and a source position; EXACTLY ONE lies in Y; every other
@@ -203,7 +204,9 @@ test('G2-7 every YFastTrie hot method / helper has one Y-region header, extras o
         const y = regionOf(SRC, Y_MARKER);
         const x = regionOf(SRC, X_MARKER);
         assert.ok(y !== null && x !== null, 'YFastTrie / XFastTrie marker missing or doubled in LogLogN.js');
-        assert.equal(y[1], SRC.length, 'YFastTrie is the last member: its region must run to EOF');
+        const vebAt = SRC.indexOf('\n// --- vEBTree (0.5.0)');
+        assert.equal(y[1], vebAt < 0 ? SRC.length : vebAt,
+            'the YFastTrie region must run to the vEBTree marker (or EOF before it exists)');
         const lengths = {};
         const inner = {};
         for (const name of NAMES) {

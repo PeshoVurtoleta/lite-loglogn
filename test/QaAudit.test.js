@@ -5,7 +5,7 @@
  * must hold, independent of any one member:
  *   - the VERSION trinity (LogLogN.js const === package.json === llms.txt), the
  *     version check of record (no test pins a version literal);
- *   - the frozen export surface (exactly StratifiedBitset + VERSION + XFastTrie + YFastTrie);
+ *   - the frozen export surface (exactly StratifiedBitset + VERSION + XFastTrie + YFastTrie + vEBTree);
  *   - the six-file pack discipline (files[] exact; repo-only dirs absent);
  *   - no "Karadjov" anywhere in the shipped source / docs;
  *   - ASCII-only source in LogLogN.js (this family needs NO Unicode exception --
@@ -24,7 +24,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as LogLogNModule from '../LogLogN.js';
-import { VERSION, StratifiedBitset, XFastTrie, YFastTrie } from '../LogLogN.js';
+import { VERSION, StratifiedBitset, XFastTrie, YFastTrie, vEBTree } from '../LogLogN.js';
 import { startFn, expectFn, KILL_MS } from './_worker-run.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,12 +41,12 @@ test('VERSION trinity: LogLogN.js const, package.json, and llms.txt agree byte-f
     assert.equal(m[1], VERSION, 'llms.txt Version header !== LogLogN.js VERSION const');
 });
 
-// --- frozen export surface: StratifiedBitset + VERSION + XFastTrie + YFastTrie
+// --- frozen export surface: StratifiedBitset + VERSION + XFastTrie + YFastTrie + vEBTree
 
-test('LogLogN.js exports exactly StratifiedBitset, VERSION, XFastTrie and YFastTrie -- nothing else has leaked in', () => {
+test('LogLogN.js exports exactly StratifiedBitset, VERSION, XFastTrie, YFastTrie and vEBTree -- nothing else has leaked in', () => {
     const exportedNames = Object.keys(LogLogNModule).sort();
-    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION', 'XFastTrie', 'YFastTrie'],
-        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION, XFastTrie, YFastTrie)');
+    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION', 'XFastTrie', 'YFastTrie', 'vEBTree'],
+        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION, XFastTrie, YFastTrie, vEBTree)');
     assert.equal(typeof VERSION, 'string');
     assert.equal(typeof LogLogNModule.StratifiedBitset, 'function');
 });
@@ -512,8 +512,8 @@ test('A6 YFastTrie bad keys: has / delete false, succ / pred undefined, add thro
 });
 
 // valid-key successor / predecessor / min / max: Worker (A6). test/_worker-run.mjs
-// hands its body StratifiedBitset and XFastTrie only, so YFastTrie bodies run in an
-// inline eval worker with the same contract (self-contained body, KILL_MS timer, a
+// hands its body StratifiedBitset and XFastTrie only, so YFastTrie (and vEBTree)
+// bodies run in an inline eval worker with the same contract (self-contained body, KILL_MS timer, a
 // hang / worker error / nonzero exit / missing result is a FAIL; shape for expectFn).
 const LIB_URL = new URL('../LogLogN.js', import.meta.url).href;
 const YFT_WORKER = [
@@ -524,7 +524,7 @@ const YFT_WORKER = [
     '    .then((mod) => {',
     "        const fn = (0, eval)('\"use strict\"; (' + workerData.src + ')');",
     "        if (typeof fn !== 'function') throw new TypeError('worker body is not a function');",
-    '        const ret = fn({ YFastTrie: mod.YFastTrie, XFastTrie: mod.XFastTrie, assert });',
+    '        const ret = fn({ YFastTrie: mod.YFastTrie, XFastTrie: mod.XFastTrie, vEBTree: mod.vEBTree, assert });',
     "        if (ret !== undefined) throw new TypeError('worker body must return undefined');",
     '        return { ok: true };',
     '    })',
@@ -778,4 +778,304 @@ test('control: the YFastTrie ctor and seed checkers flag lax, misnamed and misre
     // an accepted seed whose instance does not work is flagged too
     class YFakeDeadSeed extends YFastTrie { add(k) { return this; } }
     assert.equal(seedTableErr(YFakeDeadSeed, 'YFastTrie').length, 4);
+});
+
+// --- vEBTree coercion / boundary block (A6 mirror, 0.5.0 G1-B3, C-8 / C-10 / C-11) ----
+// Mirrors the XFastTrie / YFastTrie blocks: expected outcomes are hand-written literals
+// (bad key -> has / delete false, successor / predecessor undefined, add RangeError,
+// nothing changed: `_t` word for word, size, byteLength). vebRowErr fills keys first
+// (internal nodes with live clusters at w >= 9; lo = 16 clusters at w = 25) and runs on
+// the real class and on the shared rowFakes plus a `_t` scribbler, each of which must be
+// flagged. Valid-key min / max / successor / predecessor run in the inline Worker (a
+// corrupt-state scan could loop; C-19). U = 2^32 (539.5 MB) is never built here: its
+// encoding is the C-9 Worker in test/VEBTree.test.js; so is U = 2^32 - 1 (same size).
+
+// [U, F]: F fill keys (yftFill: 0 first, U - 1 last). 2 / 3 are w = 1 / 2 leaves; 257
+// is w = 9 (8-bit summary leaf); 65537 is w = 17 (trimmed root); 2^24 + 1 and 2^25 are
+// w = 25 (internal lo = 16 clusters, trimmed / full root).
+const VEB_ROWS = [[2, 2], [3, 3], [257, 24], [65537, 48], [16777217, 48], [33554432, 48]];
+
+/** True when two Uint32Arrays hold the same words (memcmp over the bytes). */
+function sameWords(a, b) {
+    return a.length === b.length &&
+        Buffer.compare(Buffer.from(a.buffer, a.byteOffset, a.byteLength), Buffer.from(b.buffer, b.byteOffset, b.byteLength)) === 0;
+}
+
+// Returns { rows, errs }: rows = checks made, errs = failure strings.
+function vebRowErr(Cls, U, F) {
+    const errs = [];
+    let rows = 0;
+    const s = new Cls(U);
+    for (const k of yftFill(U, F)) s.add(k);
+    const before = s._t.slice();
+    const bytes = s.byteLength;
+    const size = s.size;
+    const keys = XFT_BAD(U);
+    for (let j = 0; j < keys.length; j++) {
+        const k = keys[j];
+        const tag = 'U=' + U + ' bad[' + j + '] ';
+        rows++; if (s.has(k) !== false) errs.push(tag + 'has');
+        rows++; if (s.delete(k) !== false) errs.push(tag + 'delete');
+        rows++; if (s.successor(k) !== undefined) errs.push(tag + 'successor');
+        rows++; if (s.predecessor(k) !== undefined) errs.push(tag + 'predecessor');
+        rows++;
+        try { s.add(k); errs.push(tag + 'add did not throw'); } catch (e) {
+            if (!(e instanceof RangeError && LITE.test(e.message))) errs.push(tag + 'add threw wrong error');
+        }
+    }
+    if (!sameWords(s._t, before)) errs.push('U=' + U + ' layout changed');
+    if (s.byteLength !== bytes) errs.push('U=' + U + ' byteLength changed');
+    if (s.size !== size) errs.push('U=' + U + ' size changed');
+    return { rows, errs };
+}
+
+test('A6 vEBTree bad keys: has / delete false, succ / pred undefined, add throws; no state change', T, () => {
+    let rows = 0;
+    for (const [U, F] of VEB_ROWS) {
+        const r = vebRowErr(vEBTree, U, F);
+        assert.deepEqual(r.errs, [], 'U=' + U);
+        rows += r.rows;
+    }
+    // 6 universes x 13 tokens x 5 methods = 390 (hand count)
+    assert.equal(rows, 390);
+    const norm = (f) => String(f).replace(/\s+/g, ' ');
+    const lit = norm(XFT_BAD);
+    assert.ok(lit.indexOf('[') > 0, 'XFT_BAD source has a bad-list literal');
+    assert.ok(norm(vebLiveBody).includes(lit.slice(lit.indexOf('['))), 'vebLiveBody bad list === XFT_BAD');
+});
+
+test('A6 vEBTree -0 aliases 0 (add(-0) -> has(0), size 1; add(0) no-op; delete(-0) true)', T, () => {
+    for (const U of [8, 65536]) {
+        const s = new vEBTree(U);
+        const empty = s._t.slice();
+        assert.equal(s.has(-0), false, 'U=' + U);
+        s.add(-0);
+        assert.equal(s.size, 1, 'U=' + U);
+        assert.equal(s.has(0), true, 'U=' + U);
+        assert.equal(s.has(-0), true, 'U=' + U);
+        s.add(0);
+        assert.equal(s.size, 1, 'U=' + U);
+        assert.equal(s.delete(-0), true, 'U=' + U);
+        assert.equal(s.has(0), false, 'U=' + U);
+        assert.equal(s.size, 0, 'U=' + U);
+        assert.equal(s.delete(-0), false, 'U=' + U);
+        assert.ok(sameWords(s._t, empty), 'U=' + U + ' layout back to EMPTY');
+    }
+});
+
+// C-8 table: [universe, message suffix after 'got '] -- hand-written literals.
+const VEB_REJECT = [
+    [0, '0'], [1, '1'], [-1, '-1'], [1.5, '1.5'], [2 ** 32 + 1, '4294967297'], [2 ** 53, '9007199254740992'],
+    [NaN, 'NaN'], [Infinity, 'Infinity'], [-Infinity, '-Infinity'], ['16', 'string'], [16n, 'bigint'],
+    [null, 'object'], [undefined, 'undefined'], [new Number(16), 'object'], [Symbol('u'), 'symbol'],
+];
+// [universe, bits, byteLength]: byteLength = the C-16 / C-13 literals (veb-g1.json rows).
+const VEB_ACCEPT = [
+    [2, 1, 4], [3, 2, 4], [256, 8, 32], [257, 9, 76], [512, 9, 76], [1024, 10, 140], [65536, 16, 8232],
+    [65537, 17, 8308], [16777216, 24, 2105392], [16777217, 25, 2115708], [33554432, 25, 4214868],
+];
+
+/** Ctor failures of Cls against the C-8 message (naming vEBTree) and the accept table. */
+function vebCtorErr(Cls, rejects, accepts) {
+    const errs = [];
+    const head = '[lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got ';
+    for (const [u, got] of rejects) {
+        const tag = 'universe ' + (typeof u === 'bigint' ? u + 'n' : typeof u === 'symbol' ? 'Symbol' : typeof u === 'string' ? "'" + u + "'" : String(u));
+        try {
+            new Cls(u);
+        } catch (e) {
+            if (!(e instanceof RangeError)) errs.push(tag + ' threw ' + (e && e.name) + ', not RangeError');
+            else if (e.message !== head + got) errs.push(tag + ' message: ' + e.message);
+            continue;
+        }
+        errs.push(tag + ' accepted');
+    }
+    for (const [u, bits, bytes] of accepts) {
+        const s = new Cls(u);
+        if (s.universe !== u) errs.push('universe ' + u + ' -> ' + s.universe);
+        if (s.bits !== bits) errs.push('bits ' + u + ' -> ' + s.bits);
+        if (s.byteLength !== bytes) errs.push('byteLength ' + u + ' -> ' + s.byteLength);
+        if (s.size !== 0) errs.push('size ' + u + ' not 0');
+    }
+    return errs;
+}
+
+test('A6 vEBTree constructor rejects bad U with the C-8 RangeError naming vEBTree and accepts [2, 2^25]', T, () => {
+    assert.equal(VEB_REJECT.length, 15);
+    assert.equal(VEB_ACCEPT.length, 11);
+    assert.deepEqual(vebCtorErr(vEBTree, VEB_REJECT, VEB_ACCEPT), []);
+});
+
+// valid-key min / max / successor / predecessor could loop: inline Worker (A6, C-19).
+// vebEdgeBody: bit 0 and bit 31 of a leaf word (a root leaf, an 8-bit cluster, a 16-bit
+// cluster's 8-bit cluster) against the true definition (a sorted pair + linear scan),
+// for every singleton and pair of edge keys, alone and above a min of 0 (so both sit in
+// clusters, not in the header); each set is deleted again and the layout
+// must return to EMPTY word for word. edgeErr stops at the first wrong answer and is
+// run on fakes that must each be flagged with their kind (must-fail controls).
+function vebEdgeBody({ vEBTree, assert }) {
+    function edges(U) {
+        const out = [];
+        for (const base of [0, 256, 65536 + 255 * 256, 16777216]) {
+            for (const xl of [0, 31, 32, 63, 224, 255]) out.push(base + xl);
+        }
+        const top = U - 1;
+        out.push(top, top - 1, top - (top & 31), top - (top & 31) - 1);
+        return [...new Set(out.filter((k) => k >= 0 && k < U))].sort((a, b) => a - b);
+    }
+    function edgeErr(Cls, U) {
+        const E = edges(U);
+        const s = new Cls(U);
+        const fresh = s._t.slice();
+        const same = (a, b) => Buffer.compare(Buffer.from(a.buffer), Buffer.from(b.buffer)) === 0;
+        const sets = [];
+        for (let i = 0; i < E.length; i++) {
+            for (let j = i; j < E.length; j++) {
+                sets.push(i === j ? [E[i]] : [E[i], E[j]]);
+                // min 0 held in the header pushes BOTH keys into clusters (min is never stored there)
+                if (E[i] > 0) sets.push(i === j ? [0, E[i]] : [0, E[i], E[j]]);
+            }
+        }
+        for (const keys of sets) {
+            for (const k of keys) s.add(k);
+            const tag = 'U=' + U + ' {' + keys.join(',') + '} ';
+            if (s.size !== keys.length) return [tag + 'size ' + s.size];
+            if (s.min() !== keys[0]) return [tag + 'min ' + s.min()];
+            if (s.max() !== keys[keys.length - 1]) return [tag + 'max ' + s.max()];
+            const probes = new Set([0, U - 1]);
+            for (const k of keys) { probes.add(k - 1); probes.add(k); probes.add(k + 1); }
+            for (const x of probes) {
+                if (x < 0 || x >= U) continue;
+                let succ;
+                let pred;
+                for (const k of keys) { if (k > x && succ === undefined) succ = k; if (k < x) pred = k; }
+                if (s.successor(x) !== succ) return [tag + 'successor(' + x + ') ' + s.successor(x) + ' want ' + succ];
+                if (s.predecessor(x) !== pred) return [tag + 'predecessor(' + x + ') ' + s.predecessor(x) + ' want ' + pred];
+                if (s.has(x) !== keys.includes(x)) return [tag + 'has(' + x + ')'];
+            }
+            for (const k of keys) if (s.delete(k) !== true) return [tag + 'delete(' + k + ')'];
+            if (s.size !== 0) return [tag + 'size after delete ' + s.size];
+            if (!same(s._t, fresh)) return [tag + 'layout not restored'];
+        }
+        return [];
+    }
+    const UNIV = [2, 3, 32, 33, 64, 256, 257, 512, 65536, 65537, 16777217, 33554432];
+    let n = 0;
+    for (const U of UNIV) {
+        assert.deepEqual(edgeErr(vEBTree, U), [], 'U=' + U);
+        n += edges(U).length;
+    }
+    assert.equal(n, 123, 'edge keys over the 12 universes');
+    // must-fail controls: the SAME checker flags each wrong answer kind
+    const fakes = [
+        ['min', class extends vEBTree { min() { const m = super.min(); return m !== undefined && (m & 31) === 31 ? m - 1 : m; } }],
+        ['max', class extends vEBTree { max() { const m = super.max(); return m !== undefined && (m & 31) === 0 ? m + 1 : m; } }],
+        ['successor', class extends vEBTree { successor(x) { const r = super.successor(x); return r !== undefined && r > 0 && (r & 31) === 0 ? undefined : r; } }],
+        ['predecessor', class extends vEBTree { predecessor(x) { const r = super.predecessor(x); return r !== undefined && (r & 31) === 31 ? r - 1 : r; } }],
+        ['has', class extends vEBTree { has(x) { return (x & 31) === 31 ? false : super.has(x); } }],
+        ['layout not restored', class extends vEBTree { delete(x) { if (x === 255) { this._size--; return true; } return super.delete(x); } }],
+        ['size', class extends vEBTree { add(x) { super.add(x); if (x === 224) this._size++; return this; } }],
+    ];
+    for (const [kind, F] of fakes) {
+        for (const U of [257, 65537, 33554432]) {
+            const errs = edgeErr(F, U);
+            assert.equal(errs.length, 1, kind + ' fake not flagged at U=' + U);
+            assert.ok(errs[0].includes(kind), kind + ' fake flagged as ' + errs[0]);
+        }
+    }
+}
+
+function vebLiveBody({ vEBTree, assert }) {
+    const U = 65537;
+    const bad = [Symbol('k'), 1n, { valueOf() { return 1; } }, new Number(1), NaN, null,
+        undefined, '1', -1, 1.5, U, 2 ** 32,
+        { toString() { throw new Error('user'); }, valueOf() { throw new Error('user'); } }];
+    const s = new vEBTree(U);
+    for (let i = 0; i < 256; i++) s.add(i * 257); // one key per 8-bit cluster
+    s.add(U - 1);
+    for (const k of bad) {
+        try { s.add(k); } catch (e) { /* expected */ }
+        s.delete(k); s.has(k); s.successor(k); s.predecessor(k);
+    }
+    assert.equal(s.size, 257);
+    for (let i = 0; i < 256; i++) {
+        const k = i * 257;
+        const nx = i < 255 ? k + 257 : U - 1; // i = 255: k + 1 = 65536 = U - 1 is a key
+        assert.equal(s.has(k), true);
+        assert.equal(s.has(k + 1), k + 1 === U - 1);
+        assert.equal(s.successor(k), nx);
+        assert.equal(s.successor(k + 1), k + 1 < nx ? nx : undefined);
+        assert.equal(s.predecessor(k), i > 0 ? k - 257 : undefined);
+        assert.equal(s.predecessor(k + 1), k);
+    }
+    assert.equal(s.min(), 0);
+    assert.equal(s.max(), U - 1);
+    assert.equal(s.successor(U - 1), undefined);
+    assert.equal(s.predecessor(U - 1), 255 * 257);
+    // -0 on the query side aliases 0
+    assert.equal(Object.is(s.min(), 0), true);
+    assert.equal(s.successor(-0), 257);
+    assert.equal(s.predecessor(-0), undefined);
+}
+
+const VEB_EDGES = startYft(vebEdgeBody, 'veb-edges');
+const VEB_LIVE = startYft(vebLiveBody, 'veb-live');
+
+test('A6 vEBTree bit 0 and bit 31 of a leaf word are correct for min, max, successor, predecessor (+ controls)', T, async () => {
+    await expectFn(VEB_EDGES);
+});
+
+test('A6 vEBTree: a bad key leaves the instance live and valid keys still work (internal clusters)', T, async () => {
+    await expectFn(VEB_LIVE);
+});
+
+// --- vEBTree must-fail controls: the SAME checkers must flag each wrong answer ------
+
+test('control: vebRowErr flags every wrong answer kind on fakes subclassing vEBTree', T, () => {
+    const fakes = rowFakes(vEBTree);
+    assert.equal(fakes.length, 9);
+    for (const F of fakes) {
+        for (const [U, F2] of VEB_ROWS.slice(2, 4)) {
+            assert.ok(vebRowErr(F, U, F2).errs.length > 0, F.name + ' was not flagged at U=' + U);
+        }
+    }
+    const [, , , , , , FakeMutates, FakeNoPrefix, FakeGrows] = fakes;
+    assert.ok(vebRowErr(FakeMutates, 257, 24).errs.some((e) => /layout changed/.test(e)));
+    assert.ok(vebRowErr(FakeMutates, 257, 24).errs.some((e) => /size changed/.test(e)));
+    assert.ok(vebRowErr(FakeNoPrefix, 257, 24).errs.some((e) => /add threw wrong error/.test(e)));
+    assert.ok(vebRowErr(FakeGrows, 257, 24).errs.some((e) => /byteLength changed/.test(e)));
+    // a bad key that scribbles one `_t` word (size and byteLength intact) is flagged
+    class FakeScribble extends vEBTree { has(k) { if (k === null) this._t[this._t.length - 1] ^= 0x80000000; return super.has(k); } }
+    assert.deepEqual(vebRowErr(FakeScribble, 65537, 48).errs, ['U=65537 layout changed']);
+    // a guard that lets a bad add through is flagged twice (no throw, then the layout)
+    class FakeAddsFraction extends vEBTree { add(k) { return k === 1.5 ? super.add(1) : super.add(k); } }
+    const r = vebRowErr(FakeAddsFraction, 257, 24).errs;
+    assert.ok(r.some((e) => /add did not throw/.test(e)) && r.some((e) => /layout changed/.test(e)), JSON.stringify(r));
+});
+
+test('control: vebCtorErr flags lax, misnamed, misclassed and misreporting fakes', T, () => {
+    class VFakeLax { constructor(u) { this.universe = u; this.bits = 0; this.byteLength = 0; this.size = 0; } }
+    assert.equal(vebCtorErr(VFakeLax, VEB_REJECT, []).length, VEB_REJECT.length);
+    assert.equal(vebCtorErr(VFakeLax, [], VEB_ACCEPT).length, 2 * VEB_ACCEPT.length); // bits + byteLength
+    class VFakeName extends vEBTree {
+        constructor(u) { try { super(u); } catch (e) { throw new RangeError(e.message.replace('vEBTree', 'YFastTrie')); } }
+    }
+    assert.equal(vebCtorErr(VFakeName, VEB_REJECT, []).length, VEB_REJECT.length);
+    class VFakeType extends vEBTree { constructor(u) { if (typeof u !== 'number') throw new TypeError('u'); super(u); } }
+    assert.equal(vebCtorErr(VFakeType, VEB_REJECT, []).length, 6); // '16', 16n, null, undefined, new Number(16), Symbol
+    class VFakeSuffix extends vEBTree {
+        constructor(u) { try { super(u); } catch (e) { throw new RangeError(e.message.replace(/got object$/, 'got null')); } }
+    }
+    assert.deepEqual(vebCtorErr(VFakeSuffix, VEB_REJECT, []), [
+        'universe null message: [lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got null',
+        'universe 16 message: [lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got null',
+    ]);
+    class VFakeOne extends vEBTree { constructor(u) { super(u === 1 ? 2 : u); } }
+    assert.deepEqual(vebCtorErr(VFakeOne, VEB_REJECT, []), ['universe 1 accepted']);
+    class VFakeBits extends vEBTree { get bits() { return 0; } }
+    class VFakeBytes extends vEBTree { get byteLength() { return super.byteLength + 4; } }
+    class VFakeNonEmpty extends vEBTree { get size() { return 1; } }
+    assert.deepEqual(vebCtorErr(VFakeBits, [], [[257, 9, 76]]), ['bits 257 -> 0']);
+    assert.deepEqual(vebCtorErr(VFakeBytes, [], [[257, 9, 76]]), ['byteLength 257 -> 80']);
+    assert.deepEqual(vebCtorErr(VFakeNonEmpty, [], [[257, 9, 76]]), ['size 257 not 0']);
 });

@@ -186,13 +186,15 @@ test('control: a duplicated marker FAILS closed', () => {
 });
 
 test('pass control: an appended vEBTree section keeps every pin', () => {
-    const appended = LIVE + '\n// --- vEBTree (0.5.0) ---\nexport class vEBTree {}\n';
+    // the pre-vEB cut of LIVE (LIVE itself once the real vEB section exists)
+    const PRE = count(LIVE, VEB) === 1 ? LIVE.slice(0, LIVE.indexOf(VEB)) : LIVE;
+    const appended = PRE + '\n// --- vEBTree (0.5.0) ---\nexport class vEBTree {}\n';
     const res = checkAll(appended);
     for (const p of PIN.regions) {
         assert.equal(res[p.name].reason, '', p.name);
         assert.equal(res[p.name].ok, true, p.name);
     }
     // without the vEB marker the same appended code would grow the prefix
-    const unmarked = LIVE + '\nexport class vEBTree {}\n';
+    const unmarked = PRE + '\nexport class vEBTree {}\n';
     assert.match(checkAll(unmarked).prefix.reason, /^bytes /);
 });

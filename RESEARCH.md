@@ -1155,6 +1155,18 @@ Checked here; what holds is settled, what does not is marked.
 - New, not in 14.x: the ROOT's cluster count is trimmed to ceil(U / 2^lo) (C-13; cold, only shrinks
   non-power-of-two U: U = 2^24 + 1 costs 2,115,708 B, not ~4.2 MB).
 
+### 14.7 What the G1 engine showed (2026-11-02; fceb851 / 998bcbd, LogLogN.js 538a16dc)
+
+- Bytecode sizes of the flattened hot bodies (node v26.8.2): has 218, add 450, delete 1285, successor 850,
+  predecessor 838, min 114, max 133. delete / successor / predecessor exceed V8's default inlining bytecode
+  limit (460), so they are EXPECTED to stay out-of-line calls; has / add sit under it. Expected, not traced:
+  the G2 VebBytecode / inlining-tool lane is the gate.
+- With unbounded leaf scans, a corrupt layout HANGS rather than misanswers (7 of the B2 reviewer's 20 mutants).
+  Mutation gates over the engine therefore run in a Worker with a kill timer (PLAN C-19).
+- Absent deletes: the engine stops at an internal node whose header proves the key absent; the literal C-12
+  reading descended. Maintainer ruling F-B5-1 "Stop at header" kept the engine; the count gate models the
+  stop (PLAN C-18 (6)).
+
 ## 15. Cross-primitive intake (2026-11-01) -- FastBit32 / FastBit1024 / lite-o1 BitSet / StratifiedBitset
 
 Source: a maintainer-supplied outside review comparing `LogLogN.js`, lite-fastbit32 `FastBit32.js` and
@@ -1230,6 +1242,55 @@ e0d3191, `../LiteO1/O1.js` at 1.11.3, `../LiteFastBit32/FastBit32.js`). Leads, n
   store its own min). `clearRange` / `addRange`: a feature only when a consumer asks.
 - Already covered: per-width leaves (14.5 / 14.6), the bitmap y-fast bucket (H2, 14.4), the flat
   offset layout (StratifiedBitset is already one Uint32Array with a level-offset table, LogLogN.js:129-139).
+
+### 15.5 Three sparse-bitset patterns (2026-11-02; maintainer-supplied overview, checked here)
+
+The overview names three patterns: paged / blocked, hierarchical sparse, and offset + bit-block lists.
+
+Space model: U = 2^32 with 1,024-bit pages (2^22 page ids). It counts page and table words only, without the
+directory. It is a COMPUTED model, not a measured implementation: `.handoff/research/sparse-shapes.mjs` and its
+2026-11-02 log.
+
+| shape | flat table (D-R5 as filed) | 2-level 11/11 table (+1 read) | fanout-32 hierarchy (+4 reads) | offset + word list |
+| --- | --- | --- | --- | --- |
+| 65,536 scattered pages | 24.25 MiB | 24.26 MiB | 15.26 MiB | 0.50 MiB |
+| 65,536 clustered pages | 24.25 MiB | 8.52 MiB | 8.52 MiB | 16.00 MiB |
+| 100 clusters | 24.25 MiB | 9.27 MiB | 8.55 MiB | 16.00 MiB |
+| 10 pages | 16.00 MiB | 0.09 MiB | 0.01 MiB | ~0 |
+
+- **Paged / blocked = D-R5 (a candidate, not approved).** Its open ship / oracle / drop decision waits for
+  RoaringSet's settle step.
+  - Corrections to the overview:
+    - space is NOT proportional to live pages with a flat table: the table alone is 16 MiB;
+    - has / add / delete are O(1), but successor is O(log_32 U) through the directory.
+  - The table shows the floor fix: a 2-level 11 / 11 page table costs one read and no space in the scattered
+    worst case, and removes the floor when pages are few or clustered. It supersedes the `Uint16Array` option
+    as D-R5's recommended floor fix.
+  - "A small vEB as the directory" buys nothing: vEBTree is ~0.973x StratifiedBitset's space at 2^22 (14.6),
+    and StratifiedBitset has shipped.
+- **Hierarchical sparse bitsets: a note, not a member.**
+  - It is the D-R5 floor fix applied at every level. Against the 2-level table it saves < 1 MiB clustered
+    and ~9 MiB scattered, for 6 reads per op instead of 3.
+  - RoaringSet with D-R1 (b) + D-R2 is already a two-level hierarchical sparse bitset with adaptive leaves
+    (12.8 row F).
+  - "Fast set algebra by skipping empty subtrees" carries 15.2's caveat: pruning skips only where one side
+    is empty, so evens vs odds is still output-insensitive.
+  - `hi_sparse_bitset` (Rust; docs.rs, checked 2026-11-02) is a FIXED three-level tree whose AND-ed level
+    masks prune empty branches. That depth caps the index (16,777,216 with 256-bit blocks), so it does not
+    reach 2^32.
+  - Java `SparseBitSet` (com.zaxxer; Haddon's design, preserved by Brett Wooldridge) is real, but its
+    "three levels" are UNVERIFIED: its README says only "virtual-memory-like".
+- **Offset + bit-block lists: dropped.**
+  - The overview describes Mercury's `sparse_bitset` correctly (mercurylang.org, checked 2026-11-02): a
+    sorted linked list of (offset, bits) cells, a cell deleted when its bits reach 0, plus "fat" / "fatter"
+    variants with more bit words per cell.
+  - In a typed array, add / delete shift entries: O(#blocks), n-dependent, outside this family's
+    bounded-in-U theme.
+  - Its one win, scattered sparse keys (0.50 vs 24 MiB), is RoaringSet's array container (~2 B / key,
+    bounded search).
+  - Clustered, it is ~2x the pages (16 vs 8.5 MiB).
+  - Static read-only lists already have lite-o1 EliasFano.
+  - At most a boundary line in RoaringSet's docs.
 
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
 candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference

@@ -693,7 +693,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.5.0
-status: in progress (2026-11-02: L-06 SETTLED, G1 groundwork landed -- ADR 0009 PROPOSED, recursive reference + vectors, prefix parity pin; engine rung next)
+status: in progress (2026-11-03: L-06 SETTLED; G1 complete -- fceb851 engine rungs 1 + 2, 998bcbd gates (units, U = 2^32 Worker, fuzz, exact count gate); G2 torture + G4a docs planned (PLAN-vebtree.md C-20 / C-21); G3 witness needs a quiet window; no release before G2 lands. Maintainer ruling 2026-11-02 F-B5-1 "Stop at header": an absent delete stops at an internal header that proves absence, PLAN C-18 (6))
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -1134,6 +1134,10 @@ which fits this family's bounded-in-U theme (section 2).
   not sparse ones. Decide: (a) ship it as R1's core and add array / run containers in R1b, (b) keep it
   as R1's devDep-free oracle and baseline only, or (c) drop it. Page-table floor options: a
   `Uint16Array` table when maxPages < 2^16, or a two-level table with a second capacity knob.
+  **Recommended (2026-11-02, RESEARCH.md 15.5):** the two-level 11 / 11 page table. It costs one read,
+  with no space cost in the scattered worst case (24.26 vs 24.25 MiB at 65,536 pages, computed). It cuts
+  the floor from 16 MiB to 0.09 MiB at 10 pages and to 8.5 MiB clustered. The fully hierarchical form
+  (fanout 32, 6 reads per op) and offset + word lists were checked and are not candidates.
 - **StratifiedBitset counting forms (candidate, 2026-11-01).** `intersects(other)` /
   `intersectionSize(other)` by a top-down summary-pruned walk, materializing nothing (the R2 API
   rule). Honest bound: worst case O(U / 32) (evens vs odds read every word); fast only when the

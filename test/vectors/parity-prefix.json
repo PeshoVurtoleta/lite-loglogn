@@ -1,0 +1,27 @@
+{
+  "file": "LogLogN.js",
+  "cut": "25a7ad1",
+  "regions": [
+    {
+      "name": "prefix",
+      "from": "// --- StratifiedBitset (0.2.0)",
+      "to": "\n// --- vEBTree (0.5.0)",
+      "bytes": 50269,
+      "sha256": "545e83757e251a828138b9029bd8e69cf06d025eb848756507c251350e2e2e3c"
+    },
+    {
+      "name": "XFastTrie",
+      "from": "// --- XFastTrie (0.3.0)",
+      "to": "\n// --- ",
+      "bytes": 24464,
+      "sha256": "11452b21f6f56835244f9a05a815650d5de844e099b5d1d6c873f5b2e8a40f25"
+    },
+    {
+      "name": "YFastTrie",
+      "from": "// --- YFastTrie (0.4.0)",
+      "to": "\n// --- ",
+      "bytes": 17514,
+      "sha256": "f89274956acb44fe9dd60719bce4728a4c2ed930e818cb12c03e058b6d8ccd28"
+    }
+  ]
+}

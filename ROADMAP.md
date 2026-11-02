@@ -601,7 +601,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.4.0
-status: shipped (0.4.0, 2026-10-25; ADR 0008 + ADR 0007 Amendment 1 accepted)
+status: shipped (0.4.0, 2026-10-25; ADR 0008 + ADR 0007 Amendment 1 accepted); 0.4.1 patch 2026-11-01 (comments, Y1b borrow lane, DB-2 test, inlining tool)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -644,7 +644,9 @@ TASKS
   - Extend witness.mjs: n-sweep + the U-sweep fit AND **print MAX single-op time** with
     attribution so a split/merge or reseed spike shows as a tall bar (honesty hook b); REPORTED.
   - Extend torture (split/merge must not allocate per steady-state op; AS BUILT no Y torture lane
-    fires a borrow or an inner reseed -- those are COUNT-gated in YftCount, not allocation-gated),
+    fires a borrow or an inner reseed -- those are COUNT-gated in YftCount, not allocation-gated;
+    0.4.1 adds torture lane Y1b, which fires borrows and ALLOCATION-gates them, must-fail 20; inner
+    reseeds stay count-gated here and allocation-gated in XFastTrie's X2 lane),
     perf, SPACE (assert
     O(n), the space fix).
   - Docs: member section stating queries O(log log U), updates O(log log U) probes + O(w)

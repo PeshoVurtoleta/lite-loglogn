@@ -218,7 +218,7 @@ most load-bearing decision in the document.
 | **L-03** | **S1** | **LevelTable / NodePool ownership.** Re-export lite-o1's `SlotPool`, depend on lite-arena, share lite-logn's `NodePool`, or ship a separate open-addressing integer table? The single most consequential cross-package call (shared with lite-logn). Reconcile, do NOT fork. | **Decide the DIRECTION in S0**; it BLOCKS XFastTrie and YFastTrie. StratifiedBitset and (flattened) vEB do NOT need it, so the concrete substrate can be finalized by the XFastTrie session at the latest -- but the direction is set before member 1 so the trie members do not fork an allocator. | **S0** (direction) / **XFastTrie** (concrete). **SETTLED 2026-10-22 (concrete):** an in-file cuckoo LevelTable, fixed capacity, design parity with lite-o1 CuckooMap (no import, no fork). decisions/0007 + 0003 Amendment 1 record it with the 0.3.0 docs batch (plan E16). |
 | **L-04** | **S1** | **The witness fit thresholds + which sweep is the HARD gate.** What `R^2` floor + slope band make a fair, non-flaky gate over a SHORT ~5-point bit-width sweep (w = 16..32)? Is the U-sweep double-log fit the hard gate, or the n-sweep crossover vs the O(log n) foil? The short axis is noisier than lite-logn's n-sweep -- the real risk. | Settle empirically in StratifiedBitset (the cleanest witness); expect the siblings' steady-window / median-of-9 / do-not-widen-the-floor discipline (lite-o1 ADR-0004 amendment). **SETTLED 2026-10-22 (decisions/0004 Amendment 1, 0006): exact word COUNTS are the hard gate (`npm test`); the n-sweep crossover is the release-time witness; both U-sweep fits are REPORTED, none gated.** Record in an ADR; it becomes the FAMILY gate. | **StratifiedBitset** (using S0 direction) |
 | **L-05** | **S2** | **The 32-bit ceiling / wider-key policy.** JS bitwise ops are 32-bit, so the natural universe is <= 2^32. Is a 53-bit / 64-bit `SegmentedU` variant a Tier-1 split-word concern or a Tier-2 labeled variant? | **Lean: 32-bit default, `SegmentedU` as Tier 2** (a labeled high-word + low-word split, or a cold BigInt path -- never a silent BigInt hot path). | **S0** (policy) / **SegmentedU** (build) |
-| **L-06** | **S2** | **vEB flattening strategy.** The textbook recursive-object vEB allocates per level. Which flattening -- a vEB-layout typed array, or an iterative high/low-word split -- keeps worst-case O(log log U) AND 0 B/op AND stays readable enough to teach? | Settle in the vEBTree session; prove the chosen flattening against the recursive reference for correctness and against the torture gate for 0 B/op. Design reference (added 2026-10-22): the Dementiev et al. ALENEX 2004 Stree, a non-recursive 3-level 32-bit tree with summary pyramids (RESEARCH.md 13.4 row 1). | **vEBTree** |
+| **L-06** | **S2** | **vEB flattening strategy.** The textbook recursive-object vEB allocates per level. Which flattening -- a vEB-layout typed array, or an iterative high/low-word split -- keeps worst-case O(log log U) AND 0 B/op AND stays readable enough to teach? | **SETTLED 2026-11-02** (ADR 0009, PLAN-vebtree CURRENT; RESEARCH 14.6). Settle in the vEBTree session; prove the chosen flattening against the recursive reference for correctness and against the torture gate for 0 B/op. Design reference (added 2026-10-22): the Dementiev et al. ALENEX 2004 Stree, a non-recursive 3-level 32-bit tree with summary pyramids (RESEARCH.md 13.4 row 1). | **vEBTree** |
 | **L-07** | **S3** | **The `clz32` word-primitive boundary vs lite-fastbit32.** The `clz32` / `ctz` / next-set-bit ops the stratified bitset (and every member) leans on are lite-fastbit32's territory. | A tiny shared internal here, a dev-only cross-check dependency on lite-fastbit32, or a cross-linked recipe -- never a drifting reimplementation. Decide the direction in S0; keep it a few lines if internal. | **S0** |
 | **L-08** | **S3** | **Scaffolding hygiene.** `git init`; the six-file `files[]`; `npm pack --dry-run` excludes test/benchmark/decisions/demo; three-place VERSION sync from the first release; the standing gate stack wired. | Stand it all up in S0 / the StratifiedBitset session per section 3; assert the pack check in `/release`. | **S0** / **StratifiedBitset** |
 
@@ -693,7 +693,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.5.0
-status: planned
+status: in progress (2026-11-02: L-06 SETTLED, G1 groundwork landed -- ADR 0009 PROPOSED, recursive reference + vectors, prefix parity pin; engine rung next)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -715,7 +715,10 @@ PURPOSE
   It does NOT need the LevelTable substrate, so it can run in parallel with the trie line.
 
 TASKS
-  - **Settle L-06 (flattening strategy) with the user:** a vEB-layout typed array vs an
+  - **L-06 SETTLED 2026-11-02** (`.handoff/PLAN-vebtree.md` CURRENT, decisions/0009-veb-flattening.md):
+    one flat vEB-layout Uint32Array, leaf cutoff w <= 8, the per-width split table, NO per-leaf summary
+    word (maintainer reversed it on the space table), EMPTY = min > max, U <= 2^32, root trimmed to
+    ceil(U / 2^lo) clusters (C-13). History of the question: a vEB-layout typed array vs an
     iterative high/low-word split. Read RESEARCH.md section 14 first (2026-11-01 intake: a
     fuzz-verified one-Int32Array sketch, per-width bitmap-leaf cutoff, measured memory vs
     StratifiedBitset, the expected loss row) and 14.5 (settled 2026-11-01: leaf cutoff w <= 8 plus a
@@ -1135,6 +1138,12 @@ which fits this family's bounded-in-U theme (section 2).
   `intersectionSize(other)` by a top-down summary-pruned walk, materializing nothing (the R2 API
   rule). Honest bound: worst case O(U / 32) (evens vs odds read every word); fast only when the
   summaries are disjoint high up. Unscheduled; pairs with R2.
+- **S-H1 StratifiedBitset [min, max] headers (candidate, 2026-11-02, RESEARCH.md 15.4).** min / max in 1
+  read (from 4 - 7), out-of-range successor / predecessor in 1 read; two compares per add, a bounded
+  re-search when the min or max is deleted. A StratifiedBitset minor release, decided only AFTER the
+  vEBTree count gate (B5) has measured the wins it would copy; never inside 0.5.0. Gates: the count
+  test shows the read drop; a must-fail control leaves the header stale after deleting the min.
+  Related, feature-on-request only: `clearRange` / `addRange` (no allocation, no path stack needed).
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

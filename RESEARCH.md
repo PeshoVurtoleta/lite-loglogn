@@ -1143,6 +1143,18 @@ Checked here; what holds is settled, what does not is marked.
   containers (array / bitmap / run). The reviewer's "Linux has zero vEB trees" and "IBM DB2 BLU" lines
   are not checked here.
 
+### 14.6 As settled for 0.5.0 (2026-11-02; ADR 0009, `.handoff/PLAN-vebtree.md` CURRENT)
+
+- The maintainer ruled: leaf cutoff w <= 8 (no whole-tree leaf to w = 10); Uint32Array(s); U <= 2^32;
+  NO per-leaf summary word. The last was first "yes", then reversed on the 14.5 space table; the planner's
+  recomputation with the split table confirms the cost: 1.094 - 1.105x StratifiedBitset at w >= 12, 1.235x
+  at w = 9.
+- The sketch (14.1) is superseded where the spec differs: Int32Array -> Uint32Array; the -1 empty marker
+  -> EMPTY = min > max (stored [0xFFFFFFFF, 0]; 0xFFFFFFFF is a real key at U = 2^32); U <= 2^24 ->
+  U <= 2^32; the 4-frame `_path` -> <= 2 frames (depth <= 2). It stays an oracle only.
+- New, not in 14.x: the ROOT's cluster count is trimmed to ceil(U / 2^lo) (C-13; cold, only shrinks
+  non-power-of-two U: U = 2^24 + 1 costs 2,115,708 B, not ~4.2 MB).
+
 ## 15. Cross-primitive intake (2026-11-01) -- FastBit32 / FastBit1024 / lite-o1 BitSet / StratifiedBitset
 
 Source: a maintainer-supplied outside review comparing `LogLogN.js`, lite-fastbit32 `FastBit32.js` and
@@ -1199,6 +1211,25 @@ e0d3191, `../LiteO1/O1.js` at 1.11.3, `../LiteFastBit32/FastBit32.js`). Leads, n
 | StratifiedBitset `intersects` / `intersectionSize` (pruned, materialize nothing) | lite-loglogn, beside RoaringSet R2's counting forms | candidate (ROADMAP section 10) |
 | PagedBitset (StratifiedBitset directory + pooled FastBit1024 pages) | lite-loglogn RoaringSet line: the bitmap-only, fixed-pool core | candidate D-R5 (ROADMAP section 10) |
 | BitSet <-> StratifiedBitset facade | -- | dropped |
+
+### 15.4 Second round (2026-11-02; checked by the vEBTree planner burst against the code and 14 / 15)
+
+- **[min, max] headers inside StratifiedBitset** (the reverse of Stree / H4): two header words in the
+  same typed array turn `min` / `max` from 4 - 7 reads (w = 16 .. 32, LogLogN.js:275-305) into 1, and
+  answer an out-of-range successor / predecessor in 1 read. Cost: two compares per add, plus a bounded
+  O(log_32 U) successor / predecessor search when the min or max itself is deleted. It erases most of
+  vEBTree's measured wins, so it is decided AFTER vEBTree's count gate (B5) measures them; a behaviour
+  change to a shipped member, so never in 0.5.0 (prior members stay byte-identical). Candidate S-H1.
+- **"O(1) page free" in a paged design: wrong bound.** Freeing an emptied page still clears summary bits
+  up the levels until a word stays non-zero: O(log_32 U), as StratifiedBitset's delete already does in
+  one pass. What a paged design needs is a live-bit counter per page (FastBit1024's `_n`), so an empty
+  page is found without a popcount. A detail of D-R5, not a separate idea.
+- **Range ops do not need a path stack.** StratifiedBitset can clear / set a range with no allocation:
+  mask the level-0 words, then recompute the touched summary words level by level. In vEBTree a range
+  delete stays O(k log log U), one key at a time (its path stack exists only because a cluster does not
+  store its own min). `clearRange` / `addRange`: a feature only when a consumer asks.
+- Already covered: per-width leaves (14.5 / 14.6), the bitmap y-fast bucket (H2, 14.4), the flat
+  offset layout (StratifiedBitset is already one Uint32Array with a level-offset table, LogLogN.js:129-139).
 
 *This document consolidates the design identity, the doubly-logarithmic-growth-witness anchor, the full
 candidate roster with its explicit boundary, the space-honesty hook that defines the niche, reference

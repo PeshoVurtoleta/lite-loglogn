@@ -934,6 +934,8 @@ byte-identical. Order and space bound stated up front on each:
   design, never imported; eligibility needs a second bitset ANDed at pick time) is a small-U consumer
   of a FastBit1024 / StratifiedBitset tier -- and it needs `rank` / `select`, which StratifiedBitset
   does not ship (only RoaringSet R2 plans them). It is NOT a RoaringSet consumer (universes too small).
+  If rank / select is ever settled, in-word select is the one place a lookup table pays (a byte popcount
+  + a 256 x 8 select table, ~2 KB; RESEARCH.md 14.7). vEBTree gains nothing from LUTs.
   (b) lite-pick ConsistentHash uses a Maglev table (O(1)); a Karger ring would be a successor query
   over the 32-bit hash space -- a possible REPORTED recipe / foil ("Maglev vs ring successor:
   XFastTrie / sorted array"). Source: LitePick/.handoff/XPKG-loglogn.md.

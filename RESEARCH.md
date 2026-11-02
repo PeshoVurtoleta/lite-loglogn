@@ -1166,6 +1166,18 @@ Checked here; what holds is settled, what does not is marked.
 - Absent deletes: the engine stops at an internal node whose header proves the key absent; the literal C-12
   reading descended. Maintainer ruling F-B5-1 "Stop at header" kept the engine; the count gate models the
   stop (PLAN C-18 (6)).
+- Lookup tables (2026-11-03, maintainer question): none helps vEBTree.
+  - In-word scans are already `31 - Math.clz32(v & -v)` / `31 - Math.clz32(v)`: one clz plus a few ALU
+    ops, no memory read. A byte LUT adds a loop plus bounds-checked table reads, which also raise the
+    counts VebCount pins.
+  - Leaves are up to 8 words (w <= 8), not one 32 / 64-bit word. Their real cost is finding the next
+    non-empty word, which a byte table cannot skip; only the rejected per-leaf summary word could (C-7).
+  - Successor inside one summary word is a mask plus `clz32`.
+  - The per-width table already exists: `_g` (Int32Array(33)). The split `w > 24 ? 16 : 8` is one compare.
+  - vEBTree has no rank / select (size is a counter).
+  - The one LUT that pays is in-word select (byte popcount + a 256 x 8 table), for a future rank / select:
+    see the lite-pick consumer lead (ROADMAP section 7).
+  - Argued from the code and instruction counts; not timed.
 
 ## 15. Cross-primitive intake (2026-11-01) -- FastBit32 / FastBit1024 / lite-o1 BitSet / StratifiedBitset
 

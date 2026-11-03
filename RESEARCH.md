@@ -1178,6 +1178,73 @@ Checked here; what holds is settled, what does not is marked.
   - The one LUT that pays is in-word select (byte popcount + a 256 x 8 table), for a future rank / select:
     see the lite-pick consumer lead (ROADMAP section 7).
   - Argued from the code and instruction counts; not timed.
+- Keys >= 2^31 (G2 torture, 2026-11-03, PRELIMINARY host, 1 run each; .handoff/evidence/veb-g2-b2-torture-*):
+  - STORED keys >= 2^31 add 0 B per 65,536 ops while every argument / return stays < 2^30 (V4, U = 2^31 + 1,
+    16 / 16 windows): the raw uint32 header slots (C-11) do not box.
+  - A RETURNED key >= 2^31 boxes: 16 B per call (CV7: 1,048,584 B / 65,536 calls). Cause TRACED on V8 14.6
+    (Node v26.8.2, default flags, untimed, 4 runs): successor / predecessor (850 / 838 B) exceed Maglev's 100 B
+    and TurboFan's 460 B limits and every traced decision declines them; TurboFan also declines delete; has /
+    add inline into a hot caller (.handoff/evidence/veb-g4bi-inlining-trace-2026-11-03.log). Other V8s: not
+    claimed.
+  - The siblings' boxing caveat applies unchanged.
+
+### 14.8 vEBTree vs StratifiedBitset: word reads per op (2026-11-03, sweep)
+
+Method:
+- Exact counts with the VebCount / Count technique: a Proxy counts every numeric-key read on vEB `_t` and SB `_bits`.
+  vEB's `_g` reads (1 - 4 per op) are NOT added to its column, so the comparison is generous to vEB.
+- Engine code of 998bcbd (538a16dc; 53cba8a / f8915227 differs only in a header comment). Every answer is
+  cross-checked vEB == SB == a `Set` model (0 mismatches).
+- TYPICAL: random sets n = 64 / 4096 / min(65536, U / 4), 20,000 random queries per op.
+- ADVERSARIAL: a hill-climb over sets (|S| <= 48) and the query, 4 objectives (max vEB, max SB, max and min of the
+  gap), 2 seeds at w = 9 .. 28, 1 seed at w = 32. The maxima are LOWER bounds on the true worst case.
+- DETERMINISTIC counts, not timings. Script and logs: `.handoff/research/veb-sb-sweep.mjs`,
+  `veb-sb-sweep-{a,b,w32,w32-typical}-2026-11-03.log`.
+
+Worst found, vEB `_t` reads / SB reads (each column's maximum is searched separately):
+
+| w | has | add | delete | successor | predecessor | min / max |
+| --- | --- | --- | --- | --- | --- | --- |
+| 9 | 3 / 1 | 11 / 2 | 21 / 2 | 19 / 3 | 17 / 3 | 1 / 2 |
+| 12 | 3 / 1 | 11 / 3 | 21 / 3 | 19 / 5 | 19 / 5 | 1 / 3 |
+| 16 | 3 / 1 | 11 / 4 | 35 / 4 | 26 / 7 | 22 / 7 | 1 / 4 |
+| 20 | 3 / 1 | 21 / 4 | 39 / 4 | 37 / 7 | 37 / 7 | 1 / 4 |
+| 24 | 3 / 1 | 21 / 5 | 54 / 5 | 44 / 9 | 40 / 9 | 1 / 5 |
+| 28 | 5 / 1 | 15 / 6 | 39 / 6 | 29 / 11 | 29 / 11 | 1 / 6 |
+| 32 | 5 / 1 | 15 / 7 | 41 / 7 | 29 / 13 | 29 / 13 | 1 / 7 |
+
+Typical means, vEB / SB (`has` is always 3 - 5 vs 1; min / max always 1 vs SB's level count):
+
+| w | add, n = 64 | successor, n = 64 | add, n = 4096 | successor, n = 4096 |
+| --- | --- | --- | --- | --- |
+| 16 | 9.99 / 2.35 | 10.35 / 4.15 | 3.14 / 1.13 | 3.53 / 1.81 |
+| 20 | 14.77 / 3.06 | 14.96 / 5.67 | 8.52 / 1.90 | 9.92 / 3.32 |
+| 24 | 19.98 / 3.88 | 21.98 / 7.42 | 12.75 / 2.77 | 14.06 / 4.94 |
+| 28 | 8.85 / 4.77 | 8.83 / 8.86 | 10.79 / 3.60 | 7.20 / 6.61 |
+| 32 | 13.99 / 5.60 | 14.28 / 10.49 | 7.52 / 4.33 | 7.43 / 8.20 |
+
+What it shows:
+- vEB reads fewer words only where a header answers:
+  - min / max: 1 vs SB's 2 - 7;
+  - successor / predecessor decided at a header (x beyond the max or below the min): 1 vs up to 13 at w = 32;
+  - typical successor / predecessor at w >= 28 on sparse sets: rough parity (vEB 7.43 vs 8.20 at w = 32, n = 4096).
+- Everywhere else SB reads fewer: `has` 1 vs 3 - 5 always; worst add / delete / successor 2 - 10x fewer.
+- Cause: leaf clusters (w <= 8, up to 8 words) carry no header and no summary (C-7).
+  - add's emptiness test, delete's emptied test and every successor / predecessor leaf visit scan up to 8 words.
+  - At w <= 24 (lo = 8), a miss routes through two such leaves.
+  - At w >= 25 (lo = 16), clusters are internal nodes with headers, which is why w = 28 / 32 cost less than w = 24.
+- S-H1 targets exactly vEB's wins. With [min, max] headers, SB would answer min / max and out-of-range
+  successor / predecessor in 1 read. It would then read no more than vEB on every op class found here (EXPECTED;
+  S-H1 is not built).
+- Counts are not time. vEB keeps every op inside one array at depth <= 2, while SB's top levels stay cache-hot. G3
+  (timing, QUIET window) decides what users feel. These counts say what to time: sparse w = 16 .. 24 add / delete /
+  successor, and w = 28 / 32 successor.
+- Maintainer decisions this raises (none taken here):
+  - (1) ship 0.5.0 as built, positioned honestly (WIN / LOSE wording, no counts, per C-4);
+  - (2) reopen C-7 before the release: a per-leaf summary word (1.094 - 1.105x SB space at w >= 12) is EXPECTED to cap
+    a leaf visit at about 2 - 3 reads (needs a vebCost re-model, then an engine change: planner + coder + review;
+    HOLD-RELEASE already holds 0.5.0);
+  - (3) S-H1's priority, now that its target is measured.
 
 ## 15. Cross-primitive intake (2026-11-01) -- FastBit32 / FastBit1024 / lite-o1 BitSet / StratifiedBitset
 

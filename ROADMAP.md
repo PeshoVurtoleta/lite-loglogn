@@ -693,7 +693,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.5.0
-status: in progress (2026-11-03: L-06 SETTLED; G1 complete -- fceb851 engine rungs 1 + 2, 998bcbd gates (units, U = 2^32 Worker, fuzz, exact count gate); G2 torture + G4a docs planned (PLAN-vebtree.md C-20 / C-21); G3 witness needs a quiet window; no release before G2 lands. Maintainer ruling 2026-11-02 F-B5-1 "Stop at header": an absent delete stops at an internal header that proves absence, PLAN C-18 (6))
+status: in progress (2026-11-03: L-06 SETTLED; G1 complete -- fceb851 engine rungs 1 + 2, 998bcbd gates (units, U = 2^32 Worker, fuzz, exact count gate); G2 complete -- 48644f9: torture V1-V5 + 28 controls, VebSpace, VebBytecode pins (V8 14.6, fail closed on any other V8: maintainer 2026-11-03); G4a docs landed -- ad238cf: no counts per C-4 (confirmed 2026-11-03), G4b-i landed (e8eeabb: vEB 0 B/op in README / llms / .d.ts / GUIDE from the G2 QUIET verify log; successor / predecessor never inlined on V8 14.6, traced in Maglev and TurboFan 2026-11-03); header w defined (53cba8a). Read-count sweep vs StratifiedBitset: RESEARCH.md 14.8 (vEB reads fewer words only at min / max and header-decided successor / predecessor; maintainer decision waiting on C-7 / S-H1, informed by G3). Next: G3 planner, G3 in a QUIET window, G4b-ii, release 0.5.0 (HOLD-RELEASE in NEXT.md until then). Maintainer ruling 2026-11-02 F-B5-1 "Stop at header": an absent delete stops at an internal header that proves absence, PLAN C-18 (6))
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0

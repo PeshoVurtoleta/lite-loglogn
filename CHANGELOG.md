@@ -64,18 +64,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trimmed root, space table, the loss row), an API section, roster, design-decision
   and "what this is not" entries; llms.txt: a `### vEBTree` section.
 
-- **Torture lanes V1 / V2a / V2b / V3 / V4 / V5 + controls CV1-CV8 (vEBTree is
+- **Torture lanes V1 / V2a / V2b / V3 / V4 / V5 + controls CV1-CV9 (vEBTree is
   now ALLOCATION-gated).** V1 2,000,000 mixed ops at U = 2^16; V2a 1,000,000 ops
   at U = 2^28 (depth 2) and V2b a Worker run of 200,000 ops (abGrowth 0); V3
-  U = 2^25 + 3, delete-heavy, 3,493,888 ops with every delete refreshing a max
+  (in a Worker) U = 2^25 + 3, delete-heavy, 3,493,888 ops with every delete refreshing a max
   (refreshes == deletes); V4 U = 2^31 + 1 with the key 2^31 stored and every
   argument / return < 2^30; V5 a 4096-cycle leak census. Values: alloc 0 B/op,
   transient 0.000 B/op, gc major 0 / minor 0, abGrowth 0, 4096/4096 collected
   (QUIET verify run 2026-11-03, load1 1.63 vs baseline 2.21, Node v26.8.2; V1 /
   V2 / V5 identical in 3 logged runs, V3 / V4 / CV5-CV7 in 2; count gates, not
-  timing). The eight controls each flip (CV7: a successor returning a key >= 2^31
-  boxes 16 B per call, 1,048,584 B over 65,536 calls). The `| veb ...` GATE segment
-  is printed. Must-fail controls in all: 5 (T3) + 6 (X4) + 9 (Y4) + 8 (CV) = 28.
+  timing). The nine controls each flip (CV7: a successor returning a key >= 2^31
+  boxes 16 B per call, 1,048,584 B over 65,536 calls; CV9: one box every 8th op
+  on V3's step inside the V3 Worker). The `| veb ...` GATE segment
+  is printed. Must-fail controls in all: 5 (T3) + 6 (X4) + 9 (Y4) + 9 (CV) = 29.
 - **`test/VebSpace.test.js`.** The `byteLength` table and ratio table against a
   test-owned model, column identity and no-growth in a Worker, with must-fail
   controls (untrimmed root, per-leaf summary, a growing and an extra-column variant).
@@ -84,6 +85,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   successor / predecessor must exceed the 460 B inlining limit on any V8.
 - **`test/tools/inl-veb.mjs`.** The vEBTree driver for `npm run inline-budget-diff`
   (REPORTED, repo-only).
+- **`node test/witness.mjs --veb`, rung 1 (G3-B1): vEBTree vs StratifiedBitset
+  A/B.** 38 FULL scenarios in four families (C7, PAR, SH1, PRED; row names carry
+  op / width / workload / family, never a read count), each with a correctness
+  pre-pass (vEBTree == StratifiedBitset == a sorted-array oracle), ABBA K 15 /
+  need 13, an A/A twin, a double-work control, drift / load, COVERAGE and
+  abVerdict (2% effect floor). Four startup CONTROL lines; `--smoke` is the
+  untimed wiring run. Each width's pair is released before the next allocates, and
+  that is measured. Output is REPORTED (no CI); the exit code is never a release
+  gate. The existing lanes' smoke output is byte-identical.
+- **`--veb`, rung 2 (G3-B2): latency, fits, MAX tail, EVIDENCE.** Per-op latency
+  (DDSketch p50 / p99 / exact max) for successor / add / delete on both structures,
+  fits against log2(w) and w, and a MAX tail: fill then drain M 4096 at w 16 / 20 /
+  24 / 28, with a replay in a GC window (gc.major 0, arrayBuffers growth 0 B), and
+  vEBTree vs YFastTrie on the same keys timed per op. A RETENTION tracker over all
+  three instances, fail-closed COVERAGE floors, and an EVIDENCE block of verdict
+  lists per family. No fit, latency or MAX number carries a verdict, and no read
+  or word counts are printed.
+- **`test/perf/VEBTreePerf.test.mjs` (G3-B3): the vEBTree allocation gate.** 10
+  zero-alloc scenarios (every key, query and return < 2^30), three must-fail
+  teeth with attribution (a fresh-array loop, `GrowingVeb`, `SideBufferVeb`), a
+  flag pin and a coverage floor; it gates allocation COUNTS only, never a timing
+  threshold, and fails closed when vEBTree is not exported. `test/QaAudit.test.js`
+  now pins all four perf files (PerfGate, XFastTriePerf, YFastTriePerf and
+  VEBTreePerf); before, it pinned only PerfGate and XFastTriePerf.
+- **`test/VebWitness.test.js` and `npm run witness:veb` (G3-B4).** The smoke gate
+  for `--veb --smoke`: exit 0, the CONTROL lines, no FAIL, one `VEB SMOKE ok`,
+  the COVERAGE and RETENTION lines pinned, every bad flag beside `--veb` exits 1
+  with the flag named, and five mutants each exit 1 with exactly one named FAIL.
+  Counts and strings only, never a timing. The script runs the FULL lane
+  (REPORTED).
 
 ### Changed
 
@@ -98,6 +129,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`test/ParityPrefix.test.js` and `test/YftBytecode.test.js`.** Both assumed
   YFastTrie was the last member; both now cut at the vEBTree marker, and every
   control still fails as designed.
+- **Torture: V3 in a Worker, a warm baseline ceiling, CV9 (fillers 1-2).** V3 moves
+  into its own Worker with a kill timer, so a hanging engine mutant becomes a
+  TIMEOUT FAIL instead of a hung gate; its transient lane is the same text as
+  `torture.mjs`'s `nsLane` family (a parity check). A fresh Worker's first
+  empty-function lane is bimodal, so V3 discards one baseline and takes the
+  second, and the parent requires the baseline to sit under a ceiling taken from
+  the measured warm maximum. Control CV9 `v3WorkerBox` (one box every 8th op on V3's
+  own step) flips it. Tests only; `LogLogN.js` is untouched.
+- **`LogLogN.js` header (FILLER 13).** Comment only: the header defines w in the
+  vEBTree `byteLength` formula (w = ceil(log2 U) = 32 - clz32(U - 1)). With
+  comments stripped the code is token-identical.
+- **`witness --veb` drift input (G3-B5).** The per-round Page-Hinkley detector read
+  the lane's own scenario mix as host drift. abVerdict's drift input is now
+  `hostDriftRuns` on per-ABBA-run probe medians (`DRIFT_RUN_THRESHOLD` 0.75,
+  nominal), fail-closed; the per-round `host: drift` line stays, REPORTED. A fifth
+  startup control line, `CONTROL drift runs`, checks both detectors on
+  lane-shaped vectors. The other lanes keep the per-round detector; their smoke
+  output is identical.
 - **README, "Y0 floor" wording.** The Y0 split / merge coverage floor is at least
   1 split AND 1 merge in every `measureAllocs` batch; the earlier text read the
   observed per-batch minimum as if it were the floor.
@@ -109,8 +158,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   allocation table rows, the V1-V5 numbers above with provenance, and the boxing
   sentence: on V8 14.6 (Node v26.8.2) successor / predecessor are never inlined
   (traced in Maglev and TurboFan, bytecode 850 / 838 B over the 460 B limit), so a returned key >= 2^31
-  boxes 16 B per call; scoped to that V8. No timings and no per-operation word
-  counts are written in prose.
+  boxes 16 B per call; scoped to that V8. No per-operation word counts are written
+  in prose.
+- **README, llms.txt, GUIDE.md, `package.json`: the vEBTree VEB-WITNESS block and
+  shipped wording.** A REPORTED `npm run witness:veb` section with per-cell ratio
+  ranges over four QUIET runs (WIN / LOSE only where all four verdicts agree, six
+  cells mixed across runs) and the MAX tail with no verdict; the positioning
+  sentence (StratifiedBitset reads fewer words outside min / max and
+  header-decided successor / predecessor; vEBTree is the textbook O(log log U)
+  member); the `test:perf` and torture control counts; the `package.json`
+  description now states what vEBTree ships instead of "is planned"; `DocSync`
+  gains a description check with a must-fail fixture.
 - **README.md, GUIDE.md and llms.txt: planning ids removed** from headings and prose (C-n and witness-run
   labels); ADR numbers kept.
 

@@ -10,7 +10,7 @@ is my bound real, and what does it cost in space?"
 Every number below names its tier: DETERMINISTIC (gated in `npm test` /
 `npm run verify`) or REPORTED (a measurement with provenance, gates nothing).
 This package has no CI, so every timing claim (`npm run witness`,
-`witness:tier`, `witness:xft`, `witness:yft`) is REPORTED, not a gated STATISTICAL claim.
+`witness:tier`, `witness:xft`, `witness:yft`, `witness:veb`) is REPORTED, not a gated STATISTICAL claim.
 
 ---
 
@@ -99,7 +99,9 @@ START -- what do you need on a BOUNDED integer universe?
 - Speed (REPORTED, release-time, on a quiet host):
   `node ~/.claude/hooks/quiet-lock.mjs run "loglogn witness" -- npm run witness`
   (exit 0 pass / 1 fail / 2 inconclusive host); `npm run witness:w32` adds the
-  opt-in w = 32 (about 554 MB); `npm run witness:tier` is the peel A/B.
+  opt-in w = 32 (about 554 MB); `npm run witness:tier` is the peel A/B;
+  `npm run witness:xft`, `witness:yft` and `witness:veb` are the lanes of the
+  other three members (below).
 - Witness headline (REPORTED, 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1
   3.66 -> 3.71, 1 run): at w = 28 the member beat a local binary search at all 9
   n from 1e3 to 1e7 (15/0 each; member 11.74-17.84 ns/op, binary search
@@ -200,6 +202,9 @@ START -- what do you need on a BOUNDED integer universe?
   vEBTree LOSES to StratifiedBitset on `successor` and on `has` (it reads more
   words per op; the counts live in that test, not here). Its case is the bound
   shape (one fixed shallow path, O(1) min / max), not fewer reads at small U.
+  The honest sentence: StratifiedBitset reads fewer words outside min / max and
+  header-decided successor / predecessor; vEBTree is the textbook O(log log U)
+  member.
 - Non-integer or unbounded keys: see the family boundary.
 
 ### Pick it by hand
@@ -208,7 +213,19 @@ START -- what do you need on a BOUNDED integer universe?
   `VEBTree` incl. the U = 2^32 Worker).
 - Space (DETERMINISTIC): `new vEBTree(U).byteLength`, synced to the docs by
   `test/DocSync.test.js`.
-- Zero-GC (DETERMINISTIC): `npm run torture` lanes V1-V5.
+- Zero-GC (DETERMINISTIC): `npm run torture` lanes V1, V2a / V2b, V3 (Worker), V4,
+  V5, `npm run test:perf` (`VEBTreePerf`, allocation counts only).
+- Speed (REPORTED, release-time, quiet host): `npm run witness:veb` (vEBTree vs
+  StratifiedBitset A/B in 38 scenarios with the 2% effect floor; latency, fits and
+  the tail MAX against YFastTrie are REPORTED with no timing verdict; `--veb --smoke`
+  is the counts-only gate in `npm test`). Four QUIET runs on 2026-11-03 (Apple M4 Pro,
+  Node v26.8.2, `quiet-lock run --strict`), ratio = vEBTree / StratifiedBitset ns/op as
+  the min-max over the 4 runs, WIN / LOSE only where all 4 verdicts agree: SH1 band
+  keys at w 24 and 32, min / max / successor past max / predecessor below min, all
+  WIN (0.21 .. 0.76); every add+delete cell and every C7 cell (w 16 .. 24) LOSE
+  (add+delete 1.89 .. 6.77, C7 successor 1.94 .. 5.05); the PAR successor cells at
+  w 28 and 32, the w 32 PRED predecessor cell and SH1 successor past max at w 16 are
+  mixed across runs. The README has every cell.
 
 ---
 

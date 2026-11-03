@@ -3,7 +3,7 @@
  * vEBTree per row).
  *
  *  (a) STALE: no shipped doc may call vEBTree "planned" (README.md, llms.txt,
- *      GUIDE.md, LogLogN.d.ts).
+ *      GUIDE.md, LogLogN.d.ts, the package.json description).
  *  (b) SPACE: the vEBTree section of README.md and of llms.txt (the lines from
  *      `### vEBTree` to the next `## ` / `### ` heading) carries the exact
  *      byteLength of eight universes, comma-formatted. The expected numbers come
@@ -117,6 +117,14 @@ for (const f of ['README.md', 'llms.txt', 'GUIDE.md', 'LogLogN.d.ts']) {
     });
 }
 
+test('DocSync (a): package.json description never calls vEBTree planned, and names vEBTree', () => {
+    const desc = JSON.parse(read('package.json')).description;
+    assert.equal(typeof desc, 'string');
+    const hits = staleHits(desc);
+    assert.deepEqual(hits, [], 'package.json description is stale: ' + desc);
+    assert.match(desc, /vEBTree/);
+});
+
 // --- (b) space sync on the live files ------------------------------------------
 
 for (const f of ['README.md', 'llms.txt']) {
@@ -143,6 +151,18 @@ test('DocSync fixtures (a): a "vEBTree is planned" line flips the stale gate', (
     assert.equal(staleHits('planned: vEBTree').length, 1);
     assert.equal(staleHits('| Classic | vEBTree | O(log log U) worst-case | O(U) | planned 0.5.0 |').length, 1);
     assert.equal(staleHits('vEBTree ships in 0.5.0').length, 0);
+});
+
+test('DocSync fixtures (a): the pre-0.5.0 package.json description flips the stale gate', () => {
+    // inline copy of the pre-0.5.0 (unchanged since 9f87693) description tail; .handoff is gitignored, so it is never read here
+    const OLD = 'Zero-dependency, zero-GC sub-logarithmic bounded-integer predecessor/successor structures. ' +
+        '0 B/op, bounds gated by exact counts. vEBTree (worst-case O(log log U)) is planned. ' +
+        'Tree-shakeable named exports.';
+    assert.equal(staleHits(OLD).length, 1);
+    const NEW = OLD.replace('vEBTree (worst-case O(log log U)) is planned.',
+        'vEBTree: worst-case O(log log U) successor/predecessor, O(1) min/max, O(U) space.');
+    assert.notEqual(NEW, OLD);
+    assert.deepEqual(staleHits(NEW), []);
 });
 
 test('DocSync fixtures (b): one changed digit flips the space sync', () => {

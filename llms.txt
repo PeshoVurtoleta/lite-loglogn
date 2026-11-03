@@ -263,6 +263,21 @@ Controls: A/B control (YFastTrie x2) ratio 2.0061 must-lose, lost; A/A successor
 COVERAGE: n-sweep 9 (A/B 7), U-sweep 4, ABBA runs 20/20, probe rounds 300, latency runs 26/26, foil medians 53/53, tail runs 4/4, A/B scenarios 11, pre-pass queries 4586587, gc window blocks 16/16, gc tail windows 4/4.
 <!-- YFT-WITNESS-END -->
 
+vEBTree timing (REPORTED; four QUIET runs, 2026-11-03, from `node test/witness.mjs --veb`):
+<!-- VEB-WITNESS-BEGIN -->
+Runs: 2 at 2026-11-03T03:20Z (the build before G3-B5, exit 2 PENDING: per-round drift trip) and 2 at 04:25Z (the G3-B5 build, exit 0 PASS); the timed bodies are byte-identical, G3-B5 changed only the drift feed. Apple M4 Pro 12 cores, each run `quiet-lock run --strict`, QUIET (load1 at admission 2.23 / 2.42 / 2.91 / 2.84 vs baseline 2.21), Node v26.8.2 (V8 14.6), 4 runs, K 15 ABBA rounds, need 13, floor 0.02 (AB_EFFECT_FLOOR), D-host none (never a release gate; no host-free law). REPORTED; no CI; a measurement, not a law.
+Ratio = vEBTree ns/op over StratifiedBitset ns/op on the same keys (below 1 = vEBTree faster), quoted as min-max over the 4 runs. WIN / LOSE only where all 4 printed abVerdict verdicts agree; the 6 others are "mixed across runs". 38 cells: 32 agree, 6 mixed.
+Reading: StratifiedBitset reads fewer words outside min / max and header-decided successor / predecessor; vEBTree is the textbook O(log log U) member. The bound is proven by counts (test/VebCount.test.js), not by timing.
+Families: C7 (w 16-24, random + leaf-far; informs a future per-leaf-summary member), PAR (w 28 / 32), SH1 (w 16 / 24 / 32, band keys; informs a future S-H1 StratifiedBitset variant member), PRED (w 16 / 32).
+C7, all 18 cells LOSE: successor w16 1.94-3.36, w20 2.63-4.63, w24 2.56-5.05; add+delete w16 3.51-5.26, w20 5.00-6.65, w24 4.32-6.77.
+PAR: add+delete (n 4096) LOSE w28 2.71-4.15, w32 1.89-2.88; successor mixed across runs at w28 n64 0.87-1.69, w28 n4096 0.96-1.69, w32 n64 0.84-1.55, w32 n4096 0.70-1.09.
+PRED (n 4096): predecessor w16 LOSE 1.90-1.95; w32 mixed across runs 0.77-1.19.
+SH1 (band n 4096), w16: min WIN 0.37-0.47, max WIN 0.40-0.47, successor past max mixed across runs 0.95-0.99, predecessor below min LOSE 1.14-1.21.
+SH1 w24, all four WIN: min 0.29-0.36, max 0.30-0.42, successor past max 0.60-0.65, predecessor below min 0.72-0.76.
+SH1 w32, all four WIN: min 0.21-0.22, max 0.22-0.27, successor past max 0.26-0.46, predecessor below min 0.40-0.69.
+MAX tail (REPORTED, NO timing verdict; vEBTree vs YFastTrie on the same keys, M 4096, noisy across runs), ns over the 4 runs: w16 vEBTree max 875-14,542 (p50 82.28), YFastTrie max 100,625-150,583 (p50 415.78-459.51); w20 vEBTree max 792-63,041 (p50 82.28-125.22), YFastTrie max 13,958-28,667 (p50 290.07-415.78); w24 vEBTree max 1,792-33,291 (p50 125.22-252.18), YFastTrie max 24,791-97,208 (p50 415.78-459.51); w28 vEBTree max 583-12,208 (p50 125.22-252.18), YFastTrie max 16,250-203,959 (p50 415.78-713.49). Over w16-28: vEBTree max 583-63,041 ns; YFastTrie max 13,958-203,959 ns.
+<!-- VEB-WITNESS-END -->
+
 ### vEBTree
 
     import { vEBTree } from '@zakkster/lite-loglogn';
@@ -329,11 +344,13 @@ in test/VebCount.test.js, never written as counts in prose): WIN min / max (test
 'A3 exact rows, all 3 columns == vebCost, ...' and 'A3 StratifiedBitset side via the
 Count.test.js harness, ...'); WIN (expected; only the vEB side is gated, 'A3 exact rows ...') out-of-range successor / predecessor, answered from a header; at U = 2^16 LOSE far-gap successor, LOSE same-word successor
 and LOSE has ('A3 vEB vs SB loss row, U=2^16 (...)'; the title carries the gated
-counts). The member is for the worst case: no restructuring tail.
+counts). The member is for the worst case: no restructuring tail. Timing is REPORTED only
+(VEB-WITNESS block above): StratifiedBitset reads fewer words outside min / max and
+header-decided successor / predecessor; vEBTree is the textbook O(log log U) member.
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 584 tests, 583 pass, 1 skipped, 0 fail, 2026-11-01, Node v26.8.2; also
+- DETERMINISTIC (npm test = 852 tests, 851 pass, 1 skipped, 0 fail, 2026-11-03, Node v26.8.2; also
   npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset and vEBTree, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
@@ -360,18 +377,22 @@ counts). The member is for the worst case: no restructuring tail.
   logged runs, V3 / V4 / CV5-CV7 in 2; count gates, not timing): V1 2,000,000 mixed
   ops at U = 2^16 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; V2a
   1,000,000 ops at U = 2^28 (byteLength 33,718,804) -> 0 B/op, V2b Worker 200,000
-  ops abGrowth 0; V3 U = 2^25 + 3, 3,493,888 delete-heavy ops, 1,746,944 deletes each
+  ops abGrowth 0; V3 (Worker) U = 2^25 + 3, 3,493,888 delete-heavy ops, 1,746,944 deletes each
   refreshing a max -> 0 B/op; V4 U = 2^31 + 1 (the key 2^31 stored, arguments and
   returns < 2^30) -> transient 0.000 B/op over 16 valid windows; V5 4096/4096
-  collected, 0 findings; CV1-CV8 each flip (CV7: successor returning a key >= 2^31,
-  1,048,584 B / 65,536 calls = 16 B per call). Torture must-fail controls in all:
-  5 + 6 + 9 + 8 = 28 across T3, X4, Y4, CV. `--yft --smoke` is gated in npm test by YftWitness (counts / strings
+  collected, 0 findings; CV1-CV9 each flip (CV7: successor returning a key >= 2^31,
+  1,048,584 B / 65,536 calls = 16 B per call; CV9: one box every 8th op on V3's
+  step inside the V3 Worker; V3's Worker and CV9 were checked in torture x3 on
+  2026-11-03, PRELIMINARY host, count gates). Torture must-fail controls in all:
+  5 + 6 + 9 + 9 = 29 across T3, X4, Y4, CV. `--yft --smoke` is gated in npm test by YftWitness (counts / strings
   only, five must-fail fakes).
   `npm run test:perf`: PerfGate 15/15 (7 zero-alloc scenarios + 3 must-fail teeth +
   flag pin (2) + detector (1) + arrayBuffers attribution (1) + GATE key-set pin (1)) + XFastTriePerf 17/17
   + YFastTriePerf 19/19 (9 zero-alloc scenarios + 3 must-fail teeth + flag pin (2) +
   detector (1) + attribution (3) + coverage floor (1)) = 51/51 (verify run
-  2026-10-25, PRELIMINARY host load1 6.58; allocation-count gates).
+  2026-10-25, PRELIMINARY host load1 6.58; allocation-count gates) + VEBTreePerf
+  (21 tests: 10 zero-alloc scenarios, keys < 2^30, + 3 must-fail teeth with
+  attribution + flag pin + coverage floor) = 72 tests in test:perf.
 - REPORTED (no CI for this package: statistical claims are REPORTED only; release-time,
   NOT in verify, 1 run each, exit 0 pass / 1 fail / 2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node
   26.8.2, load1 3.66): member successor vs a local Uint32Array binary search at
@@ -383,7 +404,10 @@ counts). The member is for the worst case: no restructuring tail.
   XFastTrie A/B lane, `npm run witness:xft`, uses a 2% minimum-effect floor
   (test/helpers/abVerdict.mjs); tierVerdict is unchanged. `npm run witness:yft`
   (`--yft`: YFastTrie vs XFastTrie successor A/B, foils and the tail MAX REPORTED)
-  uses the same floor; its numbers are in the YFT-WITNESS block above.
+  uses the same floor; its numbers are in the YFT-WITNESS block above. `npm run
+  witness:veb` (`--veb`: vEBTree vs StratifiedBitset A/B in 38 scenarios, latency,
+  fits and the tail MAX REPORTED) uses the same floor; its numbers are in the
+  VEB-WITNESS block above.
 - REPORTED (docs only; same witness run: 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run): the U-sweep fits better vs w (R^2 0.7293) than vs log2(w)
   (R^2 0.6589); no R^2 floor or slope band is gated. lite-o1 BitSet is faster where
   it applies (4.28-4.82 vs 4.87-7.61 ns/op at n = 4096, w = 16..24).

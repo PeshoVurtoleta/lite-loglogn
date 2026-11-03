@@ -3216,8 +3216,9 @@ async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, 
 // vEBTree and one StratifiedBitset per width, reloaded per keyset by clear() + add (cold), dropped
 // with gc() + settle between widths (w = 32: vEB 539,500,592 B + SB ~553 MB nominal, one width at a
 // time). Rung 1 (G3 TASK 2) = provenance, the 4 CONTROL lines, the pre-pass, the A/B scenarios, A/A,
-// the x2 control, drift / load, COVERAGE, abVerdict, smoke. Rung 2 (G3 TASK 3: fits, latency, the MAX
-// tail vs YFastTrie, RETENTION, EVIDENCE) plugs in at the RUNG-2 SEAM comments below.
+// the x2 control, drift / load, COVERAGE, abVerdict, smoke. Rung 2 (G3 TASK 3) = per-width latency
+// (vEB and SB successor / add / delete), the fits + D(w), the MAX tail vs YFastTrie in a GC window,
+// RETENTION, and the EVIDENCE block; all REPORTED, no fit / latency / MAX verdict (C-22).
 
 /** --veb widths (FULL); 32 is always in, so --w32 / LOGLOGN_W32=1 beside --veb is exit 1. */
 const VEB_WS = Object.freeze([16, 20, 24, 28, 32]);
@@ -3449,6 +3450,194 @@ function vLoad(s, keys) {
     for (let i = 0; i < keys.length; i++) s.add(keys[i]);
 }
 
+// --- --veb rung 2 (G3 TASK 3): per-op latency and the MAX tail ------------------------------
+//
+// Latency: per width, on the loaded random n = 4096 keyset, each op in its OWN timed pair (one
+// performance.now() pair around one call), vEB and SB successor / add / delete. One function per
+// structure x op so every call site stays monomorphic; nothing allocates (lat is preallocated, the
+// folds are int32). add: the add of an absent key is timed, the restoring delete is not; delete: the
+// add is untimed, the delete timed. Each returns the int32 fold (successor) or the delete count.
+
+/** Latency run names, index k = 2 op + structure (op 0 successor, 1 add, 2 delete; 0 vEB, 1 SB). */
+const VL_NAMES = Object.freeze(['vEBTree successor', 'StratifiedBitset successor', 'vEBTree add',
+    'StratifiedBitset add', 'vEBTree delete', 'StratifiedBitset delete']);
+const VL_RUNS = 6;   // latency runs per width (vEB and SB x successor / add / delete)
+
+function vLatVebSucc(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const t = performance.now();
+        const r = s.successor(qs[i]);
+        lat[i] = (performance.now() - t) * 1e6;
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function vLatSbSucc(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const t = performance.now();
+        const r = s.successor(qs[i]);
+        lat[i] = (performance.now() - t) * 1e6;
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function vLatVebAdd(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+function vLatSbAdd(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+function vLatVebDel(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        const t = performance.now();
+        const d = s.delete(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        if (d) acc++;
+    }
+    return acc;
+}
+function vLatSbDel(s, qs, len, lat) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        const t = performance.now();
+        const d = s.delete(k);
+        lat[i] = (performance.now() - t) * 1e6;
+        if (d) acc++;
+    }
+    return acc;
+}
+
+function vLat(k, s, qs, len, lat) {
+    switch (k) {
+        case 0: return vLatVebSucc(s, qs, len, lat);
+        case 1: return vLatSbSucc(s, qs, len, lat);
+        case 2: return vLatVebAdd(s, qs, len, lat);
+        case 3: return vLatSbAdd(s, qs, len, lat);
+        case 4: return vLatVebDel(s, qs, len, lat);
+        case 5: return vLatSbDel(s, qs, len, lat);
+        default: throw new WitnessFail('vEB: latency run ' + k + ' does not exist');
+    }
+}
+
+// The MAX tail: fill M then drain M at w 16 / 20 / 24 / 28 (smoke 16 / 28; w = 32 is never in the
+// tail), keys yftTailKeys(M, 2^w, YFT_TAIL_SEED + w) -- the --yft tail's own keys, all < 2^28, so
+// < min(U, 2^30). A = vEBTree replayed untimed inside ONE GC window; B = vEBTree and C = YFastTrie
+// (default seed, the same keys) timed per op. REPORTED only (C-22: no MAX verdict).
+const VEB_TAIL_WS = Object.freeze([16, 20, 24, 28]);
+const VEB_TAIL_WS_SMOKE = Object.freeze([16, 28]);
+
+// the three tail instances live ONLY here (never in the async lane frame, where conservative stack
+// scanning could pin one): [0] = A (vEB, untimed replay in the GC window), [1] = B (vEB, timed),
+// [2] = C (YFastTrie, timed)
+const VTAIL = [null, null, null];
+// lite-leak's createLeakTracker, handed over by vebMain (laneModules() already loaded it)
+const VTRK = { createLeakTracker: null };
+
+// fresh A, B, C (cold, before the window: the window body allocates nothing), each tracked by
+// lite-leak; the cleanup is the module-level no-op and the tag a string (held-value contract)
+function vTailBuild(vEBTree, YFastTrie, U, M, tracker) {
+    VTAIL[0] = new vEBTree(U);
+    VTAIL[1] = new vEBTree(U);
+    VTAIL[2] = new YFastTrie(U, M);
+    tracker.track(VTAIL[0], yTailNoop, 'veb-tail-a', { audit: true });
+    tracker.track(VTAIL[1], yTailNoop, 'veb-tail-b', { audit: true });
+    tracker.track(VTAIL[2], yTailNoop, 'veb-tail-c', { audit: true });
+}
+
+// instance A: the untimed replay (the GC-window body); sz[0] = size after fill, sz[1] after drain
+function vTailReplay(keys, M, sz) {
+    const s = VTAIL[0];
+    for (let i = 0; i < M; i++) s.add(keys[i]);
+    sz[0] = s.size;
+    for (let i = 0; i < M; i++) s.delete(keys[i]);
+    sz[1] = s.size;
+}
+
+// instance B (vEB): every op timed alone into lat[op] (op i < M = add, op M + j = delete of keys[j]);
+// sz[2] / sz[3] = size after fill / drain; returns the successful deletes. One loop per op so each
+// timed pair holds one monomorphic call.
+function vTailTimedVeb(keys, M, lat, sz) {
+    const s = VTAIL[1];
+    let d = 0;
+    for (let i = 0; i < M; i++) {
+        const k = keys[i];
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+    }
+    sz[2] = s.size;
+    for (let i = 0; i < M; i++) {
+        const k = keys[i];
+        const t = performance.now();
+        const r = s.delete(k);
+        lat[M + i] = (performance.now() - t) * 1e6;
+        if (r) d++;
+    }
+    sz[3] = s.size;
+    return d;
+}
+
+// instance C (YFastTrie): the same schedule; sz[4] / sz[5] = size after fill / drain
+function vTailTimedYft(keys, M, lat, sz) {
+    const s = VTAIL[2];
+    let d = 0;
+    for (let i = 0; i < M; i++) {
+        const k = keys[i];
+        const t = performance.now();
+        s.add(k);
+        lat[i] = (performance.now() - t) * 1e6;
+    }
+    sz[4] = s.size;
+    for (let i = 0; i < M; i++) {
+        const k = keys[i];
+        const t = performance.now();
+        const r = s.delete(k);
+        lat[M + i] = (performance.now() - t) * 1e6;
+        if (r) d++;
+    }
+    sz[5] = s.size;
+    return d;
+}
+
+// warm-up of the timed instances B and C: ONE untimed add + delete of key k (the run's first key, so
+// op #0 no longer carries the cold first touch); both are left empty exactly as built
+function vTailWarm(k) {
+    VTAIL[1].add(k);
+    VTAIL[1].delete(k);
+    VTAIL[2].add(k);
+    VTAIL[2].delete(k);
+}
+
+// drop the three tail references (the retention check then expects tracker.size() 0)
+function vTailDrop() {
+    VTAIL[0] = null;
+    VTAIL[1] = null;
+    VTAIL[2] = null;
+}
+
 // --veb entry: --veb is dispatched FIRST, so its KNOWN list names any --xft / --yft / --tier / --w32
 // beside it (exit 1, before any banner); vEBTree / YFastTrie from laneModules() (no new static import)
 async function vebMain(argv, env) {
@@ -3471,10 +3660,11 @@ async function vebMain(argv, env) {
     if (typeof M.lib.YFastTrie !== 'function') {
         throw new WitnessFail('vEB: LogLogN.js must export YFastTrie (the MAX tail foil)');
     }
+    VTRK.createLeakTracker = M.createLeakTracker;   // the RETENTION tracker (rung 2), checked in vebLane
     return vebLane(argv, env, M.lib.vEBTree, M.lib.YFastTrie, M.abVerdict, M.FLOOR, M.gcFn);
 }
 
-// YFastTrie: the rung-2 MAX tail foil (G3 TASK 3); rung 1 does not touch it
+// YFastTrie: the rung-2 MAX tail foil (G3 TASK 3, instance C); rung 1 does not touch it
 async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
     const SMOKE = argv.includes('--smoke');
     const K = SMOKE ? 3 : WITNESS_K;
@@ -3733,6 +3923,46 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
         say('  ' + name + ': vEB ' + fmt(t.candMed) + ' | SB ' + fmt(t.foilMed) + ' | ' + tl(t) + ' ratio ' + r4(t.ratio));
     };
 
+    // rung-2 latency (G3 TASK 3): per-op samples into LAT, then DDSketch.addFrom (the unboxed path)
+    // p50 / p99 + the EXACT max (a loop over LAT; it must equal sketch.max). Buffers allocated ONCE
+    // here; the timed bodies are the module-level vLat* blocks. REPORTED only (C-22: no latency verdict).
+    const LAT = new Float64Array(Q);
+    const LATN = new Int32Array(1);    // latency runs (coverage floor)
+    const QQ = Float64Array.of(0.5, 0.99);
+    const QO = new Float64Array(2);
+    const sketch = new DDSketch(0.01);
+    let wantLat = 0;
+    for (const w of WS) {
+        if (VEB_C7.includes(w) || VEB_PAR.includes(w) || VEB_PRED.includes(w)) wantLat += VL_RUNS;   // the n = 4096 keyset
+    }
+    const latency = (w, k, s, qs) => {
+        const cfg = 'latency w=' + w + ' random n=' + VEB_N_L + ' ' + VL_NAMES[k];
+        const r = vLat(k, s, qs, Q, LAT);
+        if (k < 2) SINK[0] ^= r;
+        else if (r !== Q) fails.push(cfg + ': deleted ' + r + ' of ' + Q);
+        let mx = -1, arg = -1, bad = 0;
+        for (let i = 0; i < Q; i++) {
+            const x = LAT[i];
+            if (!(x >= 0) || !Number.isFinite(x)) { bad++; continue; }
+            if (x > mx) { mx = x; arg = i; }
+        }
+        if (bad !== 0) {
+            fails.push(cfg + ': ' + bad + ' of ' + Q + ' samples not finite >= 0 (checked before the sketch)');
+            return;
+        }
+        sketch.clear();
+        for (let i = 0; i < Q; i++) sketch.addFrom(LAT, i);
+        sketch.quantilesInto(QQ, QO);
+        const p50 = QO[0], p99 = QO[1], smax = sketch.max, cnt = sketch.count;
+        LATN[0]++;
+        say('  REPORTED ' + cfg + ' per-op (ns, DDSketch alpha 0.01, ' + cnt + ' samples): p50 ' + fmt(p50) +
+            ' p99 ' + fmt(p99) + ' max ' + fmt(mx) + ' at op #' + arg);
+        if (cnt !== Q || !Number.isFinite(p50) || !Number.isFinite(p99) || !(mx >= 0) || smax !== mx || !(arg >= 0)) {
+            fails.push(cfg + ': count ' + cnt + ' p50 ' + p50 + ' p99 ' + p99 + ' max ' + mx + ' sketch.max ' + smax +
+                ' op #' + arg);
+        }
+    };
+
     // 3. the width loop: one vEBTree + one StratifiedBitset per width, every keyset of that width, then
     // the pair is dropped (runWidth returns, its frame dies) and gc() + settle runs before the next width
     say('A/B scenarios per width (B = vEBTree vs A = StratifiedBitset; ns/op medians; wins / losses / ties of K ' + K + ')');
@@ -3775,8 +4005,15 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
             if (c7 || par) scen(c7 ? 0 : 1, 'add+delete', w, 'random n=' + VEB_N_L, vU, abs, sU, abs);
             if (pred) scen(3, 'predecessor', w, 'random n=' + VEB_N_L, vP, qs, sP, qs);
             if (veb.size !== VEB_N_L || sb.size !== VEB_N_L) fails.push('w=' + w + ' random n=' + VEB_N_L + ': size changed by the lane');
-            // RUNG-2 SEAM (G3 TASK 3, B2): the per-width latency runs (vEB and SB successor / add / delete, each op
-            // in its own timed pair, on this n = 4096 keyset and these qs / abs streams) go HERE, while it is loaded
+            // rung-2 latency (G3 TASK 3), while this n = 4096 keyset is loaded: vEB and SB successor on qs, add and
+            // delete on the absent keys abs, each op in its own timed pair; the set is restored after every op
+            latency(w, 0, veb, qs);
+            latency(w, 1, sb, qs);
+            latency(w, 2, veb, abs);
+            latency(w, 3, sb, abs);
+            latency(w, 4, veb, abs);
+            latency(w, 5, sb, abs);
+            if (veb.size !== VEB_N_L || sb.size !== VEB_N_L) fails.push('w=' + w + ' latency: size changed by the lane');
         }
         // keyset leaf-far (C7): n = min(4096, U' / 1024) keys at the last bit of every 4th leaf
         if (c7) {
@@ -3820,10 +4057,144 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
         say('  drop w=' + WS[j] + ': the vEBTree + StratifiedBitset pair released, gc() + settle ' + XFT_GC_SETTLE_MS +
             ' ms (arrayBuffers ' + process.memoryUsage().arrayBuffers + ' B, REPORTED)');
     }
-    // RUNG-2 SEAM (G3 TASK 3, B2): after the width loop -- the fits (rows[]: successor and add+delete at
-    // n = 4096 vs log2(w) and vs w, plus D(w) per width), then the MAX tail (fill then drain M 4096 at w 16 /
-    // 20 / 24 / 28, smoke 16 / 28: vEB A replays in a GC window, vEB B and YFastTrie C timed per op) and its
-    // RETENTION tracker over A / B / C. REPORTED; no fit / latency / MAX verdict (C-22).
+    // 3b. fits (G3 TASK 3, REPORTED; C-22: no fit verdict): the random n = 4096 successor and add+delete
+    // medians (rows[], one point per width) vs log2(w) and vs w, vEB and SB, plus the depth D(w) =
+    // ceil(log2(w / 8)) per width (C-1)
+    const fw = [], fl = [], fsV = [], fsS = [], fuV = [], fuS = [];
+    const fitWl = 'random n=' + VEB_N_L;
+    for (const w of WS) {
+        const rs = rows.find((x) => x.w === w && x.wl === fitWl && x.op === 'successor');
+        const ru = rows.find((x) => x.w === w && x.wl === fitWl && x.op === 'add+delete');
+        if (rs === undefined || ru === undefined) continue;
+        fw.push(w); fl.push(Math.log2(w));
+        fsV.push(rs.t.candMed); fsS.push(rs.t.foilMed); fuV.push(ru.t.candMed); fuS.push(ru.t.foilMed);
+        say('REPORTED fit point w=' + w + ' log2(w) ' + Math.log2(w).toFixed(4) + ' D(w) ' + Math.ceil(Math.log2(w / 8)) +
+            ': successor vEB ' + fmt(rs.t.candMed) + ' SB ' + fmt(rs.t.foilMed) + ' | add+delete vEB ' + fmt(ru.t.candMed) +
+            ' SB ' + fmt(ru.t.foilMed) + ' (ns/op medians, ' + fitWl + ')');
+    }
+    const fits = [];   // { name, v, s } for the EVIDENCE block
+    if (fw.length !== WS.length || !(fw.length >= 2)) {
+        fails.push('fit: ' + fw.length + ' points for ' + WS.length + ' widths (need one per width, >= 2)');
+    } else {
+        const fitLine = (name, unit, xs, yV, yS) => {
+            const v = fitLogLinear(xs, yV), s = fitLogLinear(xs, yS);
+            fits.push({ name, v, s });
+            say('REPORTED fit ' + name + ': vEB slope ' + (unit === 'bit' ? v.slope.toFixed(4) : fmt(v.slope)) + ' ns/' + unit +
+                ' intercept ' + fmt(v.intercept) + ' R^2 ' + v.r2.toFixed(4) + ' | SB slope ' +
+                (unit === 'bit' ? s.slope.toFixed(4) : fmt(s.slope)) + ' ns/' + unit + ' intercept ' + fmt(s.intercept) +
+                ' R^2 ' + s.r2.toFixed(4));
+            for (const f of [v, s]) {
+                if (!Number.isFinite(f.slope) || !Number.isFinite(f.intercept) || !Number.isFinite(f.r2)) {
+                    fails.push('fit ' + name + ' not finite: ' + JSON.stringify(f));
+                }
+            }
+        };
+        fitLine('successor ' + fitWl + ' vs log2(w) (the O(log log U) axis)', 'doubling', fl, fsV, fsS);
+        fitLine('successor ' + fitWl + ' vs w', 'bit', fw, fsV, fsS);
+        fitLine('add+delete ' + fitWl + ' vs log2(w)', 'doubling', fl, fuV, fuS);
+        fitLine('add+delete ' + fitWl + ' vs w', 'bit', fw, fuV, fuS);
+        say('  the work bounds are PROVEN by the exact counts in test/VebCount.test.js (DETERMINISTIC, npm test);' +
+            ' these fits are REPORTED timing only');
+    }
+
+    // 3c. the MAX tail (G3 TASK 3): per tail width, fresh vEBTree A and B and YFastTrie C (default seed);
+    // A replays fill M + drain M inside ONE GC window (A2: gc.major 0, arrayBuffers growth 0 B), B and C
+    // are timed per op on the same keys. C-22: the MAX rows are REPORTED only (no timing verdict).
+    const tailWS = SMOKE ? VEB_TAIL_WS_SMOKE : VEB_TAIL_WS;
+    const M = YFT_TAIL_M;
+    const M2 = 2 * M;
+    const TLAT = new Float64Array(M2);
+    const TSZ = new Int32Array(6);       // sizes after fill / drain: A [0, 1], B [2, 3], C [4, 5]
+    const GTN = new Int32Array(1);       // tail GC windows run
+    const maxRows = [];                  // { w, who, mx, p50 } for the EVIDENCE block
+    const RET = { tracked: 0, collected: 0, worst: 0, errors: 0, cycles: 0 };
+    const createLeakTracker = VTRK.createLeakTracker;
+    if (typeof createLeakTracker !== 'function') {
+        throw new WitnessFail('vEB: the RETENTION tracker is not armed (vebMain did not hand over createLeakTracker)');
+    }
+    const tracker = createLeakTracker({
+        name: 'lite-loglogn-witness-veb-tail',
+        onLeak: () => { RET.collected++; },
+        onError: () => { RET.errors++; },
+    });
+    // per-op stats of one timed instance (cold): exact max + op #, DDSketch p50 / p99, the MAX bar
+    const tailMax = (w, who, d) => {
+        const cfg = 'tail w=' + w + ' ' + who;
+        if (d !== M) fails.push(cfg + ': deleted ' + d + ' of ' + M);
+        let mx = -1, arg = -1, bad = 0;
+        for (let i = 0; i < M2; i++) {
+            const x = TLAT[i];
+            if (!(x >= 0) || !Number.isFinite(x)) { bad++; continue; }
+            if (x > mx) { mx = x; arg = i; }
+        }
+        if (bad !== 0 || !(arg >= 0)) {
+            fails.push(cfg + ': ' + bad + ' of ' + M2 + ' samples not finite >= 0');
+            return;
+        }
+        sketch.clear();
+        for (let i = 0; i < M2; i++) sketch.addFrom(TLAT, i);
+        sketch.quantilesInto(QQ, QO);
+        const p50 = QO[0], p99 = QO[1];
+        if (!Number.isFinite(p50) || !Number.isFinite(p99) || sketch.count !== M2 || sketch.max !== mx) {
+            fails.push(cfg + ': sketch count ' + sketch.count + ' p50 ' + p50 + ' p99 ' + p99 + ' max ' + sketch.max + ' vs ' + mx);
+        }
+        const rat = p50 > 0 ? mx / p50 : NaN;
+        const nb = Number.isFinite(rat) && rat > 1 ? Math.min(64, Math.round(4 * Math.log2(rat))) : 0;
+        maxRows.push({ w, who, mx, p50 });
+        say('REPORTED MAX single-op tail w=' + w + ' M=' + M + ' ' + who + ': max ' + fmt(mx) + ' ns at op #' + arg + ' phase ' +
+            (arg < M ? 'fill' : 'drain') + ' | p50 ' + fmt(p50) + ' p99 ' + fmt(p99) + ' | max/p50 ' + r4(rat) + ' [' +
+            '#'.repeat(nb) + '] (4 # per doubling, cap 64)');
+    };
+    say('tail at M ' + M + ' per width [' + tailWS.join(', ') + '] (fill M then drain M = ' + M2 + ' ops, keys yftTailKeys(M,' +
+        ' 2^w, 0x' + YFT_TAIL_SEED.toString(16).toUpperCase() + ' + w), the --yft tail keys): vEBTree A replays in a GC window,' +
+        ' vEBTree B and YFastTrie C (default seed, same keys) timed per op');
+    say('  C-22: the MAX rows are REPORTED only (no timing verdict); w = 32 is never in the tail');
+    let tailRuns = 0;
+    for (let j = 0; j < tailWS.length; j++) {
+        const w = tailWS[j];
+        const U = 2 ** w;
+        const tk = yftTailKeys(M, U, YFT_TAIL_SEED + w);
+        const tr0 = tracker.size();
+        vTailBuild(vEBTree, YFastTrie, U, M, tracker);
+        RET.tracked += tracker.size() - tr0;
+        TSZ.fill(-1);
+        const wT = await gcWindow(() => { vTailReplay(tk, M, TSZ); GTN[0]++; });
+        say('GC window tail w=' + w + ': instance A (vEBTree) fill ' + M + ' + drain ' + M + ' (untimed): gc.major ' + wT.major +
+            ' minor ' + wT.minor + ' arrayBuffers growth ' + wT.growth + ' B size after fill ' + TSZ[0] + ' after drain ' +
+            TSZ[1] + ' (tolerance: major 0, growth 0 B) -- ' + (wT.majorBad || wT.abBad ? 'FAIL' : 'ok'));
+        if (wT.majorBad || wT.abBad) {
+            fails.push('gc window tail w=' + w + ': ' + (wT.majorBad ? 'gc.major ' + wT.major + ' (observed ' + wT.observed + ')' : '') +
+                (wT.majorBad && wT.abBad ? ', ' : '') + (wT.abBad ? 'arrayBuffers growth ' + wT.growth + ' B > 0' : ''));
+        }
+        vTailWarm(tk[0]);
+        tailMax(w, 'vEBTree (B)', vTailTimedVeb(tk, M, TLAT, TSZ));
+        tailMax(w, 'YFastTrie (C, default seed)', vTailTimedYft(tk, M, TLAT, TSZ));
+        if (TSZ[0] !== M || TSZ[2] !== M || TSZ[4] !== M || TSZ[1] !== 0 || TSZ[3] !== 0 || TSZ[5] !== 0) {
+            fails.push('tail w=' + w + ': sizes after fill / drain A ' + TSZ[0] + ' / ' + TSZ[1] + ' B ' + TSZ[2] + ' / ' + TSZ[3] +
+                ' C ' + TSZ[4] + ' / ' + TSZ[5] + ' != ' + M + ' / 0');
+        }
+        tailRuns++;
+        // retention (A2): drop the three references, then gc + settle until the tracker empties (bounded)
+        vTailDrop();
+        let live = tracker.size();
+        for (let g = 0; g < 20 && live > 0; g++) {
+            gcFn();
+            await settle(25);
+            live = tracker.size();
+        }
+        if (live > RET.worst) RET.worst = live;
+        RET.cycles++;
+    }
+    const retOk = RET.worst === 0 && RET.errors === 0 && RET.cycles === tailWS.length && RET.tracked === 3 * tailWS.length &&
+        RET.collected === RET.tracked;
+    say('RETENTION: tail cycles ' + RET.cycles + ' / ' + tailWS.length + ', instances tracked ' + RET.tracked + ', collected ' +
+        RET.collected + ', errors ' + RET.errors + ', worst tracker.size() ' + RET.worst + ' after a cycle\'s drop + gc +' +
+        ' settle; tracker.size() ' + tracker.size() + ' -- ' + (retOk ? 'ok' : 'FAIL'));
+    if (!retOk) {
+        fails.push('retention: tracker.size() ' + RET.worst + ' after a tail cycle (want 0), tracked ' + RET.tracked + ' / ' +
+            3 * tailWS.length + ', collected ' + RET.collected + ', errors ' + RET.errors);
+    }
+    const wantTail = tailWS.length;
 
     // 4. control: the vEBTree successor block done twice (candidate) vs once: MUST lose
     const tc = abba('control', ctrl, qAA, vA, qAA);
@@ -3862,7 +4233,13 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
             ', add+delete checks ' + PRE[2],
         'gc window blocks ' + GWN[0] + ' / ' + VEB_WARM,
     ];
-    // RUNG-2 SEAM (G3 TASK 3, B2): push the 'latency runs <n> / <want>' and 'tail runs <n> / <want>' parts here
+    // rung 2 (G3 TASK 3): every latency run, every tail width and its GC window ran
+    cov.push('latency runs ' + LATN[0] + ' / ' + wantLat, 'tail runs ' + tailRuns + ' / ' + wantTail,
+        'gc tail windows ' + GTN[0] + ' / ' + wantTail);
+    if (LATN[0] !== wantLat || !(wantLat > 0)) fails.push('coverage: latency runs ' + LATN[0] + ' != ' + wantLat);
+    if (tailRuns !== wantTail || GTN[0] !== wantTail || !(wantTail > 0)) {
+        fails.push('coverage: tail runs ' + tailRuns + ' / ' + wantTail + ', gc tail windows ' + GTN[0] + ' / ' + wantTail);
+    }
     say('COVERAGE: ' + cov.join(', '));
     if (!(GWN[0] > 0) || GWN[0] !== VEB_WARM) fails.push('coverage: gc window blocks ' + GWN[0] + ' != ' + VEB_WARM);
     if (ST.abba !== nAbba) fails.push('coverage: ABBA runs ' + ST.abba + ' != ' + nAbba);
@@ -3882,8 +4259,33 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
     for (const r of v.reasons) say('  reason ' + r);
     say('A/B verdicts (B = vEBTree vs A = StratifiedBitset) [' +
         v.verdicts.map((x) => x.name + ' ' + x.verdict).join(', ') + '] decision ' + v.decision);
-    // RUNG-2 SEAM (G3 TASK 3, B2): the EVIDENCE block (verdict lists per family -- C7 -> reopen C-7, SH1 ->
-    // S-H1 priority, PAR + fits + MAX -> ship as built; no word counts) prints here, before the sink line
+    // 7. the EVIDENCE block (G3 TASK 3, REPORTED): the abVerdict verdicts listed per family, then the fits
+    // and the MAX tail. The decisions are taken (A10: vEBTree 0.5.0 ships as built): C7 informs the future
+    // per-leaf-summary member, SH1 the future S-H1 ([min, max] headers) StratifiedBitset variant member;
+    // PAR, PRED, the fits and the MAX tail back the as-built WIN / LOSE positioning. No count of any
+    // kind appears here or in a row name (C-4, A6).
+    const famNote = {
+        C7: 'w ' + VEB_C7.join(' / ') + '; informs the future per-leaf-summary member, not vEBTree 0.5.0',
+        PAR: 'w ' + VEB_PAR.join(' / ') + '; backs the as-built WIN / LOSE positioning',
+        SH1: 'w ' + VEB_SH1.join(' / ') + '; informs the future S-H1 StratifiedBitset variant member ([min, max] headers)',
+        PRED: 'w ' + VEB_PRED.join(' / ') + '; backs the as-built WIN / LOSE positioning',
+    };
+    say('EVIDENCE (REPORTED, label ' + label + '; B = vEBTree vs A = StratifiedBitset; A10: vEBTree 0.5.0 ships as built;' +
+        ' verdicts win / lose / none from abVerdict, decision ' + v.decision + ')');
+    for (const fam of FAMS) {
+        const by = { win: [], lose: [], none: [] };
+        for (const x of (Array.isArray(v.verdicts) ? v.verdicts : [])) {
+            if (x !== null && typeof x === 'object' && typeof x.name === 'string' && x.name.startsWith(fam + ' ') &&
+                Object.hasOwn(by, x.verdict)) by[x.verdict].push(x.name.slice(fam.length + 1));
+        }
+        say('EVIDENCE ' + fam + ' (' + famNote[fam] + '): win ' + by.win.length + ' [' + by.win.join(', ') + '] | lose ' +
+            by.lose.length + ' [' + by.lose.join(', ') + '] | none ' + by.none.length + ' [' + by.none.join(', ') + ']');
+    }
+    say('EVIDENCE fits (backs the as-built positioning; slope ns per axis unit, R^2): ' + (fits.length === 0 ? 'n/a' :
+        fits.map((f) => f.name + ' vEB ' + f.v.slope.toFixed(4) + ' R^2 ' + f.v.r2.toFixed(4) + ' SB ' + f.s.slope.toFixed(4) +
+            ' R^2 ' + f.s.r2.toFixed(4)).join(' | ')));
+    say('EVIDENCE MAX (backs the as-built positioning; fill + drain M=' + M + ', max ns / p50 ns): ' +
+        (maxRows.length === 0 ? 'n/a' : maxRows.map((x) => 'w=' + x.w + ' ' + x.who + ' ' + fmt(x.mx) + ' / ' + fmt(x.p50)).join(' | ')));
     say('sink ' + SINK[0] + ' | wall ' + ((performance.now() - t0wall) / 1000).toFixed(2) + ' s | label ' + label);
     const shapeOk = (v.exit === 0 || v.exit === 1 || v.exit === 2) && Array.isArray(v.reasons) &&
         v.reasons.every((r) => typeof r === 'string') && Array.isArray(v.verdicts) &&

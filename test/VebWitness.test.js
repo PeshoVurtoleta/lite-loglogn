@@ -2,6 +2,8 @@
 // Counts / strings only: no timing value and no timing-dependent verdict is asserted (C-10 / C-11 / C-22).
 // Every expected value below is a literal from the spec / brief, never read back from witness output.
 // Mutants run on copies in a mkdtemp dir (witness.mjs + LogLogN.js), one count-checked anchor each.
+// G3-B5 (A15 / A16): 5 CONTROL lines (drift runs is the 2nd); hostDriftRuns unit vectors + throws, the TH / kRun
+// teeth and the two abVerdict-input wiring mutants are written from the delta ASSERTIONS A3' / A6 / A7.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -9,6 +11,8 @@ import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, symlinkSync, rmSyn
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import * as W from './witness.mjs';
+import { mulberry32 } from './helpers/tierStream.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const T = 180000;
@@ -29,10 +33,10 @@ function runIn(cwd, args, env) {
 let real = null;
 const realRun = () => real || (real = runIn(ROOT, ['--veb', '--smoke']));
 
-test('veb smoke: exit 0, 4 CONTROL, 0 FAIL, VEB SMOKE ok once', { timeout: T }, () => {
+test('veb smoke: exit 0, 5 CONTROL, 0 FAIL, VEB SMOKE ok once', { timeout: T }, () => {
     const r = realRun();
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(count(/^CONTROL /gm, r.stdout), 4);
+    assert.equal(count(/^CONTROL /gm, r.stdout), 5);
     assert.equal(count(/^FAIL /gm, r.stdout), 0);
     assert.equal(count(/^VEB SMOKE ok/gm, r.stdout), 1);
     assert.equal(count(/mode VEB SMOKE/g, r.stdout), 1);
@@ -118,4 +122,108 @@ test('mutant: instance kept across tail cycles -> exactly one FAIL retention lin
 test('mutant: LogLogN.js without a vEBTree export -> FAIL vEB: LogLogN.js must export vEBTree', { timeout: T }, () => {
     onlyFail(mutantRun(WSRC, once(LSRC, 'export class vEBTree {', 'class vEBTree {')),
         'FAIL vEB: LogLogN.js must export vEBTree');
+});
+
+// ---- G3-B5: drift runs (A3' / A6 / A7) ----
+const CTL_DRIFT = 'CONTROL drift: FLAT {"drift":false,"index":-1} STEP {"drift":true,"index":71} SPIKES {"drift":false,"index":-1}';
+const CTL_RUNS = 'CONTROL drift runs: FLAT {"drift":false,"index":-1} STEP 1.25x {"drift":true,"index":24} STEP 0.8x {"drift":true,"index":23} STEP 1.10x {"drift":true,"index":27} MOD +-8% {"drift":false,"index":-1} MOD per-round {"drift":true,"index":91}';
+const REASON = '  reason drift: host drift detected in the probe series (inconclusive)';
+
+test('veb smoke: the 5 CONTROL lines once each, in order drift, drift runs, abVerdict, gc-window, pre-pass (FILLER 31)', { timeout: T }, () => {
+    const r = realRun();
+    const ctl = r.stdout.split('\n').filter((l) => l.startsWith('CONTROL '));
+    assert.equal(ctl.length, 5);
+    assert.equal(ctl.filter((l) => l === CTL_DRIFT).length, 1, 'drift literal');
+    assert.equal(ctl.filter((l) => l === CTL_RUNS).length, 1, 'drift runs literal');
+    assert.equal(ctl[0], CTL_DRIFT);
+    assert.equal(ctl[1], CTL_RUNS);
+    for (const [i, name] of [[2, 'abVerdict self-check'], [3, 'gc-window'], [4, 'pre-pass']]) {
+        assert.match(ctl[i], new RegExp('^CONTROL ' + name + ': .* -- ok$'), name);
+        assert.equal(count(new RegExp('^CONTROL ' + name + ': .* -- ok$', 'm'), r.stdout), 1, name + ' once');
+    }
+});
+
+test('veb smoke: host: drift x1, host: drift runs line x1 (17 medians, k 3, TH 0.75), abVerdict exit line x1', { timeout: T }, () => {
+    const o = realRun().stdout;
+    assert.equal(count(/^host: drift \{/m, o), 1);
+    assert.equal(count(/^host: drift runs \{"drift":(true|false),"index":-?\d+\} over 17 ABBA-run medians \(k 3, threshold 0\.75\) -- the abVerdict drift input \(A15\); the per-round host: drift line is REPORTED$/m, o), 1);
+    assert.equal(count(/^abVerdict exit \(printed, not used in smoke\): [012] (PASS|FAIL|PENDING)$/m, o), 1);
+});
+
+test('hostDriftRuns: DRIFT_RUN_THRESHOLD 0.75 and every refusal throws the named class with the prefix', () => {
+    assert.equal(W.DRIFT_RUN_THRESHOLD, 0.75);
+    const P = /^\[lite-loglogn\] hostDriftRuns: /;
+    const good = () => new Float64Array(120).fill(25);
+    const bad = (i, x) => { const v = good(); v[i] = x; return v; };
+    const cases = [
+        [() => W.hostDriftRuns({}, 15), TypeError],
+        [() => W.hostDriftRuns(good(), 0), RangeError],
+        [() => W.hostDriftRuns(good(), 1.5), RangeError],
+        [() => W.hostDriftRuns(good(), NaN), RangeError],
+        [() => W.hostDriftRuns(new Float64Array(125).fill(25), 15), RangeError, /is not a multiple of k 15$/],
+        [() => W.hostDriftRuns(new Float64Array(105).fill(25), 15), RangeError, /needs >= 8 blocks, got 7$/],
+        [() => W.hostDriftRuns(bad(17, 0), 15), RangeError],
+        [() => W.hostDriftRuns(bad(17, -1), 15), RangeError],
+        [() => W.hostDriftRuns(bad(17, NaN), 15), RangeError],
+        [() => W.hostDriftRuns(bad(17, Infinity), 15), RangeError],
+        [() => { const a = Array.from(good()); a[3] = 'x'; return W.hostDriftRuns(a, 15); }, TypeError],
+    ];
+    cases.forEach(([f, E, tail], i) => assert.throws(f, (e) => e.constructor === E && P.test(e.message) && (!tail || tail.test(e.message)), 'case ' + i));
+});
+
+// the B5-4 vectors, rebuilt here from the spec text
+const SHAPE = [1,1,1,1,1,-1,-1,-1,-1,-1,-1,1,1,1,1,-1,-1,1,1,1,1,-1,-1,-1,-1,-1,-1,1,1,1,1,1,1,1,-1,-1,-1,-1,1,-1,1];
+function vec(lvl) {
+    const r = mulberry32(0xC0FFEE);
+    const v = new Float64Array(41 * 15);
+    for (let i = 0; i < v.length; i++) v[i] = 25 * (1 + 0.03 * (2 * r() - 1)) * lvl(Math.floor(i / 15));
+    return v;
+}
+const vFlat = () => vec(() => 1);
+const vUp = () => vec((j) => (j >= 20 ? 1.25 : 1));
+const vMod = () => vec((j) => 1 + 0.08 * SHAPE[j]);
+
+test('hostDriftRuns vectors (41 x 15): FLAT -1, 1.25x@20 24, 0.8x@20 23, 1.10x@10 27, MOD +-8% -1; hostDrift(MOD) 91', () => {
+    assert.equal(SHAPE.length, 41);
+    assert.deepEqual(W.hostDriftRuns(vFlat(), 15), { drift: false, index: -1 });
+    assert.deepEqual(W.hostDriftRuns(vUp(), 15), { drift: true, index: 24 });
+    assert.deepEqual(W.hostDriftRuns(vec((j) => (j >= 20 ? 0.8 : 1)), 15), { drift: true, index: 23 });
+    assert.deepEqual(W.hostDriftRuns(vec((j) => (j >= 10 ? 1.1 : 1)), 15), { drift: true, index: 27 });
+    assert.deepEqual(W.hostDriftRuns(vMod(), 15), { drift: false, index: -1 });
+    assert.deepEqual(W.hostDrift(vMod()), { drift: true, index: 91 });
+});
+
+test('hostDriftRuns block semantics: a median ignores one outlier per block; a 2x block is clamped; a uniform x3 scale changes nothing', () => {
+    const f = vFlat();
+    for (let r = 20; r < 41; r++) f[r * 15 + 7] = 400;
+    assert.deepEqual(W.hostDriftRuns(f, 15), W.hostDriftRuns(vFlat(), 15));
+    assert.deepEqual(W.hostDriftRuns(vec((j) => (j === 20 ? 2 : 1)), 15), { drift: false, index: -1 }); // one 2x block clamps to 1.5
+    const u = vUp();
+    for (let i = 0; i < u.length; i++) u[i] *= 3;
+    assert.deepEqual(W.hostDriftRuns(u, 15), W.hostDriftRuns(vUp(), 15));
+    assert.deepEqual(W.hostDriftRuns(u, 15), { drift: true, index: 24 });
+});
+
+test('mutant: DRIFT_RUN_THRESHOLD 0.75 -> 2.0 -> FAIL control drift runs: STEP 1.10x missed alone', { timeout: T }, () => {
+    const r = mutantRun(once(WSRC, 'export const DRIFT_RUN_THRESHOLD = 0.75;', 'export const DRIFT_RUN_THRESHOLD = 2.0;'), LSRC);
+    onlyFail(r, 'FAIL control drift runs: STEP 1.10x missed');
+    assert.equal(failLines(r.stdout)[0], 'FAIL control drift runs: STEP 1.10x missed');
+});
+
+test('mutant: kRun 15 -> 1 -> FAIL control drift runs: MOD +-8% fired alone', { timeout: T }, () => {
+    const r = mutantRun(once(WSRC, 'const kRun = 15;', 'const kRun = 1;'), LSRC);
+    onlyFail(r, 'FAIL control drift runs: MOD +-8% fired');
+    assert.equal(failLines(r.stdout)[0], 'FAIL control drift runs: MOD +-8% fired');
+});
+
+test('wiring: abVerdict drift input is the per-run result (A: runs fire -> reason x1; B: runs quiet -> x0), exit 0', { timeout: 3 * T }, () => {
+    const site = '    const hdR = driftRunsOrFail(series, ST.pos, K, fails);\n';
+    const a = mutantRun(once(WSRC, site, '    const hdR = { drift: true, index: 0 }; hd.drift = false;\n'), LSRC);
+    assert.equal(a.status, 0, a.stderr);
+    assert.equal(a.stdout.split('\n').filter((l) => l === REASON).length, 1, 'wiring A');
+    const b = mutantRun(once(WSRC, site, '    const hdR = { drift: false, index: -1 }; hd.drift = true;\n'), LSRC);
+    assert.equal(b.status, 0, b.stderr);
+    assert.equal(b.stdout.split('\n').filter((l) => l === REASON).length, 0, 'wiring B');
+    const c = mutantRun(once(WSRC, site, '    const hdR = driftRunsOrFail(series, ST.pos - 1, K, fails);\n'), LSRC);
+    onlyFail(c, 'FAIL drift runs: hostDriftRuns refused the probe series (50 rounds, k 3): [lite-loglogn] hostDriftRuns: series length 50 is not a multiple of k 3');
 });

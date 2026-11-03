@@ -143,10 +143,21 @@ export const DRIFT_THRESHOLD = 2.0;
  */
 export const DRIFT_CLAMP_LO = 2 / 3;
 export const DRIFT_CLAMP_HI = 1.5;
+/**
+ * hostDriftRuns threshold (A15 / A16, C-22), NOMINAL, from .handoff/research/veb-drift-2026-11-03.md.
+ * The per-ABBA-run Page-Hinkley statistic (block medians, DRIFT_DELTA, the same clamp) recorded on the
+ * four full --veb runs peaked at 0.22 / 0.29 / 0.14 / 0.40 (base-1 / base-2 / h1 / h2), so 0.75 is
+ * 1.9x over the worst. Injected steps caught: TH 0.5 73/75, 0.75 64/75, 1.0 52/75, 2.0 18/75.
+ * Sensitivity floor ~1.15x sustained for >= ~4 runs. The CONTROL drift runs vectors (41 runs x 15
+ * rounds, k 15) fire STEP 1.25x at block 24, STEP 0.8x at 23, STEP 1.10x at 27; MOD +-8% stays quiet,
+ * while the per-round hostDrift fires on it at round 91.
+ */
+export const DRIFT_RUN_THRESHOLD = 0.75;
 
 const PFX = '[lite-loglogn] ';
 const PV = PFX + 'witnessVerdict';
 const PD = PFX + 'hostDrift';
+const PDR = PFX + 'hostDriftRuns';
 const PT = PFX + 'tierVerdict';
 const PA = PFX + 'tierASource';
 
@@ -459,6 +470,25 @@ function driftOrFail(series, n, fails) {
 }
 
 /**
+ * driftOrFail for the per-ABBA-run detector (A15): hostDriftRuns over the first n rounds in
+ * k-round blocks; a refusal becomes a FAIL line and a no-drift placeholder.
+ * @param {Float64Array} series
+ * @param {number} n
+ * @param {number} k
+ * @param {string[]} fails
+ * @returns {{ drift: boolean, index: number }}
+ */
+function driftRunsOrFail(series, n, k, fails) {
+    try {
+        return hostDriftRuns(series.subarray(0, n), k);
+    } catch (e) {
+        fails.push('drift runs: hostDriftRuns refused the probe series (' + n + ' rounds, k ' + k + '): ' +
+            (e && e.message ? e.message : String(e)));
+        return { drift: false, index: -1 };
+    }
+}
+
+/**
  * Page-Hinkley drift over per-round A/A probe timings (ns/op), each normalised by
  * the series median and clamped to [DRIFT_CLAMP_LO, DRIFT_CLAMP_HI], fed in order
  * to a fresh DriftDetector(DRIFT_PH) with latch false. Throws '[lite-loglogn]
@@ -491,6 +521,57 @@ export function hostDrift(series) {
     const det = new DriftDetector(DRIFT_PH, { delta: DRIFT_DELTA, threshold: DRIFT_THRESHOLD, latch: false });
     for (let i = 0; i < len; i++) {
         if (det.addFrom(buf, i)) return { drift: true, index: i };
+    }
+    return { drift: false, index: -1 };
+}
+
+/**
+ * Page-Hinkley drift over per-ABBA-run medians (A15): the median of each k-round block of the
+ * probe series (even k = mean of the two middle values), divided by the median of the block
+ * medians and clamped to [DRIFT_CLAMP_LO, DRIFT_CLAMP_HI], fed in order to a fresh
+ * DriftDetector(DRIFT_PH) at DRIFT_RUN_THRESHOLD with latch false. index = the first firing
+ * block, else -1. Throws '[lite-loglogn] hostDriftRuns' on a non-array, a k that is not an
+ * integer >= 1, a length that is not a multiple of k, fewer than 8 blocks, or any value that is
+ * not a finite number > 0. Cold: once per run, typed-array scratch only.
+ * @param {ArrayLike<number>} series
+ * @param {number} k
+ * @returns {{ drift: boolean, index: number }}
+ */
+export function hostDriftRuns(series, k) {
+    const isArr = Array.isArray(series) ||
+        (ArrayBuffer.isView(series) && !(series instanceof DataView));
+    if (!isArr) throw new TypeError(PDR + ': series must be an array or a typed array');
+    if (!(Number.isInteger(k) && k >= 1)) throw new RangeError(PDR + ': k must be an integer >= 1, got ' + k);
+    const len = series.length;
+    if (len % k !== 0) throw new RangeError(PDR + ': series length ' + len + ' is not a multiple of k ' + k);
+    const n = len / k;
+    if (!(n >= 8)) throw new RangeError(PDR + ': series needs >= 8 blocks, got ' + n);
+    const buf = new Float64Array(len);
+    for (let i = 0; i < len; i++) {
+        const v = series[i];
+        if (typeof v !== 'number') throw new TypeError(PDR + ': series[' + i + '] must be a number');
+        if (!(v > 0) || !Number.isFinite(v)) {
+            throw new RangeError(PDR + ': series[' + i + '] must be finite and > 0');
+        }
+        buf[i] = v;
+    }
+    const blk = new Float64Array(k);
+    const meds = new Float64Array(n);
+    const half = k >>> 1;
+    for (let r = 0; r < n; r++) {
+        blk.set(buf.subarray(r * k, r * k + k));
+        blk.sort();
+        meds[r] = (k & 1) === 1 ? blk[half] : (blk[half - 1] + blk[half]) / 2;
+    }
+    const sorted = meds.slice().sort();
+    const med = (n & 1) === 1 ? sorted[n >>> 1] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2;
+    for (let r = 0; r < n; r++) {
+        const y = meds[r] / med;
+        meds[r] = y < DRIFT_CLAMP_LO ? DRIFT_CLAMP_LO : y > DRIFT_CLAMP_HI ? DRIFT_CLAMP_HI : y;
+    }
+    const det = new DriftDetector(DRIFT_PH, { delta: DRIFT_DELTA, threshold: DRIFT_RUN_THRESHOLD, latch: false });
+    for (let r = 0; r < n; r++) {
+        if (det.addFrom(meds, r)) return { drift: true, index: r };
     }
     return { drift: false, index: -1 };
 }
@@ -648,6 +729,21 @@ function driftVector(step) {
         if (i >= 60) x *= step;
         v[i] = x;
     }
+    return v;
+}
+
+/**
+ * The CONTROL drift runs MOD shape (A15): the measured per-run family level in --veb lane order,
+ * 41 runs; -1 = the leaf-far / SH1 band runs (5-10, 15-16, 21-26, 34-37, 39), +1 = the rest.
+ */
+const DRIFT_RUN_SHAPE = Object.freeze([1, 1, 1, 1, 1, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1,
+    -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 1, 1, 1, -1, -1, -1, -1, 1, -1, 1]);
+
+/** 41 runs x 15 rounds of 25 ns/op with 3% round noise (mulberry32 0xC0FFEE), run j scaled by lvl(j). */
+function driftRunVector(lvl) {
+    const r = mulberry32(0xC0FFEE);
+    const v = new Float64Array(41 * 15);
+    for (let i = 0; i < 41 * 15; i++) v[i] = 25 * (1 + 0.03 * (2 * r() - 1)) * lvl(Math.floor(i / 15));
     return v;
 }
 
@@ -3215,7 +3311,7 @@ async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, 
 // Every timed key and query is < U' = min(U, 2^30), a Smi on every V8, so no timed body boxes. One
 // vEBTree and one StratifiedBitset per width, reloaded per keyset by clear() + add (cold), dropped
 // with gc() + settle between widths (w = 32: vEB 539,500,592 B + SB ~553 MB nominal, one width at a
-// time). Rung 1 (G3 TASK 2) = provenance, the 4 CONTROL lines, the pre-pass, the A/B scenarios, A/A,
+// time). Rung 1 (G3 TASK 2) = provenance, the 5 CONTROL lines (A15), the pre-pass, the A/B scenarios, A/A,
 // the x2 control, drift / load, COVERAGE, abVerdict, smoke. Rung 2 (G3 TASK 3) = per-width latency
 // (vEB and SB successor / add / delete), the fits + D(w), the MAX tail vs YFastTrie in a GC window,
 // RETENTION, and the EVIDENCE block; all REPORTED, no fit / latency / MAX verdict (C-22).
@@ -3736,6 +3832,29 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
         say('FAIL control drift: the injected step was missed, or FLAT / SPIKES fired');
         return 1;
     }
+    // the per-ABBA-run drift detector (A15) has teeth: steps fire, the family shape MOD does not
+    const kRun = 15;
+    const J = JSON.stringify;
+    const rFlat = hostDriftRuns(driftRunVector(() => 1), kRun);
+    const rUp = hostDriftRuns(driftRunVector((j) => (j >= 20 ? 1.25 : 1)), kRun);
+    const rDown = hostDriftRuns(driftRunVector((j) => (j >= 20 ? 0.8 : 1)), kRun);
+    const rSmall = hostDriftRuns(driftRunVector((j) => (j >= 10 ? 1.1 : 1)), kRun);
+    const vMod = driftRunVector((j) => 1 + 0.08 * DRIFT_RUN_SHAPE[j]);
+    const rMod = hostDriftRuns(vMod, kRun);
+    const pMod = hostDrift(vMod);
+    say('CONTROL drift runs: FLAT ' + J(rFlat) + ' STEP 1.25x ' + J(rUp) + ' STEP 0.8x ' + J(rDown) +
+        ' STEP 1.10x ' + J(rSmall) + ' MOD +-8% ' + J(rMod) + ' MOD per-round ' + J(pMod));
+    const bad = [];
+    if (rFlat.drift) bad.push('FLAT fired');
+    if (!rUp.drift) bad.push('STEP 1.25x missed');
+    if (!rDown.drift) bad.push('STEP 0.8x missed');
+    if (!rSmall.drift) bad.push('STEP 1.10x missed');
+    if (rMod.drift) bad.push('MOD +-8% fired');
+    if (!pMod.drift) bad.push('MOD per-round quiet');
+    if (bad.length > 0) {
+        say('FAIL control drift runs: ' + bad.join(', '));
+        return 1;
+    }
     const abV = {
         K: 15, need: 13, floor: FLOOR,
         scenarios: [{ name: 's', wins: 15, losses: 0, ratio: 0.9 }],
@@ -4220,6 +4339,10 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
     say('host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
         fmt(median(series, ST.pos)) + ' ns/op) | loadavg end ' + loadEnd.map((x) => x.toFixed(2)).join(' ') +
         ' load1 ' + load1.toFixed(2) + ' vs 0.5 x ' + cores + ' | run label ' + label);
+    const hdR = driftRunsOrFail(series, ST.pos, K, fails);
+    say('host: drift runs ' + J(hdR) + ' over ' + Math.floor(ST.pos / K) + ' ABBA-run medians (k ' + K +
+        ', threshold ' + DRIFT_RUN_THRESHOLD + ') -- the abVerdict drift input (A15); the per-round host: drift line is' +
+        ' REPORTED');
 
     // coverage floors: every width ran its scenarios and was dropped, every ABBA ran K rounds, every
     // keyset passed the pre-pass
@@ -4255,7 +4378,7 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
     }
 
     // 6. verdict (REPORTED)
-    const v = abVerdict({ K, need: NEED, floor: FLOOR, scenarios, aa, control, drift: hd.drift, load1, cores });
+    const v = abVerdict({ K, need: NEED, floor: FLOOR, scenarios, aa, control, drift: hdR.drift, load1, cores });
     for (const r of v.reasons) say('  reason ' + r);
     say('A/B verdicts (B = vEBTree vs A = StratifiedBitset) [' +
         v.verdicts.map((x) => x.name + ' ' + x.verdict).join(', ') + '] decision ' + v.decision);

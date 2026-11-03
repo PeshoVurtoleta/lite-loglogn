@@ -170,10 +170,11 @@ test('control: the scripts pin check fails on every bad scripts object', () => {
     }
 });
 
-test('test/perf holds both perf gates the test:perf glob must run', () => {
+test('test/perf holds all four perf gates the test:perf glob must run', () => {
     const files = readdirSync(join(ROOT, 'test', 'perf')).filter((f) => f.endsWith('.test.mjs'));
-    assert.ok(files.includes('PerfGate.test.mjs'), 'PerfGate.test.mjs missing: ' + JSON.stringify(files));
-    assert.ok(files.includes('XFastTriePerf.test.mjs'), 'XFastTriePerf.test.mjs missing: ' + JSON.stringify(files));
+    for (const f of ['PerfGate.test.mjs', 'XFastTriePerf.test.mjs', 'YFastTriePerf.test.mjs', 'VEBTreePerf.test.mjs']) {
+        assert.ok(files.includes(f), f + ' missing: ' + JSON.stringify(files));
+    }
 });
 
 // --- member coercion / boundary blocks land below (one per member) ----------

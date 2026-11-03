@@ -26,6 +26,14 @@
  *                                      C-11: exact counts in npm test are the gate,
  *                                      no MAX-time verdict); its probe tier-up runs
  *                                      in the same GC window kit as --xft
+ *     node test/witness.mjs --veb      the vEBTree lane ONLY (PLAN-vebtree G3, C-22):
+ *                                      B = vEBTree vs A = StratifiedBitset, ABBA A/B
+ *                                      per scenario (families C7 / PAR / SH1 / PRED,
+ *                                      w 16 / 20 / 24 / 28 / 32, smoke 16 / 28), A/A,
+ *                                      x2 control, abVerdict; combinable with --smoke
+ *                                      only (--xft / --yft / --tier / --w32 /
+ *                                      LOGLOGN_W32=1 beside it = exit 1); REPORTED
+ *                                      (D-host: none); keys and queries < min(U, 2^30)
  *
  * Every timed run goes through the shared-host lock:
  *     node ~/.claude/hooks/quiet-lock.mjs run "lite-loglogn witness" -- node test/witness.mjs
@@ -3198,6 +3206,703 @@ async function yftLane(argv, env, YFastTrie, XFastTrie, abVerdict, FLOOR, gcFn, 
     return v.exit;
 }
 
+// --- the vEBTree lane: --veb (PLAN-vebtree G3, CURRENT C-22; main only) ----------------------
+//
+// REPORTED only (C-22, D-host: none): B = vEBTree (candidate) vs A = StratifiedBitset (foil), ABBA K 15
+// / need 13 / AB_EFFECT_FLOOR per scenario; the abVerdict exit is printed, never a release gate. Its
+// --smoke is gated by test/VebWitness.test.js on counts / strings only. A row name carries op / w /
+// workload / family, never a word-read count (C-4, A6: the exact counts live in the count gate).
+// Every timed key and query is < U' = min(U, 2^30), a Smi on every V8, so no timed body boxes. One
+// vEBTree and one StratifiedBitset per width, reloaded per keyset by clear() + add (cold), dropped
+// with gc() + settle between widths (w = 32: vEB 539,500,592 B + SB ~553 MB nominal, one width at a
+// time). Rung 1 (G3 TASK 2) = provenance, the 4 CONTROL lines, the pre-pass, the A/B scenarios, A/A,
+// the x2 control, drift / load, COVERAGE, abVerdict, smoke. Rung 2 (G3 TASK 3: fits, latency, the MAX
+// tail vs YFastTrie, RETENTION, EVIDENCE) plugs in at the RUNG-2 SEAM comments below.
+
+/** --veb widths (FULL); 32 is always in, so --w32 / LOGLOGN_W32=1 beside --veb is exit 1. */
+const VEB_WS = Object.freeze([16, 20, 24, 28, 32]);
+const VEB_WS_SMOKE = Object.freeze([16, 28]);
+const VEB_KEY_CAP = 2 ** 30;   // every timed key / query < min(U, 2^30) (C-22)
+const VEB_N_S = 64;            // sparse random keyset n
+const VEB_N_L = 4096;          // dense random keyset n (also the SH1 band n and the leaf-far cap)
+const VEB_N_AA = 4096;         // A/A + drift probe + control config (vEBTree twins)
+const VEB_W_AA = 20;
+const VEB_WARM = 16;           // untimed probe tier-up blocks before round 1 (inside the GC window)
+// the C-22 families: the widths each one runs at
+const VEB_C7 = Object.freeze([16, 20, 24]);     // succ + add+delete, random n 64 / 4096 + leaf-far
+const VEB_PAR = Object.freeze([28, 32]);        // succ n 64 / 4096, add+delete n 4096
+const VEB_SH1 = Object.freeze([16, 24, 32]);    // min, max, succ past max, pred below min (band keys)
+const VEB_PRED = Object.freeze([16, 32]);       // pred n 4096
+const VOP = Object.freeze(['successor', 'predecessor']);
+
+const V_VS = 0;     // vEBTree successor block
+const V_SS = 1;     // StratifiedBitset successor block
+const V_VP = 2;     // vEBTree predecessor block
+const V_SP = 3;     // StratifiedBitset predecessor block
+const V_VU = 4;     // vEBTree add + delete block (absent keys; the set is restored)
+const V_SU = 5;     // StratifiedBitset add + delete block (absent keys)
+const V_VMN = 6;    // vEBTree min() block (qs only sets the op count)
+const V_SMN = 7;    // StratifiedBitset min() block
+const V_VMX = 8;    // vEBTree max() block
+const V_SMX = 9;    // StratifiedBitset max() block
+const V_VS2 = 10;   // control: the vEBTree successor block done TWICE, counted as one block
+const V_ORC = 11;   // sorted-array oracle (u32Successor / sortedArrayPredecessor): pre-pass only
+const V_WRONG = 12; // non-strict (>= x) foil: the pre-pass must-fail control only
+
+// the A/B scenarios one width runs (C-22 family table): C7 6, PAR 3, SH1 4, PRED 1
+function vebScenCount(w) {
+    return (VEB_C7.includes(w) ? 6 : 0) + (VEB_PAR.includes(w) ? 3 : 0) + (VEB_SH1.includes(w) ? 4 : 0) +
+        (VEB_PRED.includes(w) ? 1 : 0);
+}
+
+// the keysets one width loads: random n 64 (C7 / PAR), random n 4096 (C7 / PAR / PRED), leaf-far (C7),
+// band (SH1)
+function vebKeysetCount(w) {
+    const c7 = VEB_C7.includes(w), par = VEB_PAR.includes(w);
+    return (c7 || par ? 1 : 0) + (c7 || par || VEB_PRED.includes(w) ? 1 : 0) + (c7 ? 1 : 0) +
+        (VEB_SH1.includes(w) ? 1 : 0);
+}
+
+// one block function per structure and op, so every call site stays monomorphic; each returns an
+// int32 fold (the sink). The add + delete blocks count successful deletes (must equal len: every key
+// is absent, so add inserts and delete removes it).
+function vBlkVebSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function vBlkSbSucc(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.successor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function vBlkVebPred(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.predecessor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function vBlkSbPred(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.predecessor(qs[i]);
+        acc ^= r === undefined ? 0 : r;
+    }
+    return acc;
+}
+function vBlkVebUpd(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+function vBlkSbUpd(s, qs, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const k = qs[i];
+        s.add(k);
+        if (s.delete(k)) acc++;
+    }
+    return acc;
+}
+function vBlkVebMin(s, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.min();
+        acc = (acc + (r === undefined ? 0 : r)) | 0;
+    }
+    return acc;
+}
+function vBlkSbMin(s, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.min();
+        acc = (acc + (r === undefined ? 0 : r)) | 0;
+    }
+    return acc;
+}
+function vBlkVebMax(s, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.max();
+        acc = (acc + (r === undefined ? 0 : r)) | 0;
+    }
+    return acc;
+}
+function vBlkSbMax(s, len) {
+    let acc = 0;
+    for (let i = 0; i < len; i++) {
+        const r = s.max();
+        acc = (acc + (r === undefined ? 0 : r)) | 0;
+    }
+    return acc;
+}
+
+function vRun(r, qs, len) {
+    switch (r.kind) {
+        case V_VS: return vBlkVebSucc(r.obj, qs, len);
+        case V_SS: return vBlkSbSucc(r.obj, qs, len);
+        case V_VP: return vBlkVebPred(r.obj, qs, len);
+        case V_SP: return vBlkSbPred(r.obj, qs, len);
+        case V_VU: return vBlkVebUpd(r.obj, qs, len);
+        case V_SU: return vBlkSbUpd(r.obj, qs, len);
+        case V_VMN: return vBlkVebMin(r.obj, len);
+        case V_SMN: return vBlkSbMin(r.obj, len);
+        case V_VMX: return vBlkVebMax(r.obj, len);
+        case V_SMX: return vBlkSbMax(r.obj, len);
+        case V_VS2: return (vBlkVebSucc(r.obj, qs, len) + vBlkVebSucc(r.obj, qs, len)) | 0;
+        default: throw new WitnessFail('vEB: runner ' + r.name + ' is not timed');
+    }
+}
+
+// one strict answer (op 0 successor, 1 predecessor), normalised (-1 -> undefined); pre-pass only (cold)
+function vAnswer(r, q, op) {
+    let v;
+    switch (r.kind) {
+        case V_VS: case V_SS: return op === 0 ? r.obj.successor(q) : r.obj.predecessor(q);
+        case V_ORC:
+            if (op === 0) { v = u32Successor(r.obj, r.n, q); break; }
+            v = sortedArrayPredecessor(r.obj, r.n, q);
+            return v < 0 ? undefined : r.obj[v];
+        case V_WRONG: v = lowerBound(r.obj, r.n, q); break;
+        default: throw new WitnessFail('vEB: runner ' + r.name + ' has no answer');
+    }
+    return v === -1 ? undefined : v;
+}
+
+// first disagreement of r with the TRUE definition (the sorted-array oracle) on op, or null;
+// checked[0] += queries compared (the coverage floor)
+function vPrepassFirst(oracle, r, streams, op, checked) {
+    for (let s = 0; s < streams.length; s++) {
+        const qs = streams[s];
+        for (let i = 0; i < qs.length; i++) {
+            const q = qs[i];
+            const want = vAnswer(oracle, q, op);
+            const got = vAnswer(r, q, op);
+            checked[0]++;
+            if (got !== want) return { x: q, got, want };
+        }
+    }
+    return null;
+}
+
+// len seeded keys in [0, U), each ABSENT from the sorted key set (cold); fails closed after 64 x len draws
+function vGenAbsent(keys, U, len, seed) {
+    const rnd = mulberry32(seed);
+    const out = new Uint32Array(len);
+    const n = keys.length;
+    let have = 0;
+    for (let tries = 0; have < len; tries++) {
+        if (tries >= 64 * len) throw new WitnessFail('vEB: only ' + have + ' of ' + len + ' absent keys in U ' + U);
+        const x = Math.floor(rnd() * U);
+        if (lowerBound(keys, n, x) === x) continue;
+        out[have++] = x;
+    }
+    return out;
+}
+
+// leaf-far keys (C-22 C7): ((4j) << 8) | 255 for j < n, the LAST bit of every 4th 256-key leaf
+function vLeafFarKeys(n) {
+    const out = new Uint32Array(n);
+    for (let j = 0; j < n; j++) out[j] = ((4 * j) << 8) | 255;
+    return out;
+}
+
+// leaf-far queries / adds: ((4j) << 8) | r with seeded j < n and r < 32 -- the FIRST word of a key's
+// leaf, so a successor (or add's emptiness test, delete's emptied test) scans the leaf to its last
+// word; every such add key is absent (each key's low byte is 255)
+function vLeafFarQueries(n, len, seed) {
+    const rnd = mulberry32(seed);
+    const out = new Uint32Array(len);
+    for (let i = 0; i < len; i++) out[i] = ((4 * Math.floor(rnd() * n)) << 8) | Math.floor(rnd() * 32);
+    return out;
+}
+
+// band keys (C-22 SH1): n distinct seeded keys in [Up / 4, 3 Up / 4), sorted ascending
+function vBandKeys(n, Up, seed) {
+    const out = genKeys(n, Up / 2, seed);
+    for (let i = 0; i < n; i++) out[i] += Up / 4;
+    return out;
+}
+
+// len seeded queries in [lo, lo + span)
+function vSpanQueries(len, lo, span, seed) {
+    const out = genQueries(len, span, seed);
+    for (let i = 0; i < len; i++) out[i] += lo;
+    return out;
+}
+
+// cold: clear the structure and load the sorted keys
+function vLoad(s, keys) {
+    s.clear();
+    for (let i = 0; i < keys.length; i++) s.add(keys[i]);
+}
+
+// --veb entry: --veb is dispatched FIRST, so its KNOWN list names any --xft / --yft / --tier / --w32
+// beside it (exit 1, before any banner); vEBTree / YFastTrie from laneModules() (no new static import)
+async function vebMain(argv, env) {
+    const KNOWN = ['--veb', '--smoke'];
+    for (const a of argv) {
+        if (!KNOWN.includes(a)) {
+            process.stdout.write(PFX + 'witness: unknown flag ' + JSON.stringify(a) + ' (known with --veb: --smoke' +
+                (a === '--w32' ? '; --veb always sweeps w = 32' : '') + ')\n');
+            return 1;
+        }
+    }
+    if (env !== null && typeof env === 'object' && env.LOGLOGN_W32 === '1') {
+        process.stdout.write(PFX + 'witness: LOGLOGN_W32=1 is not applicable to --veb (it always sweeps w = 32)\n');
+        return 1;
+    }
+    const M = await laneModules();
+    if (typeof M.lib.vEBTree !== 'function') {
+        throw new WitnessFail('vEB: LogLogN.js must export vEBTree');
+    }
+    if (typeof M.lib.YFastTrie !== 'function') {
+        throw new WitnessFail('vEB: LogLogN.js must export YFastTrie (the MAX tail foil)');
+    }
+    return vebLane(argv, env, M.lib.vEBTree, M.lib.YFastTrie, M.abVerdict, M.FLOOR, M.gcFn);
+}
+
+// YFastTrie: the rung-2 MAX tail foil (G3 TASK 3); rung 1 does not touch it
+async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
+    const SMOKE = argv.includes('--smoke');
+    const K = SMOKE ? 3 : WITNESS_K;
+    const NEED = SMOKE ? 2 : WITNESS_NEED;
+    const Q = SMOKE ? 1 << 12 : 1 << 16;
+    const WS = SMOKE ? VEB_WS_SMOKE : VEB_WS;
+    const U_AA = 2 ** VEB_W_AA;
+    const say = (s) => { process.stdout.write(s + '\n'); };
+    const fails = [];
+    const t0wall = performance.now();
+    let wantScen = 0, wantKeysets = 1;   // + the A/A config
+    for (const w of WS) { wantScen += vebScenCount(w); wantKeysets += vebKeysetCount(w); }
+    if (!(WS.length >= 2) || !(wantScen > 0) || !(K >= 1) || !(NEED * 2 > K)) {
+        throw new WitnessFail('vEB: coverage floor: ' + WS.length + ' widths (need >= 2), ' + wantScen +
+            ' scenarios (need > 0), K ' + K + ' need ' + NEED);
+    }
+
+    // 1. provenance
+    const cores = os.availableParallelism();
+    const loadStart = os.loadavg();
+    const cpus = os.cpus();
+    const qlHost = env !== null && typeof env === 'object' ? env.QUIET_LOCK_HOST : undefined;
+    const qlWhy = env !== null && typeof env === 'object' ? env.QUIET_LOCK_WHY : undefined;
+    const label = qlHost === 'quiet' ? 'QUIET' : 'PRELIMINARY';
+    const libBuf = readFileSync(fileURLToPath(new URL('../LogLogN.js', import.meta.url)));
+    let head = 'unknown';
+    try {
+        head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fileURLToPath(new URL('..', import.meta.url)),
+            encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+        head = 'unknown (git rev-parse failed)';
+    }
+    say('lite-loglogn STATISTICAL witness -- mode VEB ' + (SMOKE ? 'SMOKE' : 'FULL') +
+        ' (REPORTED; D-host: none, the abVerdict exit is never a release gate; C-22: no MAX / latency / fit verdict)');
+    say('provenance: date ' + new Date().toISOString() + ' host ' + os.hostname());
+    say('provenance: cpu ' + (cpus.length > 0 ? cpus[0].model : 'unknown') + ' availableParallelism ' + cores);
+    say('provenance: loadavg start ' + loadStart.map((x) => x.toFixed(2)).join(' '));
+    say('provenance: node ' + process.version + ' v8 ' + process.versions.v8 + ' ' +
+        process.platform + '/' + process.arch);
+    say('provenance: quiet-lock ' + (typeof qlHost === 'string' ? qlHost + ' (' + qlWhy + ')' : 'not set (not run under quiet-lock)') +
+        ' -> run label ' + label + (SMOKE ? ' (smoke: wiring only, numbers are not evidence)' : ''));
+    say('provenance: LogLogN.js ' + libBuf.length + ' B sha256 ' + sha256Hex(libBuf) + ' | git HEAD ' + head);
+    say('provenance: lite-sketch ' + pkgVersion('@zakkster/lite-sketch') + ' lite-adaptive ' +
+        pkgVersion('@zakkster/lite-adaptive') + ' lite-gc-profiler ' + pkgVersion('@zakkster/lite-gc-profiler') +
+        ' lite-leak ' + pkgVersion('@zakkster/lite-leak'));
+    say('provenance: K ' + K + ' need ' + NEED + ' floor ' + FLOOR + ' (AB_EFFECT_FLOOR) queries/block ' + Q +
+        ' | widths ' + WS.length + ' [' + WS.join(', ') + '] | keys and queries < U\' = min(U, 2^30)' +
+        ' | A/A + control + drift probe vEBTree n ' + VEB_N_AA + ' w ' + VEB_W_AA);
+    say('provenance: families (C-22) C7 w [' + VEB_C7.join(', ') + '] successor + add+delete on random n ' + VEB_N_S +
+        ' / ' + VEB_N_L + ' and leaf-far (keys ((4j) << 8) | 255, queries / adds ((4j) << 8) | r, r < 32);' +
+        ' PAR w [' + VEB_PAR.join(', ') + '] successor n ' + VEB_N_S + ' / ' + VEB_N_L + ', add+delete n ' + VEB_N_L +
+        '; SH1 w [' + VEB_SH1.join(', ') + '] min, max, successor past max, predecessor below min on band keys' +
+        ' n ' + VEB_N_L + ' in [U\'/4, 3U\'/4); PRED w [' + VEB_PRED.join(', ') + '] predecessor n ' + VEB_N_L);
+    say('provenance: flags [' + argv.join(' ') + '] LOGLOGN_W32=' +
+        (env !== null && typeof env === 'object' && env.LOGLOGN_W32 !== undefined ? env.LOGLOGN_W32 : '(unset)'));
+    say('A/B pair (C-22): B = vEBTree (candidate) vs A = StratifiedBitset (foil), one scenario per op / w /' +
+        ' workload / family; verdicts win / lose / none; the run informs, never decides');
+
+    // 2. startup controls: the drift detector and abVerdict have teeth (deterministic)
+    const dFlat = hostDrift(driftVector(1));
+    const dStep = hostDrift(driftVector(1.25));
+    const vSp = driftVector(1);
+    vSp[30] = 400;
+    vSp[90] = 400;
+    const dSp = hostDrift(vSp);
+    say('CONTROL drift: FLAT ' + JSON.stringify(dFlat) + ' STEP ' + JSON.stringify(dStep) +
+        ' SPIKES ' + JSON.stringify(dSp));
+    if (dFlat.drift || !dStep.drift || dSp.drift) {
+        say('FAIL control drift: the injected step was missed, or FLAT / SPIKES fired');
+        return 1;
+    }
+    const abV = {
+        K: 15, need: 13, floor: FLOOR,
+        scenarios: [{ name: 's', wins: 15, losses: 0, ratio: 0.9 }],
+        aa: [{ name: 'aa', wins: 7, losses: 8, ratio: 1 }],
+        control: { wins: 0, losses: 15, ratio: 2 },
+        drift: false, load1: 1, cores: 12,
+    };
+    const v0 = abVerdict(abV);
+    const v1 = abVerdict({ ...abV, control: { wins: 15, losses: 0, ratio: 0.5 } });
+    const v2 = abVerdict({ ...abV, aa: [{ name: 'aa', wins: 14, losses: 1, ratio: 0.9 }] });
+    const v3 = abVerdict({ ...abV, scenarios: [{ name: 's', wins: 0, losses: 15, ratio: 1.5 }] });
+    if (v0.exit !== 0 || v0.decision !== 'PASS' || v0.verdicts[0].verdict !== 'win' ||
+        v1.exit !== 1 || v1.decision !== 'FAIL' || v2.exit !== 2 || v2.decision !== 'PENDING' ||
+        v3.exit !== 0 || v3.verdicts[0].verdict !== 'lose') {
+        say('FAIL control abVerdict: self-check read ' + v0.decision + ' / ' + v1.decision + ' / ' + v2.decision +
+            ' / ' + v3.decision + ' ' + (v3.verdicts.length > 0 ? v3.verdicts[0].verdict : '(none)'));
+        return 1;
+    }
+    say('CONTROL abVerdict self-check: base PASS exit 0 (win); losing scenario PASS exit 0 (lose); control-not-losing' +
+        ' FAIL exit 1; A/A winner above the floor PENDING exit 2 -- ok');
+
+    // the GC-window kit's 3 must-fail controls (module level, shared with --xft / --yft)
+    if (!(await gcControls(say))) return 1;
+
+    // per-run state, allocated ONCE before any round
+    const nAbba = wantScen + 3;   // every scenario, 2 A/A, 1 control
+    const series = new Float64Array(K * nAbba);
+    const ST = { pos: 0, abba: 0, drops: 0 };
+    const TM = new Float64Array(4);
+    const RC = new Float64Array(K);
+    const RF = new Float64Array(K);
+    const SINK = new Int32Array(1);
+    const CG = new Float64Array(3);
+    const CHK = new Float64Array(1);   // pre-pass successor / predecessor queries compared (coverage floor)
+    const PRE = new Int32Array(3);     // pre-pass keysets, min / max checks, add + delete checks (coverage floor)
+    const FAM = new Int32Array(4);     // A/B scenarios per family: C7, PAR, SH1, PRED
+    const rows = [];                   // { fam, op, w, wl, t } per scenario: the rung-2 fit / EVIDENCE input
+
+    // clock granularity, once (a per-op sample of a ~10 ns op is mostly clock)
+    CG[0] = Infinity;
+    CG[1] = 0;
+    for (let i = 0; i < CLOCK_PAIRS; i++) {
+        const t = performance.now();
+        CG[2] = performance.now() - t;
+        if (CG[2] === 0) CG[1]++;
+        else if (CG[2] < CG[0]) CG[0] = CG[2];
+    }
+    say('REPORTED clock: granularity ' + (Number.isFinite(CG[0]) ? fmt(CG[0] * 1e6) + ' ns' : 'n/a (no nonzero delta)') +
+        ' (zero deltas ' + (CG[1] * 100 / CLOCK_PAIRS).toFixed(2) + '% of ' + CLOCK_PAIRS + ' pairs)');
+
+    // the A/A config doubles as the drift probe and the control (vEBTree twins, fixed config)
+    const keysAA = genKeys(VEB_N_AA, U_AA, 0xA11A0201);
+    const qAA = genQueries(Q, U_AA, 0xA11A0202);
+    const xAA = genExtras(keysAA, U_AA);
+    const absAA = vGenAbsent(keysAA, U_AA, Q, 0xA11A0203);
+    const vA = runner(V_VS, 'vEBTree', new vEBTree(U_AA), VEB_N_AA);
+    const vB = runner(V_VS, 'vEBTree(B)', new vEBTree(U_AA), VEB_N_AA);
+    vLoad(vA.obj, keysAA);
+    vLoad(vB.obj, keysAA);
+    const probe = vA;
+
+    // pre-pass must-fail control: a non-strict foil MUST disagree with the true definition
+    const wrongHit = vPrepassFirst(runner(V_ORC, 'sorted-array', keysAA, VEB_N_AA),
+        runner(V_WRONG, 'wrong(>=x)', keysAA, VEB_N_AA), [qAA, xAA], 0, CHK);
+    if (wrongHit === null) {
+        say('FAIL control pre-pass: the non-strict foil was not flagged -- the pre-pass has no teeth');
+        return 1;
+    }
+    say('CONTROL pre-pass: non-strict foil flagged at x=' + wrongHit.x + ' (got ' + wrongHit.got +
+        ', want ' + wrongHit.want + ') -- ok');
+
+    // correctness pre-pass (cold, before any timing of a keyset): every candidate answers the sorted-array
+    // oracle's strict successor AND predecessor on every stream (so vEB == SB == the oracle), its size /
+    // min / max equal the oracle's n / first / last key, and every add + delete block restores the set
+    const prepass = (cfg, keys, cands, streams, upds) => {
+        const n = keys.length;
+        const orc = runner(V_ORC, 'sorted-array', keys, n);
+        const c0 = CHK[0];
+        for (let op = 0; op < 2; op++) {
+            for (const r of cands) {
+                const hit = vPrepassFirst(orc, r, streams, op, CHK);
+                if (hit !== null) {
+                    throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' ' + VOP[op] +
+                        ' disagrees with the sorted-array oracle at first x=' + hit.x + ' (got ' + hit.got +
+                        ', want ' + hit.want + ')');
+                }
+            }
+        }
+        let want = 0; for (const qs of streams) want += qs.length; want *= 2 * cands.length;
+        if (!(want > 0) || CHK[0] - c0 !== want) {
+            throw new WitnessFail('pre-pass ' + cfg + ': compared ' + (CHK[0] - c0) + ' of ' + want + ' queries (coverage floor)');
+        }
+        for (const r of cands) {
+            const s = r.obj;
+            if (s.size !== n || s.min() !== keys[0] || s.max() !== keys[n - 1]) {
+                throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' size / min / max ' + s.size + ' / ' + s.min() +
+                    ' / ' + s.max() + ' != the sorted-array oracle ' + n + ' / ' + keys[0] + ' / ' + keys[n - 1]);
+            }
+            PRE[1] += 2;
+        }
+        for (let u = 0; u < upds.length; u += 2) {
+            const r = upds[u], abs = upds[u + 1];
+            const got = vRun(r, abs, Q);
+            if (got !== Q || r.obj.size !== n) {
+                throw new WitnessFail('pre-pass ' + cfg + ': ' + r.name + ' add + delete block deleted ' + got + ' of ' + Q +
+                    ', size ' + r.obj.size + ' != ' + n);
+            }
+            PRE[2]++;
+        }
+        PRE[0]++;
+    };
+    prepass('A/A n=' + VEB_N_AA + ' w=' + VEB_W_AA, keysAA, [vA, vB], [qAA, xAA],
+        [runner(V_VU, 'vEBTree', vA.obj, VEB_N_AA), absAA, runner(V_VU, 'vEBTree(B)', vB.obj, VEB_N_AA), absAA]);
+    // the control does exactly double work (deterministic): its fold equals twice the single block's
+    const ctrl = runner(V_VS2, 'vEBTree x2', vA.obj, VEB_N_AA);
+    if (vRun(ctrl, qAA, Q) !== ((2 * vRun(vA, qAA, Q)) | 0)) {
+        throw new WitnessFail('pre-pass control: the vEB x2 block does not fold to twice the single block (not double work)');
+    }
+    // tier the probe up before round 1, inside the GC window (untimed; the FULL run takes the same
+    // window here, before its first timed block)
+    const GWN = new Int32Array(1);
+    const wW = await gcWindow(() => {
+        for (let i = 0; i < VEB_WARM; i++) { SINK[0] ^= vRun(probe, qAA, Q); GWN[0]++; }
+    });
+    say('GC window: ' + GWN[0] + ' untimed vEBTree successor probe blocks of ' + Q + ' queries (the tier-up before' +
+        ' round 1): gc.major ' + wW.major + ' minor ' + wW.minor + ' arrayBuffers growth ' + wW.growth +
+        ' B (tolerance: major 0, growth 0 B) -- ' + (wW.majorBad || wW.abBad ? 'FAIL' : 'ok'));
+    if (wW.majorBad) fails.push(wW.observed ? 'gc window: gc.major ' + wW.major + ' > 0 (observed ' + wW.observed + ')' : 'gc window: gc.major unobserved');
+    if (wW.abBad) fails.push('gc window: arrayBuffers growth ' + wW.growth + ' B > 0');
+
+    // time one block of runner r: ns/op, written into TM[slot]
+    const timeInto = (r, qs, slot) => {
+        const t = performance.now();
+        SINK[0] ^= vRun(r, qs, Q);
+        TM[slot] = (performance.now() - t) * 1e6 / Q;
+    };
+
+    // K ABBA rounds of candidate a vs foil b (the B2b protocol, R3a re-warm), one probe block per round
+    // into the drift series
+    const abba = (nm, a, qa, b, qb) => {
+        vRun(a, qa, Q); vRun(b, qb, Q); vRun(probe, qAA, Q);   // warm-up, untimed
+        let wins = 0, losses = 0, rounds = 0;
+        for (let r = 0; r < K; r++) {
+            SINK[0] ^= vRun(a, qa, Q);
+            timeInto(a, qa, 0);
+            timeInto(b, qb, 1);
+            timeInto(b, qb, 2);
+            timeInto(a, qa, 3);
+            const ca = TM[0] + TM[3];
+            const cb = TM[1] + TM[2];
+            if (ca < cb) wins++;
+            else if (cb < ca) losses++;
+            RC[r] = ca / 2;
+            RF[r] = cb / 2;
+            SINK[0] ^= vRun(probe, qAA, Q);
+            timeInto(probe, qAA, 0);
+            series[ST.pos++] = TM[0];
+            rounds++;
+        }
+        ST.abba++;
+        const t = { wins, losses, rounds, candMed: median(RC, K), foilMed: median(RF, K), ratio: NaN };
+        if (rounds !== K) fails.push(nm + ': ' + rounds + ' rounds != K ' + K);
+        if (!(wins + losses <= K)) fails.push(nm + ': wins + losses > K');
+        if (!(t.candMed > 0) || !(t.foilMed > 0) || !Number.isFinite(t.candMed) || !Number.isFinite(t.foilMed)) {
+            fails.push(nm + ': median not finite > 0 (candidate ' + t.candMed + ', foil ' + t.foilMed + ')');
+        } else {
+            t.ratio = t.candMed / t.foilMed;
+        }
+        return t;
+    };
+    const tl = (t) => t.wins + ' / ' + t.losses + ' / ' + (t.rounds - t.wins - t.losses);
+    const r4 = (x) => (Number.isFinite(x) ? x.toFixed(4) : String(x));
+    const ab = (name, t) => ({ name, wins: t.wins, losses: t.losses, ratio: t.ratio });
+
+    const scenarios = [];
+    const FAMS = ['C7', 'PAR', 'SH1', 'PRED'];
+    // one A/B scenario: B = vEB runner a on qa vs A = SB runner b on qb; the row name is family + op + w +
+    // workload (never a read count, C-4 / A6)
+    const scen = (fi, op, w, wl, a, qa, b, qb) => {
+        const name = FAMS[fi] + ' ' + op + ' w=' + w + ' ' + wl;
+        const t = abba(name, a, qa, b, qb);
+        scenarios.push(ab(name, t));
+        rows.push({ fam: FAMS[fi], op, w, wl, t });
+        FAM[fi]++;
+        say('  ' + name + ': vEB ' + fmt(t.candMed) + ' | SB ' + fmt(t.foilMed) + ' | ' + tl(t) + ' ratio ' + r4(t.ratio));
+    };
+
+    // 3. the width loop: one vEBTree + one StratifiedBitset per width, every keyset of that width, then
+    // the pair is dropped (runWidth returns, its frame dies) and gc() + settle runs before the next width
+    say('A/B scenarios per width (B = vEBTree vs A = StratifiedBitset; ns/op medians; wins / losses / ties of K ' + K + ')');
+    const runWidth = (w) => {
+        const U = 2 ** w;
+        const Up = U < VEB_KEY_CAP ? U : VEB_KEY_CAP;
+        const c7 = VEB_C7.includes(w), par = VEB_PAR.includes(w), sh1 = VEB_SH1.includes(w), pred = VEB_PRED.includes(w);
+        const veb = new vEBTree(U);
+        const sb = new StratifiedBitset(U);
+        const vS = runner(V_VS, 'vEBTree', veb, 0), sS = runner(V_SS, 'StratifiedBitset', sb, 0);
+        const vP = runner(V_VP, 'vEBTree', veb, 0), sP = runner(V_SP, 'StratifiedBitset', sb, 0);
+        const vU = runner(V_VU, 'vEBTree', veb, 0), sU = runner(V_SU, 'StratifiedBitset', sb, 0);
+        say('w=' + w + ' (U 2^' + w + ', keys and queries < ' + (Up === U ? 'U' : '2^30') + '): families' +
+            (c7 ? ' C7' : '') + (par ? ' PAR' : '') + (sh1 ? ' SH1' : '') + (pred ? ' PRED' : '') +
+            ' | byteLength vEB ' + veb.byteLength + ' B SB ' + sb.byteLength + ' B');
+        if (w === 32) {
+            say('  NOTE w=32: every timed key and query is < 2^30 (C-22), so no harness value boxes; the tree spans the' +
+                ' full 2^32 universe');
+        }
+        // keyset random n 64: C7 successor + add+delete, PAR successor
+        if (c7 || par) {
+            const keys = genKeys(VEB_N_S, Up, 0x5EED6000 + w);
+            const qs = genQueries(Q, Up, 0x0E576000 + w);
+            const abs = vGenAbsent(keys, Up, Q, 0xAB5E6000 + w);
+            vLoad(veb, keys); vLoad(sb, keys);
+            prepass('w=' + w + ' random n=' + VEB_N_S, keys, [vS, sS], [qs, abs, genExtras(keys, Up)], [vU, abs, sU, abs]);
+            if (c7) scen(0, 'successor', w, 'random n=' + VEB_N_S, vS, qs, sS, qs);
+            if (c7) scen(0, 'add+delete', w, 'random n=' + VEB_N_S, vU, abs, sU, abs);
+            if (par) scen(1, 'successor', w, 'random n=' + VEB_N_S, vS, qs, sS, qs);
+            if (veb.size !== VEB_N_S || sb.size !== VEB_N_S) fails.push('w=' + w + ' random n=' + VEB_N_S + ': size changed by the lane');
+        }
+        // keyset random n 4096: C7 successor + add+delete, PAR successor + add+delete, PRED predecessor
+        if (c7 || par || pred) {
+            const keys = genKeys(VEB_N_L, Up, 0x5EED7000 + w);
+            const qs = genQueries(Q, Up, 0x0E577000 + w);
+            const abs = vGenAbsent(keys, Up, Q, 0xAB5E7000 + w);
+            vLoad(veb, keys); vLoad(sb, keys);
+            prepass('w=' + w + ' random n=' + VEB_N_L, keys, [vS, sS], [qs, abs, genExtras(keys, Up)], [vU, abs, sU, abs]);
+            if (c7 || par) scen(c7 ? 0 : 1, 'successor', w, 'random n=' + VEB_N_L, vS, qs, sS, qs);
+            if (c7 || par) scen(c7 ? 0 : 1, 'add+delete', w, 'random n=' + VEB_N_L, vU, abs, sU, abs);
+            if (pred) scen(3, 'predecessor', w, 'random n=' + VEB_N_L, vP, qs, sP, qs);
+            if (veb.size !== VEB_N_L || sb.size !== VEB_N_L) fails.push('w=' + w + ' random n=' + VEB_N_L + ': size changed by the lane');
+            // RUNG-2 SEAM (G3 TASK 3, B2): the per-width latency runs (vEB and SB successor / add / delete, each op
+            // in its own timed pair, on this n = 4096 keyset and these qs / abs streams) go HERE, while it is loaded
+        }
+        // keyset leaf-far (C7): n = min(4096, U' / 1024) keys at the last bit of every 4th leaf
+        if (c7) {
+            const n = VEB_N_L < Up / 1024 ? VEB_N_L : Up / 1024;
+            const keys = vLeafFarKeys(n);
+            const qs = vLeafFarQueries(n, Q, 0x0E578000 + w);
+            const abs = vLeafFarQueries(n, Q, 0xAB5E8000 + w);
+            vLoad(veb, keys); vLoad(sb, keys);
+            prepass('w=' + w + ' leaf-far n=' + n, keys, [vS, sS], [qs, abs, genExtras(keys, Up)], [vU, abs, sU, abs]);
+            scen(0, 'successor', w, 'leaf-far n=' + n, vS, qs, sS, qs);
+            scen(0, 'add+delete', w, 'leaf-far n=' + n, vU, abs, sU, abs);
+            if (veb.size !== n || sb.size !== n) fails.push('w=' + w + ' leaf-far n=' + n + ': size changed by the lane');
+        }
+        // keyset band (SH1): keys in [U'/4, 3U'/4); successor queries past max in [3U'/4, U'), predecessor
+        // queries below min in [0, U'/4) -- the cases a [min, max] header answers
+        if (sh1) {
+            const keys = vBandKeys(VEB_N_L, Up, 0x5EED9000 + w);
+            const qHi = vSpanQueries(Q, 3 * (Up / 4), Up / 4, 0x0E579000 + w);
+            const qLo = vSpanQueries(Q, 0, Up / 4, 0x0E57A000 + w);
+            vLoad(veb, keys); vLoad(sb, keys);
+            prepass('w=' + w + ' band n=' + VEB_N_L, keys, [vS, sS], [qHi, qLo, genExtras(keys, Up)], []);
+            const band = 'band n=' + VEB_N_L;
+            scen(2, 'min', w, band, runner(V_VMN, 'vEBTree', veb, 0), qHi, runner(V_SMN, 'StratifiedBitset', sb, 0), qHi);
+            scen(2, 'max', w, band, runner(V_VMX, 'vEBTree', veb, 0), qHi, runner(V_SMX, 'StratifiedBitset', sb, 0), qHi);
+            scen(2, 'successor past max', w, band, vS, qHi, sS, qHi);
+            scen(2, 'predecessor below min', w, band, vP, qLo, sP, qLo);
+            if (veb.size !== VEB_N_L || sb.size !== VEB_N_L) fails.push('w=' + w + ' band: size changed by the lane');
+        }
+        return veb.byteLength < sb.byteLength ? veb.byteLength : sb.byteLength;
+    };
+    for (let j = 0; j < WS.length; j++) {
+        const s0 = scenarios.length;
+        const ab0 = process.memoryUsage().arrayBuffers; const minB = runWidth(WS[j]);
+        if (scenarios.length - s0 !== vebScenCount(WS[j])) {
+            fails.push('coverage: w=' + WS[j] + ' ran ' + (scenarios.length - s0) + ' of ' + vebScenCount(WS[j]) + ' scenarios');
+        }
+        gcFn();
+        await settle(XFT_GC_SETTLE_MS);
+        const ab1 = process.memoryUsage().arrayBuffers; if (!(ab1 - ab0 < minB)) fails.push('w=' + WS[j] + ': a structure was not released (arrayBuffers +' + (ab1 - ab0) + ' B >= ' + minB + ' B)');
+        ST.drops++;
+        say('  drop w=' + WS[j] + ': the vEBTree + StratifiedBitset pair released, gc() + settle ' + XFT_GC_SETTLE_MS +
+            ' ms (arrayBuffers ' + process.memoryUsage().arrayBuffers + ' B, REPORTED)');
+    }
+    // RUNG-2 SEAM (G3 TASK 3, B2): after the width loop -- the fits (rows[]: successor and add+delete at
+    // n = 4096 vs log2(w) and vs w, plus D(w) per width), then the MAX tail (fill then drain M 4096 at w 16 /
+    // 20 / 24 / 28, smoke 16 / 28: vEB A replays in a GC window, vEB B and YFastTrie C timed per op) and its
+    // RETENTION tracker over A / B / C. REPORTED; no fit / latency / MAX verdict (C-22).
+
+    // 4. control: the vEBTree successor block done twice (candidate) vs once: MUST lose
+    const tc = abba('control', ctrl, qAA, vA, qAA);
+    const control = { wins: tc.wins, losses: tc.losses, ratio: tc.ratio };
+    say('A/B control: vEBTree x2 (candidate, double work) ' + fmt(tc.candMed) + ' vs vEBTree ' + fmt(tc.foilMed) +
+        ' at n ' + VEB_N_AA + ' w ' + VEB_W_AA + ' | ' + tl(tc) + ' ratio ' + r4(tc.ratio) + ' (must lose)');
+
+    // 5. A/A: vEBTree vs an independently built identical vEBTree, successor and add+delete
+    const ta = abba('aa succ', vA, qAA, vB, qAA);
+    const tb = abba('aa add+delete', runner(V_VU, 'vEBTree', vA.obj, VEB_N_AA), absAA,
+        runner(V_VU, 'vEBTree(B)', vB.obj, VEB_N_AA), absAA);
+    const aa = [ab('aa successor n=' + VEB_N_AA + ' w=' + VEB_W_AA, ta), ab('aa add+delete n=' + VEB_N_AA + ' w=' + VEB_W_AA, tb)];
+    say('A/B A/A: successor vEBTree ' + fmt(ta.candMed) + ' vs vEBTree(B) ' + fmt(ta.foilMed) + ' | ' + tl(ta) +
+        ' ratio ' + r4(ta.ratio) + ' || add+delete ' + fmt(tb.candMed) + ' vs ' + fmt(tb.foilMed) + ' | ' + tl(tb) +
+        ' ratio ' + r4(tb.ratio) + ' (must not declare a winner above the floor)');
+    if (vA.obj.size !== VEB_N_AA || vB.obj.size !== VEB_N_AA) fails.push('A/A: size changed by the lane');
+
+    // drift + load
+    if (ST.pos !== series.length) fails.push('drift series ' + ST.pos + ' != ' + series.length);
+    const hd = driftOrFail(series, ST.pos, fails);
+    const loadEnd = os.loadavg();
+    const load1 = Math.max(loadStart[0], loadEnd[0]);
+    say('host: drift ' + JSON.stringify(hd) + ' over ' + ST.pos + ' probe rounds (median ' +
+        fmt(median(series, ST.pos)) + ' ns/op) | loadavg end ' + loadEnd.map((x) => x.toFixed(2)).join(' ') +
+        ' load1 ' + load1.toFixed(2) + ' vs 0.5 x ' + cores + ' | run label ' + label);
+
+    // coverage floors: every width ran its scenarios and was dropped, every ABBA ran K rounds, every
+    // keyset passed the pre-pass
+    const cov = [
+        'widths ' + WS.length + ' [' + WS.join(', ') + '] dropped ' + ST.drops + ' / ' + WS.length,
+        'A/B scenarios ' + scenarios.length + ' / ' + wantScen + ' (C7 ' + FAM[0] + ', PAR ' + FAM[1] + ', SH1 ' + FAM[2] +
+            ', PRED ' + FAM[3] + ')',
+        'ABBA runs ' + ST.abba + ' / ' + nAbba + ' (K ' + K + ' rounds each)',
+        'probe rounds ' + ST.pos,
+        'pre-pass keysets ' + PRE[0] + ' / ' + wantKeysets + ', queries ' + CHK[0] + ', min/max checks ' + PRE[1] +
+            ', add+delete checks ' + PRE[2],
+        'gc window blocks ' + GWN[0] + ' / ' + VEB_WARM,
+    ];
+    // RUNG-2 SEAM (G3 TASK 3, B2): push the 'latency runs <n> / <want>' and 'tail runs <n> / <want>' parts here
+    say('COVERAGE: ' + cov.join(', '));
+    if (!(GWN[0] > 0) || GWN[0] !== VEB_WARM) fails.push('coverage: gc window blocks ' + GWN[0] + ' != ' + VEB_WARM);
+    if (ST.abba !== nAbba) fails.push('coverage: ABBA runs ' + ST.abba + ' != ' + nAbba);
+    if (ST.drops !== WS.length) fails.push('coverage: width drops ' + ST.drops + ' != ' + WS.length);
+    if (scenarios.length !== wantScen || rows.length !== wantScen || !(scenarios.length > 0)) {
+        fails.push('coverage: A/B scenarios ' + scenarios.length + ' != ' + wantScen);
+    }
+    if (PRE[0] !== wantKeysets) fails.push('coverage: pre-pass keysets ' + PRE[0] + ' != ' + wantKeysets);
+    if (!(CHK[0] > 0)) fails.push('coverage: the pre-pass compared 0 queries');
+    if (fails.length > 0) {
+        for (const f of fails) say('FAIL ' + f);
+        return 1;
+    }
+
+    // 6. verdict (REPORTED)
+    const v = abVerdict({ K, need: NEED, floor: FLOOR, scenarios, aa, control, drift: hd.drift, load1, cores });
+    for (const r of v.reasons) say('  reason ' + r);
+    say('A/B verdicts (B = vEBTree vs A = StratifiedBitset) [' +
+        v.verdicts.map((x) => x.name + ' ' + x.verdict).join(', ') + '] decision ' + v.decision);
+    // RUNG-2 SEAM (G3 TASK 3, B2): the EVIDENCE block (verdict lists per family -- C7 -> reopen C-7, SH1 ->
+    // S-H1 priority, PAR + fits + MAX -> ship as built; no word counts) prints here, before the sink line
+    say('sink ' + SINK[0] + ' | wall ' + ((performance.now() - t0wall) / 1000).toFixed(2) + ' s | label ' + label);
+    const shapeOk = (v.exit === 0 || v.exit === 1 || v.exit === 2) && Array.isArray(v.reasons) &&
+        v.reasons.every((r) => typeof r === 'string') && Array.isArray(v.verdicts) &&
+        v.verdicts.length === scenarios.length && ['PASS', 'FAIL', 'PENDING'].includes(v.decision) &&
+        v.verdicts.every((x) => x.verdict === 'win' || x.verdict === 'lose' || x.verdict === 'none');
+    if (!shapeOk) {
+        say('FAIL abVerdict returned a malformed result');
+        return 1;
+    }
+    if (SMOKE) {
+        say('abVerdict exit (printed, not used in smoke): ' + v.exit + ' ' + v.decision);
+        say('VEB SMOKE ok (untimed wiring: every scenario ran, every width dropped, abVerdict called)');
+        return 0;
+    }
+    say('VEB exit ' + v.exit + ' ' + v.decision + ' -- REPORTED with provenance (' + label +
+        '); D-host: none, never a release gate');
+    return v.exit;
+}
+
 // realpath the entry: a symlinked path (macOS /tmp -> /private/tmp) must still run main()
 function isEntry() {
     if (typeof process.argv[1] !== 'string') return false;
@@ -3215,6 +3920,12 @@ function failOut(e) {
     return 1;
 }
 
+if (IS_MAIN && process.argv.slice(2).includes('--veb')) {
+    // --veb first: its KNOWN list names any --xft / --yft / --tier / --w32 beside it (exit 1, no banner)
+    vebMain(process.argv.slice(2), process.env).then(
+        (c) => { process.exitCode = c; },
+        (e) => { process.exitCode = failOut(e); });
+} else // the pre-vEB chain follows unchanged
 if (IS_MAIN && process.argv.slice(2).includes('--yft')) {
     // --yft first: its KNOWN list names any --xft / --tier beside it as an unknown flag (exit 1, no banner)
     yftMain(process.argv.slice(2), process.env).then(

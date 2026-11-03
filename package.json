@@ -33,6 +33,7 @@
     "witness:tier": "node test/witness.mjs --tier",
     "witness:xft": "node test/witness.mjs --xft",
     "witness:yft": "node test/witness.mjs --yft",
+    "witness:veb": "node test/witness.mjs --veb",
     "test:perf": "node --expose-gc --max-semi-space-size=4 --test-concurrency=1 --test test/perf/*.test.mjs",
     "inline-budget-diff": "bash test/tools/inlining-budget-diff.sh",
     "verify": "npm test && npm run test:types && npm run torture && npm run test:perf"

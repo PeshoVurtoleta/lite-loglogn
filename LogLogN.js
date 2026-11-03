@@ -64,7 +64,9 @@
  * comment). YFastTrie allocates O(C) words up front: byteLength = 4 (Cr+1) K +
  * (Cr+1) + 16 + the inner XFastTrie(U, Cr).byteLength, Cr = min(2 + floor(C/h),
  * U), K = 2w, h = ceil(w/2) (see its class comment). vEBTree allocates its O(U)
- * words up front, the whole universe, independent of the keys present:
+ * words up front, the whole universe, independent of the keys present; with
+ * w = bits = ceil(log2 U) = 32 - clz32(U - 1) for every U in [2, 2^32] (U = 2
+ * -> w = 1; U = 2^k -> w = k; any other U -> w = floor(log2 U) + 1):
  * byteLength = 4 ceil(2^w / 32) for w <= 8, else
  * 4 (2 + S(hi) + ceil(U / 2^lo) S(lo)), S(w) = 2 + S(hi) + 2^hi S(lo) for
  * w >= 9 and ceil(2^w / 32) for w <= 8, lo = w > 24 ? 16 : 8, hi = w - lo (only

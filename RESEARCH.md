@@ -1246,6 +1246,29 @@ What it shows:
     HOLD-RELEASE already holds 0.5.0);
   - (3) S-H1's priority, now that its target is measured.
 
+### 14.9 witness --veb drift trip: lane-structural, not host (2026-11-03, burst 6 / 7 diagnosis)
+
+- Symptom: both QUIET FULL `witness --veb` runs on b90506a exited 2 ("host drift detected"), the per-round
+  Page-Hinkley detector tripping at probe round 100 / 103 of 615. Four diagnostic runs fired too (6 / 6).
+- Cause: the probe series is not flat. It carries a scenario-family MODULATION that repeats at every width:
+  random-key runs sit above the series median, leaf-far + SH1 band runs below (gap 3.9 - 8.2 %, per-run median
+  spread 13 - 20 %). The longest low stretch (w = 16 leaf-far + band, 90 rounds) is enough to cross the
+  threshold at about round 100. A synthetic lane-shaped series fires at +-4 % already.
+- Ruled out: warm-up residue (5 extra untimed probe blocks: unchanged), shared JIT feedback (probe on an
+  isolated module copy: unchanged), GC / heap growth (gc() runs only at width drops; the level follows the
+  family, not the width).
+- Best-supported reading: the probe measures a host state (DVFS / memory system) that the preceding A / B
+  blocks leave behind. ABBA rounds give a and b that same state, so the A/B pairs stay unbiased; only the
+  drift feed was wrong.
+- Fix (G3-B5, a57c46f; PLAN A15 / A16): the verdict's drift input is `hostDriftRuns` over per-ABBA-run medians
+  (k = K), DRIFT_RUN_THRESHOLD 0.75 NOMINAL; the per-round `host: drift` line stays REPORTED; a 5th control
+  (`CONTROL drift runs`) flips on a 1.25x / 0.8x / 1.10x step and stays quiet on the +-8 % lane pattern.
+  Re-run on the B5 build: QUIET x2, exit 0 / 0, `drift runs` false; the per-round line still fired (101 / 166).
+- Open: XFT / YFT SMOKE logs of 2026-10-25 also fired per-round in every QUIET run (index 13 - 17 of 27 / 33):
+  probably the same effect, not measured. Docs quote the --veb ratios as min-max ranges over the 4 strict
+  logs (A17), not one run.
+- Source: .handoff/research/veb-drift-2026-11-03.md and veb-drift-* scripts / logs (gitignored).
+
 ## 15. Cross-primitive intake (2026-11-01) -- FastBit32 / FastBit1024 / lite-o1 BitSet / StratifiedBitset
 
 Source: a maintainer-supplied outside review comparing `LogLogN.js`, lite-fastbit32 `FastBit32.js` and

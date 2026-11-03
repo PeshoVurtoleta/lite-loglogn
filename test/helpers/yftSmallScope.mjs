@@ -10,8 +10,9 @@
 // independent invariant walker on dump(): reps ascending, reps[0] === 0, bucket keys
 // ascending and in [rep_i, rep_{i+1}), head size 0..K, others h..K, union == oracle,
 // inner XFastTrie key set == reps (has over the whole universe, size, min/max).
-// A transition into an already-seen signature needs no second full check: the state is
-// byte-identical (deterministic engine), so its observable behaviour is the same.
+// A transition into an already-seen signature skips the full oracle + invariant check (the state is
+// byte-identical, deterministic engine, so its behaviour is the same) but still runs the per-op
+// return-value / size checks and the stored-oracle comparison below.
 //
 // Dedup signature (exact string of raw bytes, no lossy hash): the inner trie's typed
 // arrays _lv _occ _tk _tmin _tmax _key _next _prev (raw, all bytes) and its scalars

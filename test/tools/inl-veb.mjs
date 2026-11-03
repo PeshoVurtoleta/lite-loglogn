@@ -5,7 +5,9 @@
 //   $LLN_U = 16 | 24 | 28 | all (default all): U = 2^16 (leaf + depth-1), 2^24 + 1 (depth-1,
 //   lo = 8), 2^28 (depth-2, lo = 16). $LLN_ROUNDS = rounds per instance (default 600, nominal).
 // inlining-budget-diff.sh: `--fn add` always yields the guard's NO-VERDICT (add, 450 B, is dropped at
-// vebRound's cumulative budget and makes no inlining decisions of its own). The --fn set that yields a
+// vebRound's cumulative budget and makes no inlining decisions of its own). In vebRound, add is inlined
+// at one call site (budget used 0/920) and the other add site is still a candidate at 697/920 (g4bi trace).
+// The --fn set that yields a
 // verdict is `--fn has,delete,successor,predecessor,min,max` (reviewer observed VERDICT SAME, exit 0).
 // Deterministic: a fixed LCG, a fixed key pool, per-round delete orders from a fixed odd stride.
 // Keys live in a Uint32Array and the harness keeps only Smi locals (acc), so the driver itself is

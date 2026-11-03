@@ -216,7 +216,7 @@ test('mutant: kRun 15 -> 1 -> FAIL control drift runs: MOD +-8% fired alone', { 
     assert.equal(failLines(r.stdout)[0], 'FAIL control drift runs: MOD +-8% fired');
 });
 
-test('wiring: abVerdict drift input is the per-run result (A: runs fire -> reason x1; B: runs quiet -> x0), exit 0', { timeout: 3 * T }, () => {
+test('wiring: abVerdict drift input is the per-run result (A: runs fire -> reason x1; B: runs quiet -> x0, exit 0; C: refused series -> one FAIL drift runs line, exit 1)', { timeout: 3 * T }, () => {
     const site = '    const hdR = driftRunsOrFail(series, ST.pos, K, fails);\n';
     const a = mutantRun(once(WSRC, site, '    const hdR = { drift: true, index: 0 }; hd.drift = false;\n'), LSRC);
     assert.equal(a.status, 0, a.stderr);

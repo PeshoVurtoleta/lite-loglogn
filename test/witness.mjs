@@ -147,7 +147,7 @@ export const DRIFT_CLAMP_HI = 1.5;
  * hostDriftRuns threshold (A15 / A16, C-22), NOMINAL, from .handoff/research/veb-drift-2026-11-03.md.
  * The per-ABBA-run Page-Hinkley statistic (block medians, DRIFT_DELTA, the same clamp) recorded on the
  * four full --veb runs peaked at 0.22 / 0.29 / 0.14 / 0.40 (base-1 / base-2 / h1 / h2), so 0.75 is
- * 1.9x over the worst. Injected steps caught: TH 0.5 73/75, 0.75 64/75, 1.0 52/75, 2.0 18/75.
+ * 1.9x over the worst. Injected steps caught (research, on the 3 first series): TH 0.5 73/75, 0.75 64/75, 1.0 52/75, 2.0 18/75.
  * Sensitivity floor ~1.15x sustained for >= ~4 runs. The CONTROL drift runs vectors (41 runs x 15
  * rounds, k 15) fire STEP 1.25x at block 24, STEP 0.8x at 23, STEP 1.10x at 27; MOD +-8% stays quiet,
  * while the per-round hostDrift fires on it at round 91.
@@ -4385,8 +4385,8 @@ async function vebLane(argv, env, vEBTree, YFastTrie, abVerdict, FLOOR, gcFn) {
     // 7. the EVIDENCE block (G3 TASK 3, REPORTED): the abVerdict verdicts listed per family, then the fits
     // and the MAX tail. The decisions are taken (A10: vEBTree 0.5.0 ships as built): C7 informs the future
     // per-leaf-summary member, SH1 the future S-H1 ([min, max] headers) StratifiedBitset variant member;
-    // PAR, PRED, the fits and the MAX tail back the as-built WIN / LOSE positioning. No count of any
-    // kind appears here or in a row name (C-4, A6).
+    // PAR, PRED, the fits and the MAX tail back the as-built WIN / LOSE positioning. No read or word count
+    // appears here or in a row name (C-4, A6).
     const famNote = {
         C7: 'w ' + VEB_C7.join(' / ') + '; informs the future per-leaf-summary member, not vEBTree 0.5.0',
         PAR: 'w ' + VEB_PAR.join(' / ') + '; backs the as-built WIN / LOSE positioning',

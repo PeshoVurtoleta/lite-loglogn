@@ -177,7 +177,7 @@ function setupRefresh() {
 }
 function grows(s) { return { grows: s.b.byteLength }; }
 // The U = 2^16 add+delete statsOf, shared with GrowingVeb / SideBufferVeb:
-// `adds` = the subclass's cold add counter (0 on the plain tree), reported by
+// `adds` = the subclass's cold add counter (absent on the plain tree: meterOnce drops non-number keys), reported by
 // formatResult and read by the SideBufferVeb attribution test (no threshold).
 function addStats(s) {
     const c = s.b._calls;

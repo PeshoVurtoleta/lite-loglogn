@@ -1,6 +1,6 @@
 # @zakkster/lite-loglogn
 
-Version: 0.4.1
+Version: 0.5.0
 License: MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
 Runtime dependencies: none. ESM only. ASCII-only source. sideEffects: false.
 Node: >= 18.
@@ -15,7 +15,7 @@ The FAMILY bound is O(log log U), in the universe size U (never the element
 count n); StratifiedBitset itself is O(log_32 U), and XFastTrie is the first
 strict O(log log U) member (queries only; its updates are O(w)); YFastTrie keeps
 the O(log log U) query at O(n) space (updates: O(log log U) probes plus at most
-2w-1 word moves, split / merge / borrow amortized); vEBTree (0.5.0, unreleased) is
+2w-1 word moves, split / merge / borrow amortized); vEBTree (0.5.0) is
 the worst-case member: O(log log U) for every operation, O(1) min / max, O(U) space.
 Every hot op of StratifiedBitset, XFastTrie, YFastTrie and vEBTree allocates zero
 bytes after construction (keys < 2^30; see the boxing note).
@@ -31,8 +31,7 @@ are a labeled SegmentedU variant, never a silent BigInt hot path. The SPACE pric
 is a co-headline on every member, stated with the same prominence as the time bound.
 
 Roster (one member per release, append-only). StratifiedBitset (0.2.0),
-XFastTrie (0.3.0) and YFastTrie (0.4.0) are published; vEBTree (0.5.0) is in the
-repository, gated, and unreleased:
+XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published:
 
 - StratifiedBitset (0.2.0) -- array-embedded 32-ary bit pyramid. O(log_32 U)
   successor / predecessor; min / max read Lc words (Lc = levels <= 7);
@@ -45,7 +44,7 @@ repository, gated, and unreleased:
   Queries O(log log U); updates O(log log U) probes + at most 2w-1 contiguous
   word moves (O(w)); split / merge / borrow AMORTIZED. O(n) SPACE, preallocated
   at a FIXED capacity.
-- vEBTree (0.5.0, unreleased) -- flattened van Emde Boas in ONE Uint32Array;
+- vEBTree (0.5.0) -- flattened van Emde Boas in ONE Uint32Array;
   worst-case O(log log U) has / add / delete / successor / predecessor, O(1)
   min / max; O(U) SPACE, the whole universe allocated up front; 0 B/op on every
   hot method (keys < 2^30).

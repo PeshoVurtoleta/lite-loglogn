@@ -3,7 +3,7 @@
 A repo-only decision guide for the sub-logarithmic family: which member, which
 bitset, reach-for / avoid, and how to measure the bound and the space price
 yourself. StratifiedBitset (0.2.0),
-XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0, in progress) are the four members. It is NOT an API
+XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are the four members. It is NOT an API
 encyclopedia (that is the README + `LogLogN.d.ts`); it answers "which member,
 is my bound real, and what does it cost in space?"
 

@@ -6,9 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-03
+
 ### Added
 
-- **`vEBTree` (0.5.0, unreleased): a flattened van Emde Boas tree.** Worst-case
+- **`vEBTree` (0.5.0): a flattened van Emde Boas tree.** Worst-case
   O(log log U) `has` / `add` / `delete` / `successor` / `predecessor` and O(1)
   `min` / `max` over a fixed universe U in [2, 2^32], in ONE preallocated
   `Uint32Array` (no hashing, no reseed, no amortized split). Constructor
@@ -559,7 +561,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   / cross-linked recipe, never a drifting reimplementation). Each carries the
   "Recommended resolution -- PENDING USER RATIFICATION at review" stamp.
 
-[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.2.0...v0.3.0

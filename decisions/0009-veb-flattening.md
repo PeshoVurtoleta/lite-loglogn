@@ -1,6 +1,6 @@
 # 0009 -- vEBTree: a flattened van Emde Boas tree in one Uint32Array
 
-- Status: PROPOSED (2026-11-02)
+- Status: ACCEPTED (2026-11-02; shipped in 0.5.0)
 - Severity: S1 (the fourth member and the hash-free worst-case reference; it fixes the layout every later vEBTree gate measures)
 - Date: 2026-11-02
 - Session: vEBTree (0.5.0), unit G1 (L-06 flattening), batch B1h

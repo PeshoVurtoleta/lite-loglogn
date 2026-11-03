@@ -21,6 +21,8 @@
 #   inl-yft.mjs  YFastTrie add / has / successor / predecessor / delete rounds (splits, merges, borrows),
 #                U = 2^20 and U = 2^32 (keys, so reps, >= 2^31); $LLN_U = 20 | 32 | both (default both)
 #   inl-xft.mjs  the same rounds on XFastTrie, same $LLN_U
+#   inl-veb.mjs  vEBTree add / has / successor / predecessor / delete / min / max rounds, U = 2^16,
+#                2^24 + 1, 2^28 (leaf, depth-1, depth-2); $LLN_U = 16 | 24 | 28 | all (default all)
 #   inl-sb.mjs   the same rounds on StratifiedBitset, U = 2^20 and U = 2^26 ($LLN_U = 20 | 26 | both)
 # This script runs a driver with no argv, so a before / after pair is two thin WRAPPERS made by
 #   node test/tools/inl-stage.mjs DRIVER LIB DIR [KEY=VALUE ...]   -> prints DIR/run.mjs

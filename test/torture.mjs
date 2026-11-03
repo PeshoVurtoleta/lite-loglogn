@@ -29,7 +29,17 @@
  *       passing is exit 1.
  *   X0-X4 (XFastTrie) and Y0 / Y1 / Y1b / Y1c / Y2 / Y3 / Y4 (YFastTrie;
  *       Y1b = the borrow cycle) follow, each documented at its section.
- *       Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) = 20.
+ *   V1 / V2a / V2b / V3 / V4 / V5 (vEBTree, PLAN-vebtree G2) follow the
+ *       Y-tiers, each documented at its section: V1 2,000,000 mixed ops at
+ *       U = 2^16 (alloc / transient / gc, every op kind), V2 the U = 2^28
+ *       depth-2 ring (V2a in-process alloc, V2b arrayBuffers growth in a
+ *       Worker with a kill timer), V3 the U = 2^25 + 3 delete-heavy max
+ *       refresh (alloc / transient, refreshes == deletes exactly, `_t`
+ *       byte-equal to a fresh tree after), V4 keys >= 2^31 in the tree at
+ *       U = 2^31 + 1 (transient only, every arg / return < 2^30), V5
+ *       4,096-cycle retention. A build without the vEBTree export fails closed
+ *       (exit 1, veb=null on the GATE line).
+ *   Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) + 8 (CV1-CV8) = 28.
  * KNOWN GAP (narrowed): a real >4 ms pause is host timing and cannot be forced, so the
  * gc kick (a forced major) pins maxMajor only. The maxPauseMs THRESHOLD AND WIRING are
  * pinned deterministically by the separate `T3w` line: the exact gcVerdict() gcLane
@@ -1860,6 +1870,685 @@ async function main() {
     const xTrans = x0a.t === null || x0b.t === null ? null : Math.max(x0a.t, x0b.t);
     const xAb = Math.max(abx1.growthBytes, x2a.ab, x2b.ab);
 
+    // ==== V-tiers: vEBTree (PLAN-vebtree G2, C-21) ===========================
+    // Run after the Y-tiers so T / X / Y keep their own feedback; the V-tiers
+    // drive vEBTree through their OWN step closures (makeStepV here, makeStepV2
+    // in test/_veb-torture-worker.mjs) -- no older call site sees a vEBTree.
+    // Keys < 2^30 everywhere except V4's two permanent keys (C-11 boxing
+    // caveat: V4 keeps every arg / return < 2^30; CV7 returns 2^31 on purpose).
+    //   V1  2,000,000 mixed ops (makeStepY's op mix and tally) at U = 2^16 on
+    //       ONE instance built outside the loop: retained 0 B/op (null /
+    //       unsettled = FAIL), transient excess < NS_MAX_EXCESS per NS_K-op
+    //       window, gc major 0, maxPauseMs <= 4 (gcLane -> gcVerdict). Coverage
+    //       floor: no zero tally slot (every op kind, hits AND misses).
+    //   V2  U = 2^28 depth-2 ring (64 root clusters c = 64j + 7, keys
+    //       (c << 16) | odd r16, 4 permanent keys per cluster; see the worker
+    //       header): byteLength 33,718,804 and every cluster >= 3 keys before /
+    //       after each lane. V2a in-process retained 0 B/op; V2b a Worker with a
+    //       kill timer (C-19; timeout = FAIL): 50,000 warmup ops, then 200,000
+    //       ops under stabilize 'deep' -- arrayBuffers growth 0, settled.
+    //   V3  U = 2^25 + 3 (w = 26, lo = 16: every root cluster is an INTERNAL
+    //       w = 16 node over w = 8 leaves; the root summary is an internal
+    //       w = 10 node), 1,024 keys ((8j + 1) << 16) | (s << 8) | l, j 0..63,
+    //       s in {3, 50, 140, 255}, l in {1, 9, 77, 200}: 64 root clusters x 4
+    //       leaf clusters x 4 keys. One cycle = 2,048 ops: add all ascending,
+    //       then delete descending with max() === x checked before each delete
+    //       (a hit = a refresh: every delete removes the max). Lanes: retained
+    //       0 B/op (measureAllocs, whole cycles per batch) and transient excess
+    //       < NS_MAX_EXCESS; refreshes == deletes == adds == ops / 2 EXACTLY,
+    //       bad 0 (a missed delete, or size != 0 at a cycle end); after the
+    //       lanes `_t` byte-equal to a fresh vEBTree(2^25 + 3)'s. A cold census
+    //       (one cycle, `_p` cleared before each delete) proves the key set
+    //       drives mode-1 and mode-2 max refreshes at the root AND inside an
+    //       internal w = 16 cluster (C-12, C-18 (3) / (4)).
+    //   V4  U = 2^31 + 1 (w = 32, root trimmed to 32,769 clusters): permanent
+    //       keys 2^31 (the root max) and 2^30 - 1 (a barrier above the ring),
+    //       4,096 even permanent keys < 2^29, an odd ring < 2^29 added and
+    //       deleted at once. The step never calls max(); every arg / return is
+    //       < 2^30, but successor / has / delete read the root max slot (2^31)
+    //       raw on every op. TRANSIENT lane only (Y2b's shape): excess
+    //       < NS_MAX_EXCESS with >= 8 valid windows. Cold, outside the lane:
+    //       max() === 2147483648, answers, size before == after. The instance
+    //       (~270 MB) is dropped + gc() before anything else runs.
+    //   V5  4,096 x (new vEBTree(2^10), 64 adds, 64 deletes, clear()):
+    //       tracker.size() 0 after the drain and one gc later, collected
+    //       4096/4096, findings 0, leaks 0.
+    // Controls (each MUST flip; printed on the CV line): CV1 retain (V1 alloc
+    // > 0), CV2 box (V1-shaped window excess >= NS_MAX_EXCESS), CV3 gcKick
+    // (forced gc inside V1's gc window: major > 0, kicks 4/4), CV4 per-level
+    // `new` (a data: URL mutant of LogLogN.js whose add() descent retains a
+    // Uint32Array(32) per internal level, through V2b's SAME Worker function:
+    // abGrowth > 0 and >= 128 B per add -- it also proves the Worker measures
+    // its OWN arrayBuffers), CV5 delete ascending (V3's step factory and count
+    // check: refreshes != deletes), CV6 RetainOnRefresh (a subclass whose
+    // delete retains [x] when x is the max, through V3's alloc lane: alloc > 0),
+    // CV7 bigSucc (V4's step + successor(2^30 - 1), which returns 2^31 from a
+    // never-inlined 850 B method, on V4's own instance: excess >= NS_MAX_EXCESS),
+    // CV8 retained array (V5 size > 0).
+    // GATE segment `| veb leak=size .. alloc .. transient .. abGrowth ..
+    // refreshes=+N bigKeyExcess=e B/65536`: alloc = max(V1, V2a, V3), transient
+    // = max(V1, V3, V4), gc = V1's window, abGrowth = V2b, refreshes = V3,
+    // bigKeyExcess = V4's excess. A null / unsettled aggregate is a FAIL.
+    // A build without the vEBTree export (pre-vEB) fails closed: 'veb: vEBTree
+    // export missing', veb = null (GATE `| veb=null`), exit 1.
+    const { vEBTree } = await import('../LogLogN.js');
+    const vw = await import('./_veb-torture-worker.mjs');
+    const { readFileSync } = await import('node:fs');
+
+    const VU1 = 1 << 16;        // V1 universe, w = 16 (internal root, lo = 8)
+    const VU5 = 1 << 10;        // V5 universe, w = 10
+    const V2_SEED = 0x3c6ef372;
+    const V2_OPS = 200000;      // V2b / CV4 measured window, ops
+    const V2_WARM = 50000;      // V2b / CV4 warmup, ops
+    const CV4_BYTES = 128;      // Uint32Array(32) per internal level
+    const V2A_ITERS = 250000;   // V2a measureAllocs iterations per batch
+    const V2A_BATCHES = 4;      // V2a measured batches
+    const V3_U = 33554435;      // 2^25 + 3, w = 26 (root trimmed to 513 clusters)
+    const V3_S = [3, 50, 140, 255];     // leaf cluster (bits 8..15) per root cluster
+    const V3_L = [1, 9, 77, 200];       // key inside its leaf (bits 0..7)
+    const V3_M = 1024;          // keys: 64 root clusters x 4 x 4
+    const V3_CYCLE = 2 * V3_M;  // ops per cycle: V3_M adds, then V3_M deletes
+    const V3_ITERS = V3_CYCLE * 122;    // measureAllocs iterations (= its warmup): whole cycles
+    const V3_BATCHES = 8;
+    const V4_U = 2147483649;    // 2^31 + 1, w = 32 (lo = hi = 16)
+    const V4_TOP = 2147483648;  // 2^31: permanent, the root max
+    const V4_BAR = 1073741823;  // 2^30 - 1: permanent, above every ring key
+    const V4_RU = 1 << 29;      // ring keys < 2^29
+    const V4_POP = 4096;        // permanent even keys < 2^29
+    // CV4 anchor: add()'s per-level descent -- the parent pointer is set and b
+    // moves into cluster pj. Count-checked to occur EXACTLY once in LogLogN.js,
+    // and located between the vEB section's `add(x) {` and `delete(x) {`.
+    const CV4_ANCHOR = '                    ps = b + 2;\n' +
+        '                    pw = w - lo;\n' +
+        '                    pj = x >>> lo;\n';
+    const CV4_INJECT = '                    (globalThis.__cv4Hold || (globalThis.__cv4Hold = []))' +
+        '.push(new Uint32Array(32));\n';
+
+    // The V1 mixed step: makeStepY's op mix and 16-slot tally on a vEBTree, in
+    // its OWN closure. Built cold; const bindings only, integer sink in a
+    // typed-array slot.
+    function makeStepV(set, k, cnt) {
+        return function stepV(i) {
+            const x = k[i & KMASK];
+            const op = i & 7;
+            let r = 0;
+            switch (op) {
+                case 0: set.add(x); break;
+                case 1:
+                    r = set.delete(k[(i - 1 + HALF) & KMASK]) ? 1 : 0;
+                    cnt[r === 1 ? XN_DH : XN_DM]++;
+                    break;
+                case 2:
+                    r = set.has(k[(i - ((i & 8) >>> 2)) & KMASK]) ? 1 : 0;
+                    cnt[r === 1 ? XN_HH : XN_HM]++;
+                    break;
+                case 3:
+                case 4:
+                    r = set.successor(x);
+                    cnt[r === undefined ? XN_SM : XN_SH]++;
+                    break;
+                case 5:
+                    r = set.predecessor(x);
+                    cnt[r === undefined ? XN_PM : XN_PH]++;
+                    break;
+                case 6: r = set.min(); break;
+                default: r = set.max();
+            }
+            cnt[op]++;
+            SINK[0] = (SINK[0] + (r === undefined ? 7 : r)) | 0;
+        };
+    }
+
+    // populate()'s keys, through a vEBTree-only call site. Cold.
+    function populateV(set, k) {
+        for (let j = 0; j < HALF; j += 8) set.add(k[j]);
+        return set;
+    }
+
+    // V5 churn (T2's shape, own frame): 64 distinct keys (a + 16 j) & 1023 added,
+    // deleted (each must return true), clear(). bad counts a delete that missed
+    // or a size that is not 0 after the deletes. Cold.
+    function churnV(tracker, held, Veb, bad) {
+        let tracked = 0;
+        for (let i = 0; i < CYCLES; i++) {
+            const s = new Veb(VU5);
+            const a = i & 15;
+            for (let j = 0; j < 64; j++) s.add((a + 16 * j) & (VU5 - 1));
+            for (let j = 0; j < 64; j++) if (!s.delete((a + 16 * j) & (VU5 - 1))) bad[0]++;
+            if (s.size !== 0) bad[0]++;
+            s.clear();
+            tracker.track(s, noop, 'vebtree', { audit: true });
+            tracked++;
+            if (held !== null) held.push(s);
+        }
+        return tracked;
+    }
+
+    // A Worker outcome as one error string, or null.
+    function vErr(job) {
+        if (job.error !== null) return job.error;
+        const r = job.result;
+        if (r === null || typeof r !== 'object') return 'worker posted no result';
+        return typeof r.error === 'string' ? r.error : null;
+    }
+
+    // The CV4 mutant source, or a string starting 'BAD ' (never flips). Cold.
+    function cv4Source() {
+        const src = readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
+        const n = src.split(CV4_ANCHOR).length - 1;
+        const vAt = src.indexOf('\n// --- vEBTree (0.5.0)');
+        const addAt = vAt < 0 ? -1 : src.indexOf('\n    add(x) {', vAt);
+        const delAt = addAt < 0 ? -1 : src.indexOf('\n    delete(x) {', addAt);
+        const at = src.indexOf(CV4_ANCHOR);
+        if (n !== 1) return { n, src: 'BAD anchor count ' + n + ' (want exactly 1)' };
+        if (!(vAt >= 0 && addAt > vAt && at > addAt && delAt > at)) {
+            return { n, src: 'BAD anchor at ' + at + ' not inside vEBTree add() (' + addAt + '..' + delAt + ')' };
+        }
+        return { n, src: src.replace(CV4_ANCHOR, CV4_INJECT + CV4_ANCHOR) };
+    }
+
+    // ---- V3 helpers -----------------------------------------------------------
+    // The 1,024 V3 keys, ascending by construction (j, then s, then l). Cold.
+    function v3Keys() {
+        const k = new Uint32Array(V3_M);
+        let n = 0;
+        for (let j = 0; j < 64; j++) {
+            for (let a = 0; a < V3_S.length; a++) {
+                for (let b = 0; b < V3_L.length; b++) {
+                    k[n++] = (((8 * j + 1) << 16) | (V3_S[a] << 8) | V3_L[b]) >>> 0;
+                }
+            }
+        }
+        return k;
+    }
+    // null when k is V3_M strictly ascending (so distinct) keys < V3_U in 64
+    // distinct root clusters (key >>> 16) x 4 leaf clusters ((key >>> 8) & 255),
+    // else the reason. Cold.
+    function v3KeyErr(k) {
+        if (k.length !== V3_M) return 'length ' + k.length;
+        const rc = new Set();
+        const lc = new Set();
+        for (let i = 0; i < V3_M; i++) {
+            if (!(k[i] < V3_U)) return 'key ' + k[i] + ' >= U';
+            if (i > 0 && !(k[i] > k[i - 1])) return 'not strictly ascending at ' + i;
+            rc.add(k[i] >>> 16);
+            lc.add(k[i] >>> 8);
+        }
+        return rc.size === 64 && lc.size === 256 ? null : 'root clusters ' + rc.size + ' leaf clusters ' + lc.size;
+    }
+    const V3_DESC = new Uint16Array(V3_M);
+    const V3_ASC = new Uint16Array(V3_M);
+    for (let d = 0; d < V3_M; d++) {
+        V3_DESC[d] = V3_M - 1 - d;
+        V3_ASC[d] = d;
+    }
+    // The V3 cycle step, its OWN closure (vEBTree only). Op p = i mod 2,048:
+    // p < 1,024 adds keys[p]; else deletes keys[order[p - 1,024]] after
+    // checking max() === x (a hit counts a refresh). Tally cnt (Int32Array(4)):
+    // 0 adds, 1 deletes, 2 refreshes, 3 bad (a delete that returned false, or
+    // size != 0 after a cycle's last delete). V3 passes V3_DESC; CV5 V3_ASC.
+    function makeStepV3(set, keys, order, cnt) {
+        return function stepV3(i) {
+            const p = i & (V3_CYCLE - 1);
+            if (p < V3_M) {
+                set.add(keys[p]);
+                cnt[0]++;
+                return;
+            }
+            const x = keys[order[p - V3_M]];
+            if (set.max() === x) cnt[2]++;
+            if (!set.delete(x)) cnt[3]++;
+            cnt[1]++;
+            if (p === V3_CYCLE - 1 && set.size !== 0) cnt[3]++;
+        };
+    }
+    // null when cnt holds exactly `ops` ops of V3's model (adds == deletes ==
+    // refreshes == ops / 2, bad 0), else the reason. V3 and CV5 share it. Cold.
+    function v3CountErr(cnt, ops) {
+        const want = ops / 2;
+        if (cnt[0] === want && cnt[1] === want && cnt[2] === want && cnt[3] === 0) return null;
+        return 'adds=' + cnt[0] + ' deletes=' + cnt[1] + ' refreshes=' + cnt[2] + ' bad=' + cnt[3] +
+            ' (want ' + want + ' / ' + want + ' / ' + want + ' / 0)';
+    }
+    // V3's retained lane; CV6 runs through it too. Cold wrapper.
+    function v3Alloc(set, keys, cnt, iterations, batches) {
+        return measureAllocs(makeStepV3(set, keys, V3_DESC, cnt), { iterations, batches });
+    }
+    // One descending cycle with `_p` (the delete frame stack, Int32Array(8),
+    // frames [base, w, acc, mode]) cleared to -1 before each delete, so only that
+    // delete's frames are read. c: 0 / 1 root (w 26) mode 1 / 2, 2 / 3 internal
+    // cluster (w 16), 4 / 5 root summary (w 10), 6 bad. null when `_p` is not
+    // an Int32Array(8). Leaves the tree empty. Cold.
+    function v3Census(set, keys) {
+        const q = set._p;
+        if (!(q instanceof Int32Array) || q.length !== 8) return null;
+        const c = new Int32Array(7);
+        for (let p = 0; p < V3_M; p++) set.add(keys[p]);
+        for (let d = V3_M - 1; d >= 0; d--) {
+            q.fill(-1);
+            if (!set.delete(keys[d])) c[6]++;
+            for (let f = 0; f < 8; f += 4) {
+                const fw = q[f + 1];
+                const md = q[f + 3];
+                if (md === -1) continue;
+                const row = fw === 26 ? 0 : fw === 16 ? 2 : fw === 10 ? 4 : -1;
+                if (row < 0 || (md !== 1 && md !== 2)) c[6]++;
+                else c[row + md - 1]++;
+            }
+        }
+        if (set.size !== 0) c[6]++;
+        return c;
+    }
+    // `_t` of a and b byte-equal (same length). Cold.
+    function vTEqual(a, b) {
+        const x = a._t;
+        const y = b._t;
+        return x.length === y.length &&
+            Buffer.compare(Buffer.from(x.buffer, x.byteOffset, x.byteLength),
+                Buffer.from(y.buffer, y.byteOffset, y.byteLength)) === 0;
+    }
+
+    // ---- V4 helpers -----------------------------------------------------------
+    // The V4 step, its OWN closure (vEBTree only), Y2b's straddle shape: op 0
+    // adds an odd ring key x < 2^29, op 1 deletes it (always present: the ring
+    // is odd, the permanent keys even), has alternates that miss and a permanent
+    // hit, successor / predecessor / min return keys <= 2^30 - 1. max() is
+    // never called; nothing passed or returned reaches 2^30.
+    function makeStepV4(set, k, pk) {
+        return function stepV4(i) {
+            const x = k[i & KMASK];
+            let r = 0;
+            switch (i & 7) {
+                case 0: set.add(x); break;
+                case 1: r = set.delete(k[(i - 1) & KMASK]) ? 1 : 0; break;
+                case 2: r = set.has((i & 8) === 0 ? x : pk[(i >>> 4) & (V4_POP - 1)]) ? 1 : 0; break;
+                case 3:
+                case 4: r = set.successor(x); break;
+                case 5: r = set.predecessor(x); break;
+                case 6: r = set.min(); break;
+                default: r = set.predecessor(x + 1);
+            }
+            SINK[0] = (SINK[0] + (r === undefined ? 7 : r)) | 0;
+        };
+    }
+    // V4 + CV7 in their own frame, so the ~270 MB instance dies when this
+    // returns (the caller then gc()s). Returns numbers and strings only. Cold.
+    function vTier4(Veb) {
+        const k = keyRing(V4_RU, 0x68e31da4);
+        for (let i = 0; i < KEYS; i++) k[i] = (k[i] | 1) >>> 0;
+        const pkr = keyRing(V4_RU, 0x1b56c4e9);
+        const pk = new Uint32Array(V4_POP);
+        let pkMax = 0;
+        for (let j = 0; j < V4_POP; j++) {
+            pk[j] = (pkr[j] & 0x1FFFFFFE) >>> 0;
+            if (pk[j] > pkMax) pkMax = pk[j];
+        }
+        const set = new Veb(V4_U);
+        set.add(V4_TOP).add(V4_BAR);
+        for (let j = 0; j < V4_POP; j++) set.add(pk[j]);
+        const distinct = new Set(pk).size + 2;
+        const top = set.max();
+        const size0 = set.size;
+        const pre = top === V4_TOP && size0 === distinct && set.has(V4_TOP) &&
+            set.successor(V4_RU) === V4_BAR && set.predecessor(V4_BAR) === pkMax &&
+            set.successor(V4_BAR) === V4_TOP && set.bits === 32;
+        const step = makeStepV4(set, k, pk);
+        const ns = nsExcess(step);
+        const size1 = set.size;
+        const post = size1 === size0 && set.successor(V4_RU) === V4_BAR && set.predecessor(V4_BAR) === pkMax;
+        // CV7: V4's step + one successor(2^30 - 1) -> 2^31 per op, same instance.
+        const bigFn = function vBigSucc(i) {
+            step(i);
+            SINK[0] = (SINK[0] + set.successor(V4_BAR)) | 0;
+        };
+        const c7 = nsExcess(bigFn);
+        return {
+            byteLength: set.byteLength, top, size0, size1, pre, post,
+            excess: ns === null ? null : ns.excess, first: ns === null ? null : ns.first,
+            valid: ns === null ? null : ns.valid,
+            c7: c7 === null ? null : c7.excess, c7valid: c7 === null ? null : c7.valid,
+        };
+    }
+
+    async function vebTiers(Veb) {
+        // ---- V1: 2,000,000 mixed ops at U = 2^16 -------------------------------
+        const k1v = keyRing(VU1, 0x5bd1e995);
+        // Miss floor, planted (X1's idiom): ring slots = 3 mod 8 feed only
+        // successor and slots = 5 mod 8 only predecessor, so 64 of each become
+        // U - 1 (successor misses) and 0 (predecessor misses); add / delete /
+        // has never read them.
+        for (let j = 0; j < 64; j++) {
+            k1v[j * 1024 + 3] = VU1 - 1;
+            k1v[j * 1024 + 5] = 0;
+        }
+        const cntV1 = new Int32Array(16);
+        const setV1 = populateV(new Veb(VU1), k1v);
+        const stepV1 = makeStepV(setV1, k1v, cntV1);
+        const al1 = measureAllocs(stepV1, { iterations: 250000, batches: 8 });
+        const b1 = al1.bytesPerCall;
+        const a1Ok = b1 !== null && al1.settled === true && Math.round(b1) === 0;
+        if (!a1Ok) {
+            fails.push('V1 alloc bytesPerCall=' + b1 + ' settled=' + al1.settled +
+                ' (null or unsettled is a FAIL, not 0)');
+        }
+        const ns1 = nsExcess(stepV1);
+        const n1Ok = ns1 !== null && ns1.excess < NS_MAX_EXCESS;
+        const t1 = ns1 === null ? null : Math.max(0, ns1.excess) / NS_K;
+        if (!n1Ok) {
+            fails.push('V1 transient ' + (ns1 === null ? 'not measured (null)' :
+                fmt(t1, 3) + ' B/op, excess ' + ns1.excess + ' B per ' + NS_K +
+                ' ops >= ' + NS_MAX_EXCESS));
+        }
+        const gl1 = await gcLane('V1', stepV1, HOT);
+        const sV1 = gl1.s;
+        for (const e of gl1.errs) fails.push(e);
+        if (!gl1.ok && gl1.errs.length === 0) fails.push('V1 gc not ok (no violation listed)');
+        const z1 = zeroSlot(cntV1);
+        if (z1 >= 0) fails.push('V1 coverage: tally slot ' + z1 + ' is 0 (an op kind or hit/miss never ran)');
+        const v1Ok = a1Ok && n1Ok && gl1.ok && z1 < 0;
+        console.log('V1 ops=' + HOT + ' U=' + VU1 +
+            ' alloc=' + (b1 === null ? 'null' : Math.round(b1)) + ' B/op' +
+            ' allocRaw=' + fmt(b1, 4) +
+            ' transient=' + fmt(t1, 3) + ' B/op' +
+            ' (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
+            ' nsExcess=' + (ns1 === null ? 'null' : ns1.excess) +
+            ' nsWin0=' + (ns1 === null ? 'null' : ns1.first) +
+            ' gcMajor=' + sV1.gc.major + ' gcMinor=' + sV1.gc.minor +
+            ' maxPauseMs=' + sV1.gc.maxMs.toFixed(2) +
+            ' add=' + cntV1[0] + ' min=' + cntV1[6] + ' max=' + cntV1[7] +
+            ' succ=' + cntV1[XN_SH] + '/' + cntV1[XN_SM] +
+            ' pred=' + cntV1[XN_PH] + '/' + cntV1[XN_PM] +
+            ' has=' + cntV1[XN_HH] + '/' + cntV1[XN_HM] +
+            ' del=' + cntV1[XN_DH] + '/' + cntV1[XN_DM] + ' (hit/miss)' +
+            ' size=' + setV1.size +
+            ' | ' + (v1Ok ? 'ok' : 'FAIL'));
+
+        // ---- V2a: U = 2^28 depth-2 ring, in-process retained lane --------------
+        const k2v = vw.v2Ring(V2_SEED);
+        const cntV2 = new Int32Array(12);
+        const setV2 = vw.v2Populate(new Veb(vw.V2_U), k2v);
+        const bl0 = setV2.byteLength;
+        const fl0 = vw.v2Floor(setV2);
+        const stepV2 = vw.makeStepV2(setV2, k2v, cntV2, SINK);
+        const al2 = measureAllocs(stepV2, { iterations: V2A_ITERS, batches: V2A_BATCHES });
+        const b2 = al2.bytesPerCall;
+        const bl1 = setV2.byteLength;
+        const fl1 = vw.v2Floor(setV2);
+        const z2 = vw.v2ZeroSlot(cntV2);
+        const v2aOk = b2 !== null && al2.settled === true && Math.round(b2) === 0 &&
+            bl0 === vw.V2_BYTES && bl1 === vw.V2_BYTES && fl0 >= vw.V2_FLOOR && fl1 >= vw.V2_FLOOR && z2 < 0;
+        if (!v2aOk) {
+            fails.push('V2a alloc bytesPerCall=' + b2 + ' settled=' + al2.settled +
+                ' byteLength=' + bl0 + '/' + bl1 + ' (want ' + vw.V2_BYTES + ')' +
+                ' clusterFloor=' + fl0 + '/' + fl1 + ' (want >= ' + vw.V2_FLOOR + ')' +
+                ' zeroSlot=' + z2 + ' (null or unsettled is a FAIL, not 0)');
+        }
+        console.log('V2a ops=' + V2A_ITERS * V2A_BATCHES + ' U=' + vw.V2_U +
+            ' alloc=' + (b2 === null ? 'null' : Math.round(b2)) + ' B/op' +
+            ' allocRaw=' + fmt(b2, 4) +
+            ' byteLength=' + bl0 + '/' + bl1 +
+            ' clusters=' + vw.V2_CLUSTERS + ' minKeys=' + fl0 + '/' + fl1 + ' (before/after)' +
+            ' add=' + cntV2[0] + ' has=' + cntV2[8] + '/' + cntV2[9] +
+            ' del=' + cntV2[10] + '/' + cntV2[11] + ' (hit/miss)' +
+            ' succ=' + (cntV2[4] + cntV2[5]) + ' pred=' + (cntV2[6] + cntV2[7]) +
+            ' size=' + setV2.size +
+            ' | ' + (v2aOk ? 'ok' : 'FAIL'));
+
+        // ---- V2b: deep arrayBuffers lane in a Worker ---------------------------
+        const jb = await vw.startVebTorture({ src: null, seed: V2_SEED, ops: V2_OPS, warmup: V2_WARM }, 'V2b');
+        const eb = vErr(jb);
+        const rb = eb === null ? jb.result : null;
+        const v2bOk = rb !== null && rb.abGrowth === 0 && rb.settled === true && rb.verdict === 'pass' &&
+            rb.byteLength0 === vw.V2_BYTES && rb.byteLength1 === vw.V2_BYTES &&
+            rb.floor0 >= vw.V2_FLOOR && rb.floor1 >= vw.V2_FLOOR && rb.zero < 0 && rb.adds === V2_OPS / 8 && rb.held === 0;
+        if (!v2bOk) {
+            fails.push('V2b ' + (rb === null ? 'worker FAIL: ' + eb :
+                'abGrowth=' + rb.abGrowth + ' settled=' + rb.settled + ' verdict=' + rb.verdict +
+                ' byteLength=' + rb.byteLength0 + '/' + rb.byteLength1 +
+                ' clusterFloor=' + rb.floor0 + '/' + rb.floor1 + ' zeroSlot=' + rb.zero +
+                ' adds=' + rb.adds + ' (want ' + V2_OPS / 8 + ') held=' + rb.held));
+        }
+        console.log('V2b worker ops=' + V2_OPS + ' warmup=' + V2_WARM + ' U=' + vw.V2_U +
+            (rb === null ? ' error=' + eb :
+                ' abGrowth=' + rb.abGrowth + ' settled=' + rb.settled +
+                ' byteLength=' + rb.byteLength0 + '/' + rb.byteLength1 +
+                ' minKeys=' + rb.floor0 + '/' + rb.floor1 + ' adds=' + rb.adds) +
+            ' killMs=' + vw.KILL_MS +
+            ' | ' + (v2bOk ? 'ok' : 'FAIL'));
+
+        // ---- CV4: per-level `new` mutant through V2b's Worker function ----------
+        const m4 = cv4Source();
+        let j4 = { result: null, error: m4.src.slice(0, 4) === 'BAD ' ? m4.src : null };
+        if (j4.error === null) {
+            j4 = await vw.startVebTorture({ src: m4.src, seed: V2_SEED, ops: V2_OPS, warmup: V2_WARM }, 'CV4');
+        }
+        const e4 = vErr(j4);
+        const r4 = e4 === null ? j4.result : null;
+        const per4 = r4 === null || !(r4.adds > 0) ? null : r4.abGrowth / r4.adds;
+        const cv4Flip = r4 !== null && r4.abGrowth > 0 && per4 !== null && per4 >= CV4_BYTES;
+
+        // ---- V5: retention churn at U = 2^10 -----------------------------------
+        const box5 = { collected: 0, leaks: [], warns: [] };
+        const bad5 = new Int32Array(1);
+        const tracker5 = makeTracker('lite-loglogn-veb', box5);
+        const tracked5 = churnV(tracker5, null, Veb, bad5);
+        const live5 = await drain(tracker5);
+        const findings5 = tracker5.audit();
+        globalThis.gc();
+        await settle(25);
+        const after5 = tracker5.size();
+        const v5Ok = tracked5 === CYCLES && live5 === 0 && after5 === 0 && bad5[0] === 0 &&
+            box5.collected === CYCLES && findings5.length === 0 && box5.leaks.length === 0;
+        if (!v5Ok) {
+            fails.push('V5 tracked=' + tracked5 + ' size=' + live5 + ' after=' + after5 +
+                ' collected=' + box5.collected + ' findings=' + findings5.length +
+                ' leaks=' + box5.leaks.length + ' badCycles=' + bad5[0]);
+            for (const f of findings5) fails.push('V5 finding ' + f.kind + ':' + f.reason);
+            for (const l of box5.leaks) fails.push('V5 leak ' + l);
+        }
+        console.log('V5 cycles=' + CYCLES + ' U=' + VU5 + ' size=' + live5 + '/0' +
+            ' after=' + after5 + ' collected=' + box5.collected + '/' + tracked5 +
+            ' findings=' + findings5.length + ' warnings=' + box5.warns.length +
+            ' leaks=' + box5.leaks.length + ' badCycles=' + bad5[0] +
+            ' | ' + (v5Ok ? 'ok' : 'FAIL'));
+
+        // ---- V3: delete-heavy max refresh at U = 2^25 + 3 -------------------------
+        const keys3 = v3Keys();
+        const kErr3 = v3KeyErr(keys3);
+        const set3 = new Veb(V3_U);
+        const cen3 = v3Census(set3, keys3);
+        const cenOk3 = cen3 !== null && cen3[0] > 0 && cen3[1] > 0 && cen3[2] > 0 && cen3[3] > 0 && cen3[6] === 0;
+        const alignOk3 = V3_ITERS % V3_CYCLE === 0 && NS_K % V3_CYCLE === 0;
+        const cnt3 = new Int32Array(4);
+        const al3 = v3Alloc(set3, keys3, cnt3, V3_ITERS, V3_BATCHES);
+        const b3 = al3.bytesPerCall;
+        const ns3 = nsExcess(makeStepV3(set3, keys3, V3_DESC, cnt3));
+        const ops3 = V3_ITERS * (V3_BATCHES + 1) + NS_K * (2 + NS_W);
+        const cErr3 = v3CountErr(cnt3, ops3);
+        const fresh3 = new Veb(V3_U);
+        const tEq3 = set3.size === 0 && vTEqual(set3, fresh3);
+        const t3 = ns3 === null ? null : Math.max(0, ns3.excess) / NS_K;
+        const a3Ok = b3 !== null && al3.settled === true && Math.round(b3) === 0;
+        const n3Ok = ns3 !== null && ns3.excess < NS_MAX_EXCESS;
+        const v3Ok = kErr3 === null && cenOk3 && alignOk3 && a3Ok && n3Ok && cErr3 === null && tEq3 &&
+            set3.bits === 26;
+        if (!v3Ok) {
+            fails.push('V3 keys=' + (kErr3 === null ? 'ok' : kErr3) +
+                ' census=' + (cen3 === null ? 'null' : Array.from(cen3).join('/')) + ' (want >0 x4, bad 0)' +
+                ' aligned=' + alignOk3 + ' bits=' + set3.bits +
+                ' alloc bytesPerCall=' + b3 + ' settled=' + al3.settled +
+                ' transient ' + (ns3 === null ? 'not measured (null)' : 'excess ' + ns3.excess + ' B per ' + NS_K +
+                    ' ops (limit ' + NS_MAX_EXCESS + ')') +
+                ' counts ' + (cErr3 === null ? 'ok' : cErr3) + ' tEqualFresh=' + tEq3);
+        }
+        console.log('V3 cycles=' + (ops3 / V3_CYCLE) + ' ops=' + ops3 + ' U=' + V3_U + ' keys=' + V3_M +
+            ' (' + (kErr3 === null ? 'distinct, < U, 64 x 4 x 4' : 'BAD ' + kErr3) + ')' +
+            ' byteLength=' + set3.byteLength +
+            ' alloc=' + (b3 === null ? 'null' : Math.round(b3)) + ' B/op allocRaw=' + fmt(b3, 4) +
+            ' transient=' + fmt(t3, 3) + ' B/op (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
+            ' nsExcess=' + (ns3 === null ? 'null' : ns3.excess) +
+            ' nsWin0=' + (ns3 === null ? 'null' : ns3.first) +
+            ' adds=' + cnt3[0] + ' deletes=' + cnt3[1] + ' refreshes=' + cnt3[2] + ' bad=' + cnt3[3] +
+            ' census root m1/m2=' + (cen3 === null ? 'null' : cen3[0] + '/' + cen3[1] +
+                ' w16 m1/m2=' + cen3[2] + '/' + cen3[3] + ' w10 m1/m2=' + cen3[4] + '/' + cen3[5] +
+                ' bad=' + cen3[6]) +
+            ' tEqualFresh=' + tEq3 +
+            ' | ' + (v3Ok ? 'ok' : 'FAIL'));
+
+        // ---- V4: keys >= 2^31 in the tree, U = 2^31 + 1 (transient only) ----------
+        const v4 = vTier4(Veb);
+        globalThis.gc();
+        await settle(25);
+        const t4 = v4.excess === null ? null : Math.max(0, v4.excess) / NS_K;
+        const v4Ok = v4.pre && v4.post && v4.excess !== null && v4.valid >= 8 && v4.excess < NS_MAX_EXCESS;
+        if (!v4Ok) {
+            fails.push('V4 max=' + v4.top + ' (want ' + V4_TOP + ') answers=' + v4.pre + '/' + v4.post +
+                ' size=' + v4.size0 + '/' + v4.size1 +
+                ' transient ' + (v4.excess === null ? 'not measured (null)' : 'excess ' + v4.excess + ' B per ' +
+                    NS_K + ' ops (limit ' + NS_MAX_EXCESS + ') valid=' + v4.valid + ' (want >= 8)'));
+        }
+        console.log('V4 U=' + V4_U + ' byteLength=' + v4.byteLength + ' max=' + v4.top + ' (cold, once)' +
+            ' answers=' + (v4.pre && v4.post ? 'ok' : 'BAD') + ' size=' + v4.size0 + '/' + v4.size1 +
+            ' transient=' + fmt(t4, 3) + ' B/op (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
+            ' nsExcess=' + (v4.excess === null ? 'null' : v4.excess) +
+            ' nsWin0=' + (v4.first === null ? 'null' : v4.first) +
+            ' valid=' + (v4.valid === null ? 'null' : v4.valid) +
+            ' | ' + (v4Ok ? 'ok' : 'FAIL'));
+
+        // ---- CV controls (in-process ones last: their closures must not pollute
+        // the feedback V1 / V2a were measured on) -------------------------------
+        const vHold = [];
+        const vRetainFn = function vRetain(i) { stepV1(i); vHold.push([i]); };
+        const cv1 = measureAllocs(vRetainFn, { iterations: 20000, batches: 4 });
+        const cv1Bpc = cv1.bytesPerCall;
+        const cv1Flip = cv1Bpc !== null && Math.round(cv1Bpc) > 0;
+        vHold.length = 0;
+
+        const vRing = new Array(64).fill(null);
+        const vBoxFn = function vBoxed(i) { stepV1(i); vRing[i & 63] = [i]; };
+        const cv2 = nsExcess(vBoxFn);
+        const cv2Flip = cv2 !== null && cv2.excess >= NS_MAX_EXCESS;
+
+        const kickV = new Int32Array(1);
+        const vGcKickFn = function vGcKick(i) {
+            stepV1(i);
+            if ((i & 65535) === 0) {
+                globalThis.gc();
+                kickV[0]++;
+            }
+        };
+        const cv3 = await gcLane('V1 control gcKick', vGcKickFn, GC_KICK_OPS);
+        const cv3Flip = !cv3.ok && cv3.majorHit && cv3.s.gc.major > 0 && kickV[0] === GC_KICKS;
+
+        const box8 = { collected: 0, leaks: [], warns: [] };
+        const bad8 = new Int32Array(1);
+        const tracker8 = makeTracker('lite-loglogn-veb-control', box8);
+        const held8 = [];
+        churnV(tracker8, held8, Veb, bad8);
+        const live8 = await drain(tracker8);
+        const cv8Flip = live8 > 0;
+        held8.length = 0;
+
+        // CV5: V3's step factory + count check, deletes ascending.
+        const set5c = new Veb(V3_U);
+        const cnt5c = new Int32Array(4);
+        const step5c = makeStepV3(set5c, keys3, V3_ASC, cnt5c);
+        const ops5c = V3_CYCLE * 4;
+        for (let i = 0; i < ops5c; i++) step5c(i);
+        const cErr5c = v3CountErr(cnt5c, ops5c);
+        const cv5Flip = cErr5c !== null && cnt5c[2] !== cnt5c[1] && cnt5c[1] === ops5c / 2 && cnt5c[3] === 0;
+
+        // CV6: RetainOnRefresh through V3's alloc lane.
+        const cv6Hold = [];
+        class RetainOnRefresh extends Veb {
+            delete(x) {
+                if (this.max() === x) cv6Hold.push([x]);
+                return super.delete(x);
+            }
+        }
+        const cnt6c = new Int32Array(4);
+        const al6c = v3Alloc(new RetainOnRefresh(V3_U), keys3, cnt6c, V3_CYCLE * 10, 4);
+        const cv6Bpc = al6c.bytesPerCall;
+        const cv6Held = cv6Hold.length;
+        const cv6Flip = cv6Bpc !== null && Math.round(cv6Bpc) > 0;
+        cv6Hold.length = 0;
+
+        // CV7 (measured inside vTier4 on V4's own instance).
+        const cv7Flip = v4.c7 !== null && v4.c7 >= NS_MAX_EXCESS;
+
+        console.log('CV controls' +
+            ' CV1 retain.alloc=' + (cv1Bpc === null ? 'null' : Math.round(cv1Bpc)) + ' B/op ' +
+            (cv1Flip ? 'flipped' : 'PASSED') +
+            ' CV2 box.nsExcess=' + (cv2 === null ? 'null' : cv2.excess) + ' B/' + NS_K + ' ' +
+            (cv2Flip ? 'flipped' : 'PASSED') +
+            ' CV3 gcKick.gcMajor=' + cv3.s.gc.major + ' kicks=' + kickV[0] + '/' + GC_KICKS +
+            ' violations=' + cv3.errs.length + ' ' + (cv3Flip ? 'flipped' : 'PASSED') +
+            ' CV4 perLevelNew.anchor=' + m4.n +
+            (r4 === null ? ' error=' + e4 : ' abGrowth=' + r4.abGrowth + ' adds=' + r4.adds +
+                ' perAdd=' + fmt(per4, 1) + ' B held=' + r4.held) + ' ' +
+            (cv4Flip ? 'flipped' : 'PASSED') +
+            ' CV5 ascDelete.refreshes=' + cnt5c[2] + '/' + cnt5c[1] + ' deletes ' +
+            (cv5Flip ? 'flipped' : 'PASSED') +
+            ' CV6 retainOnRefresh.alloc=' + (cv6Bpc === null ? 'null' : Math.round(cv6Bpc)) + ' B/op held=' +
+            cv6Held + ' ' + (cv6Flip ? 'flipped' : 'PASSED') +
+            ' CV7 bigSucc.nsExcess=' + (v4.c7 === null ? 'null' : v4.c7) + ' B/' + NS_K +
+            ' valid=' + v4.c7valid + ' ' + (cv7Flip ? 'flipped' : 'PASSED') +
+            ' CV8 retained.size=' + live8 + ' ' + (cv8Flip ? 'flipped' : 'PASSED') +
+            ' | ' + (cv1Flip && cv2Flip && cv3Flip && cv4Flip && cv5Flip && cv6Flip && cv7Flip && cv8Flip ?
+                'ok' : 'FAIL'));
+        if (!cv1Flip) fails.push('control CV1 retain PASSED its check (alloc ' + cv1Bpc + ' B/op): V1 alloc lane is blind');
+        if (!cv2Flip) fails.push('control CV2 box PASSED its check: V1 transient lane is blind');
+        if (!cv3Flip) {
+            fails.push('control CV3 gcKick PASSED its check (gcMajor ' + cv3.s.gc.major + ', kicks ' +
+                kickV[0] + '/' + GC_KICKS + ', violations ' + cv3.errs.length + '): V1 gc lane is blind');
+        }
+        if (!cv4Flip) {
+            fails.push('control CV4 perLevelNew PASSED its check (' + (r4 === null ? e4 :
+                'abGrowth ' + r4.abGrowth + ', adds ' + r4.adds + ', ' + fmt(per4, 1) + ' B per add, want >= ' +
+                CV4_BYTES) + '): V2b worker abGrowth lane is blind');
+        }
+        if (!cv5Flip) {
+            fails.push('control CV5 ascDelete PASSED its check (' + (cErr5c === null ? 'counts matched' : cErr5c) +
+                '): V3 refresh count is blind');
+        }
+        if (!cv6Flip) {
+            fails.push('control CV6 RetainOnRefresh PASSED its check (alloc ' + cv6Bpc + ' B/op, held ' + cv6Held +
+                '): V3 alloc lane is blind');
+        }
+        if (!cv7Flip) {
+            fails.push('control CV7 bigSucc PASSED its check (nsExcess ' + v4.c7 + ', valid ' + v4.c7valid +
+                '): V4 transient lane is blind');
+        }
+        if (!cv8Flip) fails.push('control CV8 retained PASSED its check (size ' + live8 + '): V5 is blind');
+
+        return {
+            alloc: b1 === null || b2 === null || b3 === null ? null :
+                Math.max(Math.round(b1), Math.round(b2), Math.round(b3)),
+            allocSettled: al1.settled === true && al2.settled === true && al3.settled === true,
+            transient: t1 === null || t3 === null || t4 === null ? null : Math.max(t1, t3, t4),
+            major: sV1.gc.major, minor: sV1.gc.minor, maxMs: sV1.gc.maxMs,
+            abGrowth: rb === null ? null : rb.abGrowth,
+            abSettled: rb !== null && rb.settled === true,
+            refreshes: cnt3[2],
+            bigKeyExcess: v4.excess,
+            live: live5, findings: findings5.length, warnings: box5.warns.length,
+        };
+    }
+
+    let veb = null;
+    if (typeof vEBTree !== 'function') {
+        fails.push('veb: vEBTree export missing');
+        console.log('V vEBTree export missing (pre-vEB build): V1-V5 / CV1-CV8 not run, veb=null | FAIL');
+    } else {
+        veb = await vebTiers(vEBTree);
+    }
+    if (veb !== null && (veb.alloc === null || veb.allocSettled !== true || veb.transient === null ||
+        veb.abGrowth === null || veb.abSettled !== true || veb.bigKeyExcess === null || veb.refreshes === null)) {
+        fails.push('veb GATE: a null / unsettled aggregate (alloc ' + veb.alloc + ' settled ' + veb.allocSettled +
+            ', transient ' + veb.transient + ', abGrowth ' + veb.abGrowth + ' settled ' + veb.abSettled +
+            ', bigKeyExcess ' + veb.bigKeyExcess + ', refreshes ' + veb.refreshes + ') is a FAIL, never a 0');
+    }
+
     // ---- verdict + GATE line ----------------------------------------------
     const ok = fails.length === 0;
     console.log(
@@ -1891,6 +2580,16 @@ async function main() {
         ' splits=+' + y1.f0 + ' merges=+' + y1.f1 + ' borrows=+' + y1.f2 +
         ' Y1b borrowExcess=' + (y1bt.excess === null ? 'null' : y1bt.excess) + ' B/' + YB_NS_K +
         ' splits=+' + y1b.f0 + ' merges=+' + y1b.f1 + ' borrows=+' + y1b.f2 +
+        (veb === null ? ' | veb=null' :
+            ' | veb leak=size ' + veb.live + '/0 findings=' + veb.findings +
+            ' warnings=' + veb.warnings +
+            ' gc major=' + veb.major + ' minor=' + veb.minor +
+            ' maxMs=' + veb.maxMs.toFixed(2) +
+            ' alloc=' + (veb.alloc === null ? 'null' : veb.alloc) + ' B/op' +
+            ' transient=' + fmt(veb.transient, 3) + ' B/op' +
+            ' abGrowth=' + (veb.abGrowth === null ? 'null' : veb.abGrowth) +
+            ' refreshes=+' + veb.refreshes +
+            ' bigKeyExcess=' + (veb.bigKeyExcess === null ? 'null' : veb.bigKeyExcess) + ' B/' + NS_K) +
         ' | ' + (ok ? 'ok' : 'FAIL') + ' (sink=' + SINK[0] + ')');
     if (!ok) {
         for (const f of fails) console.error('  ' + f);

@@ -1,6 +1,6 @@
 # @zakkster/lite-loglogn
 
-> Zero-GC, sub-logarithmic bounded-integer predecessor / successor structures that PROVE their bound. Three members ship. StratifiedBitset (0.2.0): an array-embedded 32-ary bit pyramid, O(log_32 U) successor / predecessor, O(U/w) space. XFastTrie (0.3.0): O(log log U) successor / predecessor over pointer-free cuckoo LevelTables, with honest O(w) updates and O(n*w) space at a fixed capacity. YFastTrie (0.4.0): the same O(log log U) queries in O(n) space, over an x-fast trie of O(n/w) representatives and bounded sorted buckets. 0 B/op on every hot method of all three, and each bound gated by exact COUNTS. vEBTree is planned.
+> Zero-GC, sub-logarithmic bounded-integer predecessor / successor structures that PROVE their bound. Four members ship. StratifiedBitset (0.2.0): an array-embedded 32-ary bit pyramid, O(log_32 U) successor / predecessor, O(U/w) space. XFastTrie (0.3.0): O(log log U) successor / predecessor over pointer-free cuckoo LevelTables, with honest O(w) updates and O(n*w) space at a fixed capacity. YFastTrie (0.4.0): the same O(log log U) queries in O(n) space, over an x-fast trie of O(n/w) representatives and bounded sorted buckets. vEBTree (0.5.0, unreleased): a flattened van Emde Boas tree in one `Uint32Array`, worst-case O(log log U) for every operation and O(1) `min` / `max`, in O(U) space. 0 B/op on every hot method of StratifiedBitset, XFastTrie and YFastTrie, and each bound gated by exact COUNTS.
 
 [![npm version](https://img.shields.io/npm/v/@zakkster/lite-loglogn.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-loglogn)
 [![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
@@ -15,7 +15,7 @@
 
 ## The bounded-integer successor structure the ecosystem was missing
 
-Almost no JavaScript data-structure library ships the evidence that its Big-O claim survives contact with a real engine. `lite-loglogn` is a curated family of sub-logarithmic bounded-integer predecessor / successor structures, each zero-GC. The first member, `StratifiedBitset` (0.2.0), is an integer set over a fixed universe `[0, U)` (U up to 2^32) whose `successor` / `predecessor` read at most `2 * levels - 1` words, with `levels = max(1, ceil(log2(U) / 5))` (at most 7).
+Almost no JavaScript data-structure library ships the evidence that its Big-O claim survives contact with a real engine. `lite-loglogn` is a curated family of sub-logarithmic bounded-integer predecessor / successor structures; StratifiedBitset, XFastTrie and YFastTrie are each zero-GC. The first member, `StratifiedBitset` (0.2.0), is an integer set over a fixed universe `[0, U)` (U up to 2^32) whose `successor` / `predecessor` read at most `2 * levels - 1` words, with `levels = max(1, ceil(log2(U) / 5))` (at most 7).
 
 ```bash
 npm install @zakkster/lite-loglogn
@@ -85,7 +85,34 @@ try { new YFastTrie(2 ** 32, 4, -1); } catch (e) {   // a bad seed fails closed
 console.log(y.has(-1), y.successor(NaN));    // -> false undefined
 ```
 
-The family name ties it to the sibling series: [`@zakkster/lite-o1`](https://www.npmjs.com/package/@zakkster/lite-o1) is the constant, [`@zakkster/lite-logn`](https://www.npmjs.com/package/@zakkster/lite-logn) is the logarithm in `n`, and lite-loglogn is the double logarithm in `U`: the FAMILY bound is O(log log U). StratifiedBitset itself is O(log_32 U), not O(log log U); XFastTrie is the first strict O(log log U) member (queries only: its updates are O(w)); YFastTrie (0.4.0) keeps the O(log log U) query at O(n) space (updates are O(log log U) probes plus at most 2w - 1 word moves, restructuring amortized); vEBTree is planned.
+The fourth member, `vEBTree` (0.5.0, unreleased), is the worst-case O(log log U) structure: no hashing, no reseed, no amortized step, at the price of O(U) space (the whole universe is allocated up front; for a sparse large universe use `YFastTrie`). It takes only the universe (the `// ->` outputs below are from a real run).
+
+```js
+import { vEBTree } from '@zakkster/lite-loglogn';
+
+const v = new vEBTree(2 ** 16);              // universe [0, 2^16): one Uint32Array, allocated up front
+v.add(5).add(70).add(70).add(65535);         // add is idempotent and chainable
+console.log(v.size, v.bits, v.byteLength);   // -> 3 16 8232
+console.log(v.successor(5), v.successor(70), v.successor(65535));
+                                             // -> 70 65535 undefined
+console.log(v.predecessor(70), v.predecessor(5));  // -> 5 undefined
+console.log(v.min(), v.max());               // -> 5 65535
+console.log(v.delete(70), v.delete(70));     // -> true false
+
+const keys = [];
+for (let k = v.min(); k !== undefined; k = v.successor(k)) keys.push(k);
+console.log(keys.join(','));                 // -> 5,65535
+
+try { v.add(2 ** 16); } catch (e) {          // a bad key never touches a word
+  console.log(e instanceof RangeError, e.message);
+}                                            // -> true [lite-loglogn] key must be an integer in [0, 65536); got 65536
+try { new vEBTree(1); } catch (e) {          // the universe is checked first
+  console.log(e instanceof RangeError, e.message);
+}                                            // -> true [lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got 1
+console.log(v.has(-1), v.successor(NaN));    // -> false undefined
+```
+
+The family name ties it to the sibling series: [`@zakkster/lite-o1`](https://www.npmjs.com/package/@zakkster/lite-o1) is the constant, [`@zakkster/lite-logn`](https://www.npmjs.com/package/@zakkster/lite-logn) is the logarithm in `n`, and lite-loglogn is the double logarithm in `U`: the FAMILY bound is O(log log U). StratifiedBitset itself is O(log_32 U), not O(log log U); XFastTrie is the first strict O(log log U) member (queries only: its updates are O(w)); YFastTrie (0.4.0) keeps the O(log log U) query at O(n) space (updates are O(log log U) probes plus at most 2w - 1 word moves, restructuring amortized); vEBTree (0.5.0, unreleased) is the worst-case member: O(log log U) for every operation, O(U) space.
 
 ---
 
@@ -96,11 +123,13 @@ The family name ties it to the sibling series: [`@zakkster/lite-o1`](https://www
 - [Deep dive: the bit pyramid](#deep-dive-the-bit-pyramid)
 - [Deep dive: the XFastTrie](#deep-dive-the-xfasttrie)
 - [Deep dive: the YFastTrie](#deep-dive-the-yfasttrie)
+- [Deep dive: the vEBTree](#deep-dive-the-vebtree)
 - [API reference](#api-reference)
   - [Getters](#getters)
   - [Constants](#constants)
   - [XFastTrie](#xfasttrie)
   - [YFastTrie](#yfasttrie)
+  - [vEBTree](#vebtree)
 - [The roster](#the-roster)
 - [Composability](#composability)
 - [Zero-GC design notes](#zero-gc-design-notes)
@@ -121,15 +150,15 @@ The honesty rules of this family:
 
 - **The bound is in U, not n.** It is never "log log U beats log n" without "on a w-bit universe". Conflating log log U with log log n is the dishonesty this family refuses.
 - **The BOUND is proven by COUNTS.** StratifiedBitset's cost is the exact number of `_bits` word reads / writes per op, gated deterministically in `npm test`. Timing is evidence on one host, labelled by tier below.
-- **SPACE is a co-headline.** StratifiedBitset is O(U/w) (U = 2^32 is about 554 MB); XFastTrie is O(n*w), preallocated at its capacity (worst case 4,563,403,308 B at U = 2^32, capacity 2^24); YFastTrie is O(n), preallocated at its capacity too (formula in its deep dive). Stated with the same prominence as time.
+- **SPACE is a co-headline.** StratifiedBitset is O(U/w) (U = 2^32 is about 554 MB); XFastTrie is O(n*w), preallocated at its capacity (worst case 4,563,403,308 B at U = 2^32, capacity 2^24); YFastTrie is O(n), preallocated at its capacity too (formula in its deep dive); vEBTree is O(U), the whole universe allocated up front (8,232 B at U = 2^16, 539,500,592 B at U = 2^32; table in its deep dive). Stated with the same prominence as time.
 
 ## What you get
 
-- **Zero runtime dependencies.** ESM only, ASCII-only source, one PascalCase main file (`LogLogN.js`), `sideEffects: false`. The shipped surface is exactly `StratifiedBitset`, `XFastTrie`, `YFastTrie` and `VERSION`.
-- **0 B/op on every hot method** of all three members, including XFastTrie's cuckoo kicks and in-place reseeds and YFastTrie's bucket splits and merges (DETERMINISTIC, gated by `npm run torture` and `npm run test:perf`; keys below 2^30, see the boxing note).
+- **Zero runtime dependencies.** ESM only, ASCII-only source, one PascalCase main file (`LogLogN.js`), `sideEffects: false`. The shipped surface is exactly `StratifiedBitset`, `XFastTrie`, `YFastTrie`, `vEBTree` and `VERSION`.
+- **0 B/op on every hot method** of the three older members (StratifiedBitset, XFastTrie and YFastTrie), including XFastTrie's cuckoo kicks and in-place reseeds and YFastTrie's bucket splits and merges (DETERMINISTIC, gated by `npm run torture` and `npm run test:perf`; keys below 2^30, see the boxing note).
 - **An exact, gated cost model** (word reads per op for StratifiedBitset, level-table touches per op for XFastTrie, touches plus bucket reads and word moves per op for YFastTrie, below) instead of a fitted line.
 - **Strict ordered queries.** `successor(x)` is the smallest key > x, `predecessor(x)` the largest key < x; absent is `undefined`, never `-1` and never `null`.
-- **Fail closed.** A bad key (not a number, non-integer, NaN, negative, >= U, null, string, Symbol, BigInt, boxed Number) touches no word: `has` / `delete` return `false`, `successor` / `predecessor` return `undefined`, `add` throws a `RangeError`. `-0` aliases key 0. All three members.
+- **Fail closed.** A bad key (not a number, non-integer, NaN, negative, >= U, null, string, Symbol, BigInt, boxed Number) touches no word: `has` / `delete` return `false`, `successor` / `predecessor` return `undefined`, `add` throws a `RangeError`. `-0` aliases key 0. All four members.
 - **Tree-shakeable named exports.**
 
 ## Deep dive: the bit pyramid
@@ -321,6 +350,51 @@ Read it honestly: YFastTrie is smaller than XFastTrie at every cell (Y / X 0.099
 
 </details>
 
+## Deep dive: the vEBTree
+
+<details>
+<summary>Layout, depth, the trimmed root, SPACE, and the loss row</summary>
+
+A van Emde Boas tree answers `has`, `add`, `delete`, `successor` and `predecessor` by recursing into ONE half-width subtree per level, so the depth is O(log w) = O(log log U) and every operation has a worst-case bound: no hashing, no reseed, no amortized split. Here (ADR 0009, `decisions/0009-veb-flattening.md`) the recursion is flattened: ONE `Uint32Array` (`_t`) holds the whole tree, the offset of every child is computed from a precomputed size table (`_g`, an `Int32Array(33)`), never stored, and the hot methods are seven self-contained loops (no recursion, no helper call, no closure). The recursion survives only in the test-only reference (`test/helpers/vebRef.mjs`) and in cold sizing code.
+
+**Layout.** A node of width w (its keys have w bits):
+
+- **Leaf, w <= 8.** A plain bitmap of ceil(2^w / 32) words (w <= 5: one word; w = 6 / 7 / 8: 2 / 4 / 8 words), key k = bit `k & 31` of word `k >>> 5`. No header, no summary.
+- **Internal, w >= 9.** lo = (w > 24 ? 16 : 8), hi = w - lo. A two-word header `[min, max]`, then the summary (a node of width hi; a summary of width <= 8 is a leaf), then 2^hi clusters of width lo. Size in words: S(w) = 2 + S(hi) + 2^hi * S(lo), so a cluster is 8 words (lo = 8) or 2,058 words (lo = 16).
+- **`min` is NOT stored in its cluster.** The header holds the node's smallest key outright and the cluster holds only the rest, so an `add` into an empty cluster is a single header write (then only the summary is entered) and a `delete` of a one-key node is a single header reset: one path per update, never two recursive calls.
+- **EMPTY** is min > max, stored as `[0xFFFFFFFF, 0]`. Header keys are node-relative; only the ROOT header holds full 32-bit keys, and header slots are compared as uint32.
+- **Depth** is ceil(log2(w / 8)): 0 for w <= 8, 1 for w = 9 .. 16, 2 for w = 17 .. 32 (depth <= 2 for every w <= 32, so the O(log log U) bound stands).
+- **Trimmed root.** Only the root's cluster count is trimmed to ceil(U / 2^lo): U = 2^24 + 1 costs 2,115,708 B, not about 4.2 MB. Nothing changes at U = 2^w.
+
+**SPACE (DETERMINISTIC; formula and the engine agree, gated in `test/VEBTree.test.js` and `test/DocSync.test.js`).** `byteLength = 4 x words` of `_t` (`_g`, `_p` and the object are not counted), the whole universe allocated up front whatever the keys present. SB = StratifiedBitset bytes at the same U (engine byteLength values), vEB / SB = the ratio:
+
+| U | w | byteLength | StratifiedBitset (bytes) | vEB / SB |
+| --- | --- | --- | --- | --- |
+| 2 | 1 | 4 B | 4 | 1.000 |
+| 257 | 9 | 76 B | 40 | 1.900 |
+| 2^16 | 16 | 8,232 B | 8,460 | 0.973 |
+| 2^20 | 20 | 131,604 B | 135,300 | 0.973 |
+| 2^24 | 24 | 2,105,392 B | 2,164,804 | 0.973 |
+| 2^24 + 1 | 25 | 2,115,708 B (trimmed root) | 2,164,820 | 0.977 |
+| 2^28 | 28 | 33,718,804 B | 34,636,836 | 0.973 |
+| 2^32 | 32 | 539,500,592 B (about 540 MB) | 554,189,332 | 0.973 |
+
+Read it honestly: vEBTree is NOT a space win. It costs about 0.97 of StratifiedBitset's bytes for w = 13 .. 32 (exactly 1.000 at w = 11, 0.985 at w = 12), and a little MORE below that: at U = 2^9 and U = 2^10 it is 1.118 and 1.061 of StratifiedBitset (the leaf cutoff is a uniform 8, ADR 0009), and U = 257 (w = 9, two root clusters) is 1.9. The space is O(U), the same order as StratifiedBitset's O(U/w) times a constant; the structure is for its WORST-CASE operation bound, and for a sparse key set in a large universe the answer is `YFastTrie` (O(n) space, amortized restructuring).
+
+**The expected loss row, published up front (ADR 0009).** vEBTree is expected to LOSE to StratifiedBitset on work per operation wherever StratifiedBitset answers from one word: a vEB node must read its header first, and (min not being stored in its cluster) every `has` / `add` / `delete` starts at the root. Per-op word counts are NOT written in this README (ADR 0004 Amendment 1: counts are gated, exactly, in `test/VebCount.test.js`; prose never carries them). The verdicts, by word reads against StratifiedBitset on the same keys, each tied to the test that gates it:
+
+| Operation (VebCount row) | vs StratifiedBitset | Gating test title (`test/VebCount.test.js`) |
+| --- | --- | --- |
+| `min` / `max` on `{5, U-1}` | WIN | `A3 exact rows, all 3 columns == vebCost, ...` and `A3 StratifiedBitset side via the Count.test.js harness, ...` at w = 16, 20, 24, 28 |
+| out-of-range `successor` / `predecessor` (`successor(0)` on `{U-1}`, `predecessor(U-1)` on `{0}`), answered from the header | WIN (expected, ADR 0009) | vEB side only: `A3 exact rows, all 3 columns == vebCost, ...` at w = 16, 20, 24, 28; the StratifiedBitset side of this row is not measured |
+| `successor(0)` on `{0, 65535}` (far gap, through the summary) | LOSE at U = 2^16 | `A3 vEB vs SB loss row, U=2^16 (...)` |
+| `successor(5)` on `{0, 5, 6, 65535}` (same-word neighbour) | LOSE at U = 2^16 | `A3 vEB vs SB loss row, U=2^16 (...)` |
+| `has(5)` on `{0, 5, 6, U-1}` | LOSE at U = 2^16 | `A3 vEB vs SB loss row, U=2^16 (...)` |
+
+(The `(...)` in the last title stands for the gated counts that the title carries; they are deliberately not repeated here. Every other VebCount test, including the seeded op stream over 12 universes, gates each operation's count exactly, on all three columns `_t`, `_g` and `_p`, against a model that is independent of the engine.) What the member is for is the worst case: no hashing, no reseeds, no amortized splits, so a single operation has no restructuring tail. No timing for vEBTree is claimed in this README.
+
+</details>
+
 ## API reference
 
 ### StratifiedBitset
@@ -415,16 +489,55 @@ Limits and failure modes:
 
 The split / merge / borrow counters live in the instance (cumulative; `clear()` keeps them; Int32, wrap at 2^31) and are REPORTED diagnostics the engine never reads; they are not part of the typed surface. The inner trie keeps its own kick / reseed counters.
 
+### vEBTree
+
+| Signature | Returns | Notes |
+| --- | --- | --- |
+| `new vEBTree(universe)` | instance | `universe` an integer in [2, 2^32], else `RangeError` (`[lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got ...`). Fixed universe, no resize, no capacity, no seed. Allocates the whole tree once (O(U) bytes, table below). |
+| `has(x)` | `boolean` | Bad key -> `false`. |
+| `add(x)` | `this` | Idempotent. Bad key -> `RangeError` (`[lite-loglogn] key must be an integer in [0, U); got ...`), no state touched. |
+| `delete(x)` | `boolean` | `true` if `x` was present. Bad key -> `false`. |
+| `successor(x)` | `number \| undefined` | Smallest key > x (STRICT). Bad key -> `undefined`. |
+| `predecessor(x)` | `number \| undefined` | Largest key < x (STRICT). Bad key -> `undefined`. |
+| `min()` / `max()` | `number \| undefined` | `undefined` when empty. O(1). |
+| `clear()` | `void` | Cold. Empties the set and rewrites the constructed (EMPTY-header) layout in place. |
+
+Worst-case O(log log U) for `has` / `add` / `delete` / `successor` / `predecessor`, O(1) for `min` / `max`; no hashing, no reseed, no amortized step. No `dump()`, no `capacity`, no `seed`, no `forEach` and no iterator: iteration is the `successor` walk (see the quick-start). Getters (cold): `size`, `universe`, `bits` (w = ceil(log2 U)), `byteLength` (4 x the words of the one `_t` Uint32Array; `_g`, `_p` and the object are not counted). All four are read-only. A returned key >= 2^31 (>= 2^30 on a pointer-compressed engine) may box as a HeapNumber when the call is not inlined (the boxing note below).
+
+Limits and failure modes:
+
+| Limit | Value |
+| --- | --- |
+| Universe U | integer, 2 .. 2^32 (a non-integer, NaN, a string, a value below 2 or above 2^32 is a `RangeError`) |
+| Capacity | none: every key in [0, U) fits, nothing is ever full |
+| Memory | O(U), allocated by the constructor; `byteLength` below (539,500,592 B at U = 2^32) |
+| Bad key | not a number, non-integer, NaN, negative, >= U, null, string, Symbol, BigInt, boxed Number: touches nothing (`has` / `delete` -> `false`, `successor` / `predecessor` -> `undefined`, `add` -> `RangeError`); `-0` aliases key 0 |
+
+`byteLength` (exact; the root's cluster count is trimmed to ceil(U / 2^lo), ADR 0009 L1):
+
+| U | w | byteLength |
+| --- | --- | --- |
+| 2 | 1 | 4 B |
+| 257 | 9 | 76 B |
+| 2^16 | 16 | 8,232 B |
+| 2^20 | 20 | 131,604 B |
+| 2^24 | 24 | 2,105,392 B |
+| 2^24 + 1 | 25 | 2,115,708 B (trimmed root) |
+| 2^28 | 28 | 33,718,804 B |
+| 2^32 | 32 | 539,500,592 B (about 540 MB) |
+
+For a sparse key set in a large universe use `YFastTrie` (O(n) space) instead.
+
 ## The roster
 
-One member per release, each landing append-only (StratifiedBitset stays byte-identical, pinned by Parity; XFastTrie stays behavior-identical with the seed omitted). StratifiedBitset (0.2.0), XFastTrie (0.3.0) and YFastTrie (0.4.0) are shipped; vEBTree is PLANNED.
+One member per release, each landing append-only (StratifiedBitset stays byte-identical, pinned by Parity; XFastTrie stays behavior-identical with the seed omitted). StratifiedBitset (0.2.0), XFastTrie (0.3.0) and YFastTrie (0.4.0) are published; vEBTree (0.5.0) is in the repository, gated, and unreleased.
 
 | Member | Slot | Time (query) | Space | Shape |
 | --- | --- | --- | --- | --- |
 | **StratifiedBitset** | 0.2.0 | O(log_32 U) successor / predecessor; min / max read Lc words (Lc = levels <= 7) | O(U/w) | array-embedded hierarchical bit tree |
 | **XFastTrie** | 0.3.0 (shipped) | O(log log U) query (1 + log2(w) touches when absent); updates O(w) | O(n*w), preallocated at a fixed capacity | binary search over w pointer-free cuckoo LevelTables + a sorted leaf thread |
 | **YFastTrie** | 0.4.0 (shipped) | O(log log U) query; updates O(log log U) probes + at most 2w-1 word moves, split / merge / borrow amortized | O(n), preallocated at a fixed capacity | x-fast trie over ~n/w representatives + bounded sorted buckets in one pool |
-| **vEBTree** | 0.5.0 (planned) | O(log log U) worst-case | O(U) | flattened van Emde Boas |
+| **vEBTree** | 0.5.0 (unreleased) | O(log log U) worst-case for every operation; min / max O(1) | O(U), the whole universe allocated up front | flattened van Emde Boas in one `Uint32Array` |
 
 Later tiers (SegmentedU for wider keys, EliasFano, RoaringSet) are queued in [`ROADMAP.md`](./ROADMAP.md).
 
@@ -478,7 +591,7 @@ DETERMINISTIC numbers (2026-10-22, Node v26.8.2, every run of the named script):
 
 - `npm run torture` (`node --expose-gc test/torture.mjs`): T0 runs 2,000,000 ops at U = 2^20 -> retained 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; T1-T2 ok; T3's five must-fail controls (retain, box, growing, retained, gcKick) each flip (QUIET release verify run 2026-10-23, Node v26.8.2, 1 run; a count gate, not timing).
 - XFastTrie torture lanes X0-X4 (QUIET verify run 2026-10-22, load1 1.32 vs baseline 2.21, 12 cores, Node v26.8.2, 1 run; the same counts hold on every run): X0a 2,000,000 ops at U = 2^20, C = 8192 and X0b 2,000,000 ops at U = 2^30, C = 8192 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; X1 200,000 ops at U = 2^32, C = 8192 (byteLength 4,571,692, abGrowth 0, key 4294967295 returned); X2 reseed churn at U = 65536, C = 16, 50,000 cycles each: natural (kicks +2,000,000, reseedOps +50,000, tries +50,000) and forced (kicks +2,000,000, reseedOps +50,000, rebuilds +200,000) -> 0 B/op, abGrowth 0; X3 leak census (4096 create / drop cycles, 4096/4096 collected, 0 findings); X4's six must-fail controls (retain, box, a reallocating reseed, a dropped per-reseed snapshot, a retained set, xGcKick) each flip (QUIET release verify run 2026-10-23, Node v26.8.2, 1 run; a count gate, not timing).
-- YFastTrie torture lanes Y0-Y4 (verify run 2026-10-25, Node v26.8.2, 1 run; load1 6.58 vs baseline 2.21 at its start, so a PRELIMINARY host, but these are COUNT gates and do not depend on it): Y0a 2,000,000 ops at U = 2^20, C = 8192 and Y0b 2,000,000 ops at U = 2^30, C = 8192 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0 (with splits and merges firing inside the windows); Y1 split / merge storm at U = 65536, C = 664, 5,000 cycles (splits +200,000, merges +200,000, borrows +0) -> 0 B/op, abGrowth 0, and its transient twin Y1c (64 cycles per window, nsExcess 0); Y2 200,000 ops at U = 2^32, C = 8192 (byteLength 471,895, abGrowth 0, key 4294967295 returned) plus a straddle step with 32 keys >= 2^31 in the buckets, transient 0.000 B/op; Y3 leak census (4096 create / drop cycles, 4096/4096 collected, 0 findings); Y4's seven must-fail controls (retain, box, a reallocating split, a dropped per-split snapshot, a retained set, yGcKick, flatKeys) each flip (a count gate, not timing). Since 0.4.1 Y1b also allocation-gates borrows (torture, 2 runs, 2026-11-01, Node v26.8.2, load1 4.0-4.6 with other node processes busy, so a PRELIMINARY host, but these are COUNT gates): at U = 2^16 (w = 16, K = 32, h = 8), C = 43, one cycle is 43 adds + 43 deletes + clear() with a census of 1 split / 1 merge / 1 borrow per cycle -> `alloc=0 B/op over 5000 cycles (splits+5000 merges+5000 borrows+5000) window 1000 cycles splits+1000 merges+1000 borrows+1000 (census 1/1/1 per cycle) abGrowth=0 settled=true transient nsExcess=0 B / 256 cycles (limit 1024) ... badWindows=0 | ok`; Y4 gains two must-fail controls, CY8 AllocBorrow (56 B/op, flips the Y1b allocation gate) and CY9 noRefill (borrows +0, flips the borrows floor), so Y4 runs nine; Y0's split / merge coverage floor is now checked per measureAllocs batch (minimum per batch 12 / 12 at U = 2^20, 3 / 3 at U = 2^30). No Y lane fires an inner reseed (XFastTrie's X2 covers kicks and reseeds). The torture lanes run 5 (T3) + 6 (X4) + 9 (Y4) = 20 must-fail controls in all (18 in 0.4.0, with Y4 at seven).
+- YFastTrie torture lanes Y0-Y4 (verify run 2026-10-25, Node v26.8.2, 1 run; load1 6.58 vs baseline 2.21 at its start, so a PRELIMINARY host, but these are COUNT gates and do not depend on it): Y0a 2,000,000 ops at U = 2^20, C = 8192 and Y0b 2,000,000 ops at U = 2^30, C = 8192 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0 (with splits and merges firing inside the windows); Y1 split / merge storm at U = 65536, C = 664, 5,000 cycles (splits +200,000, merges +200,000, borrows +0) -> 0 B/op, abGrowth 0, and its transient twin Y1c (64 cycles per window, nsExcess 0); Y2 200,000 ops at U = 2^32, C = 8192 (byteLength 471,895, abGrowth 0, key 4294967295 returned) plus a straddle step with 32 keys >= 2^31 in the buckets, transient 0.000 B/op; Y3 leak census (4096 create / drop cycles, 4096/4096 collected, 0 findings); Y4's seven must-fail controls (retain, box, a reallocating split, a dropped per-split snapshot, a retained set, yGcKick, flatKeys) each flip (a count gate, not timing). Since 0.4.1 Y1b also allocation-gates borrows (torture, 2 runs, 2026-11-01, Node v26.8.2, load1 4.0-4.6 with other node processes busy, so a PRELIMINARY host, but these are COUNT gates): at U = 2^16 (w = 16, K = 32, h = 8), C = 43, one cycle is 43 adds + 43 deletes + clear() with a census of 1 split / 1 merge / 1 borrow per cycle -> `alloc=0 B/op over 5000 cycles (splits+5000 merges+5000 borrows+5000) window 1000 cycles splits+1000 merges+1000 borrows+1000 (census 1/1/1 per cycle) abGrowth=0 settled=true transient nsExcess=0 B / 256 cycles (limit 1024) ... badWindows=0 | ok`; Y4 gains two must-fail controls, CY8 AllocBorrow (56 B/op, flips the Y1b allocation gate) and CY9 noRefill (borrows +0, flips the borrows floor), so Y4 runs nine; Y0's split / merge coverage floor is checked per measureAllocs batch: every one of the 8 batches must contain at least 1 split AND at least 1 merge (the gated floor is 1 / 1, not the observed minimum); the cold replay of 2026-11-01 saw a minimum per batch of 12 / 12 at U = 2^20 and 3 / 3 at U = 2^30, an observation that gates nothing. No Y lane fires an inner reseed (XFastTrie's X2 covers kicks and reseeds). The torture lanes run 5 (T3) + 6 (X4) + 9 (Y4) = 20 must-fail controls in all (18 in 0.4.0, with Y4 at seven).
 - `npm run test:perf` also runs `test/perf/YFastTriePerf.test.mjs`: 9 zero-alloc scenarios (has, add+delete, split / merge churn, successor, predecessor, min, max, successor-walk at U = 2^20, successor at U = 2^32 (keys < 2^30)), each measured at N and k*N, the churn splitting and merging in both windows, and 3 must-fail teeth (a fresh-array loop must flip the scavenge lane only; GrowingYft, whose `_split` reallocates the `_bk` pool, must flip the grows counter and the arrayBuffers lane; SideBufferYft, whose `_split` grows ArrayBuffer memory off the columns, must flip the arrayBuffers lane only) = flag pin (2) + detector (1) + 9 scenarios + 3 teeth + attribution (3: the scavenge-only and arrayBuffers-only pins plus the GrowingYft grows + arrayBuffers pin) + coverage floor (1) = 19 tests; PerfGate 15 + XFastTriePerf 17 + YFastTriePerf 19 = 51/51 pass in the 2026-10-25 verify run (load1 6.58 at its start, PRELIMINARY host; these are allocation-count gates, Node v26.8.2, 1 run).
 - `npm run test:perf` also runs `test/perf/XFastTriePerf.test.mjs`: 8 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20, successor at U = 2^32 (keys < 2^30)), and 3 must-fail teeth (a fresh-array loop, GrowingXft, SideBufferXft) = flag pin (2) + detector (1) + 8 scenarios + 3 teeth + attribution (1) + dual-lane (1) + coverage floor (1) = 17 tests; with PerfGate's 15, the 0.3.0 release verify run gave 32/32 pass (2026-10-23, quiet-lock QUIET, load1 2.84 at start vs baseline 2.21, Node v26.8.2, 1 run).
 - `npm run test:perf` (`@zakkster/lite-perf-gate`), StratifiedBitset file `test/perf/PerfGate.test.mjs`: 7 zero-alloc scenarios (has, add+delete, successor, predecessor, min, max, successor-walk at U = 2^20) + 3 must-fail teeth + flag pin (2) + detector (1) + arrayBuffers attribution (1) + GATE key-set pin (1) = 15/15.
@@ -631,13 +744,14 @@ Coverage: n-sweep 9 points (A/B 7), U-sweep 4 widths, ABBA runs 20 / 20, probe r
 - **XFastTrie: fixed capacity, early-stop updates, poison-then-clear (ADR 0007).** `add` of a new key at `size === capacity` throws and writes nothing; the update walk stops at the shorter common prefix with the thread neighbours (`w - m` touches); a failed rollback poisons the instance until `clear()`; the cuckoo seeds are fixed, so adversarial keys can force kicks and reseeds (correctness holds, time suffers).
 - **Plain x-fast, y-fast on top, not z-fast (ADR 0008, C-1).** Queries binary-search the prefix lengths over hash probes; the O(n)-space member is a y-fast trie (an x-fast trie over O(n/w) separator representatives plus bounded sorted buckets). A z-fast trie (fewer probes per update, more machinery) is decided against for now and stays future work.
 - **YFastTrie: deterministic buckets, no RNG, claim worded exactly (ADR 0008).** Policy w = ceil(log2 U), K = 2w, h = ceil(w/2); split at K, merge or borrow at h; queries O(log log U); updates O(log log U) probes plus at most 2w - 1 contiguous word moves; split / merge / borrow amortized, never "expected". A split or borrow whose inner add stalls throws with the set unchanged.
+- **vEBTree: flat, worst-case, published with its loss row (ADR 0009).** One `Uint32Array`, leaf cutoff w <= 8, a per-width split (lo = 8, or 16 above w = 24), a `[min, max]` header with min not stored in its cluster, a trimmed root; it is expected to LOSE to StratifiedBitset on work per operation wherever one word answers, and to WIN on `min` / `max`, and that verdict per operation is gated by `test/VebCount.test.js`, never written as counts in prose. Full record: [`decisions/0009-veb-flattening.md`](./decisions/0009-veb-flattening.md).
 - **Optional seed on both tries (ADR 0007 Amendment 1, ADR 0008).** `new XFastTrie(U, C, seed?)` / `new YFastTrie(U, C, seed?)`: a uint32 integer, omitted / `undefined` / 0 = the defaults bit for bit, `clear()` restores the constructed state including the seed, never random by default.
 
 See [`decisions/`](./decisions) for the full records.
 
 ## Testing
 
-`node:test` only, zero runtime deps. `npm test`: 584 tests, 583 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail (DETERMINISTIC; 2026-11-01, Node v26.8.2). It covers, for StratifiedBitset, exact counts (Count), a seeded oracle fuzz (Oracle), sibling oracles (lite-o1 BitSet.nextSet for U <= 2^25, lite-o1 EliasFano.nextGEQ, lite-logn Scapegoat + SortedArray; 0 divergences, each with a must-fail control), FastBit32Cross, Space, TierParity, the witness / tier verdict functions on injected vectors, and the `QaAudit` block (VERSION trinity, frozen export surface, six-file pack, author spelling, ASCII, plus an XFastTrie coercion / boundary block). For XFastTrie: `XftVectors` (15 seeded streams replayed against a stored cut, cross-checked against StratifiedBitset, with a `>=` mutant control), `XftCount` (exact touches through a counting Proxy over all eight columns, with six must-fail mutant controls plus a hang control), `XFastTrie` / `XFastTrieBoundary` / `XFastTrieOracle` (behavior, boundary keys, seeded oracle fuzz), `XFastTrieSpace` (byteLength pins and the identity of every column), `XftBytecode` (every hot body <= 460 B), `Parity` (the StratifiedBitset region of the file is byte-pinned against 0.2.0), `AbVerdict` (the 2% effect floor), `XftWitness` (the `--xft --smoke` gate, counts and strings only), and `XftSeed` (the optional seed: validation, seed 0 == omitted, the `xft-seed.json` replay, `clear()` restoring the constructed seeds). For YFastTrie: `YftVectors` (seeded streams replayed against an independent policy model, size-band histograms), `YftCount` (exact touches, `_bk` / `_bn` reads and word moves through a counting Proxy over all ten columns, with seven must-fail mutant controls plus a hang control), `YFastTrieOracle` / `YFastTrieBoundary` (the policy invariants, the failure modes, bad keys, key 4294967295, 'YFastTrie is full', poison and revive, against sibling oracles), `YFastTrieSpace` (the byteLength formula from a test-owned model), `YftBytecode` (every hot body <= 460 B), `YftSmallScope` (exhaustive small-scope BFS at w = 4, U = 12..16: Set oracle + invariant walker, the oracle set compared on every dedup hit, split / merge / borrow / full-capacity floors, three must-fail mutants), `InliningTool` (the repo-only inlining tool's `--self-test` with its check count pinned, its NO-VERDICT exits, and 13 must-fail mutants of the script), and `YftWitness` (the `--yft --smoke` gate, counts and strings only, five must-fail fakes).
+`node:test` only, zero runtime deps. `npm test`: 584 tests, 583 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail (DETERMINISTIC; 2026-11-01, Node v26.8.2). It covers, for StratifiedBitset, exact counts (Count), a seeded oracle fuzz (Oracle), sibling oracles (lite-o1 BitSet.nextSet for U <= 2^25, lite-o1 EliasFano.nextGEQ, lite-logn Scapegoat + SortedArray; 0 divergences, each with a must-fail control), FastBit32Cross, Space, TierParity, the witness / tier verdict functions on injected vectors, and the `QaAudit` block (VERSION trinity, frozen export surface, six-file pack, author spelling, ASCII, plus an XFastTrie coercion / boundary block). For XFastTrie: `XftVectors` (15 seeded streams replayed against a stored cut, cross-checked against StratifiedBitset, with a `>=` mutant control), `XftCount` (exact touches through a counting Proxy over all eight columns, with six must-fail mutant controls plus a hang control), `XFastTrie` / `XFastTrieBoundary` / `XFastTrieOracle` (behavior, boundary keys, seeded oracle fuzz), `XFastTrieSpace` (byteLength pins and the identity of every column), `XftBytecode` (every hot body <= 460 B), `Parity` (the StratifiedBitset region of the file is byte-pinned against 0.2.0), `AbVerdict` (the 2% effect floor), `XftWitness` (the `--xft --smoke` gate, counts and strings only), and `XftSeed` (the optional seed: validation, seed 0 == omitted, the `xft-seed.json` replay, `clear()` restoring the constructed seeds). For YFastTrie: `YftVectors` (seeded streams replayed against an independent policy model, size-band histograms), `YftCount` (exact touches, `_bk` / `_bn` reads and word moves through a counting Proxy over all ten columns, with seven must-fail mutant controls plus a hang control), `YFastTrieOracle` / `YFastTrieBoundary` (the policy invariants, the failure modes, bad keys, key 4294967295, 'YFastTrie is full', poison and revive, against sibling oracles), `YFastTrieSpace` (the byteLength formula from a test-owned model), `YftBytecode` (every hot body <= 460 B), `YftSmallScope` (exhaustive small-scope BFS at w = 4, U = 12..16: Set oracle + invariant walker, the oracle set compared on every dedup hit, split / merge / borrow / full-capacity floors, three must-fail mutants), `InliningTool` (the repo-only inlining tool's `--self-test` with its check count pinned, its NO-VERDICT exits, and 13 must-fail mutants of the script), and `YftWitness` (the `--yft --smoke` gate, counts and strings only, five must-fail fakes). For vEBTree (the test files below are listed here, the totals above and below are updated at the release gate): `VEBTree` (units and boundaries at several universes, the exact `byteLength` table, `clear()` against a fresh layout, a U = 2^31 + 12345 run against the reference, and the U = 2^32 empty-encoding assertion in its own Worker, with must-fail mutants), `VebRef` (the test-only recursive reference against a plain `Set` oracle and the research sketch, with must-fail reference mutants), `VebVectors` (the stored `veb-g1.json` stream replayed on the reference and on the engine, engine mutants run in Workers with a kill timer), `VebCount` (exact word reads and writes per operation through Proxies over `_t`, `_g` and `_p`, expected values from an independent model, the WIN / LOSE loss row against StratifiedBitset, a seeded op stream, six must-fail mutants), `VebFuzz` (a seeded differential fuzz of the engine against the reference, a `Set` oracle and the sketch, in Workers), `ParityPrefix` (everything before the vEBTree marker is byte-pinned against the 0.4.1 engine bytes, so the three older members stay byte-identical, with controls) and `DocSync` (the vEBTree sections of README and llms.txt carry the exact `byteLength` table, and the pre-implementation wording about vEBTree is gone; it checks README, llms.txt, GUIDE.md and LogLogN.d.ts).
 
 | Script | What it does |
 | --- | --- |
@@ -662,10 +776,10 @@ Witness exit codes: 0 pass, 1 fail, 2 inconclusive (host noise, drift, or an A/A
 - **Not a bounded-integer priority queue.** Use lite-o1's `BucketQueue` (Dial, O(1)).
 - **Not a general comparator ordered map.** Non-integer or comparator keys belong in `@zakkster/lite-logn` (O(log n)).
 - **Not an approximate-membership library.** Bloom / cuckoo / binary-fuse filters live in [`@zakkster/lite-filter`](https://www.npmjs.com/package/@zakkster/lite-filter); lite-loglogn is exact and has no use of it.
-- **Not a grow-on-demand collection.** The universe is fixed at construction, and the capacity of XFastTrie and YFastTrie too: they never grow and never rehash beyond the labelled in-place reseed.
-- **Not a compact structure.** XFastTrie is O(n*w) space, preallocated at the capacity you declare (up to about 4.6 GB at U = 2^32, capacity 2^24), and its updates cost O(w) touches. For O(n) space the answer is YFastTrie (0.4.0; its updates cost O(log log U) probes plus at most 2w - 1 word moves, amortized restructuring); for a dense universe StratifiedBitset is far smaller (tables above).
+- **Not a grow-on-demand collection.** The universe is fixed at construction, and the capacity of XFastTrie and YFastTrie too (vEBTree has no capacity: its whole universe is allocated up front): they never grow and never rehash beyond the labelled in-place reseed.
+- **Not a compact structure.** XFastTrie is O(n*w) space, preallocated at the capacity you declare (up to about 4.6 GB at U = 2^32, capacity 2^24), and its updates cost O(w) touches. For O(n) space the answer is YFastTrie (0.4.0; its updates cost O(log log U) probes plus at most 2w - 1 word moves, amortized restructuring); for a dense universe StratifiedBitset is far smaller (tables above). vEBTree is O(U) space: about as large as StratifiedBitset, never sub-linear in U.
 - **Not hash-flood resistant.** XFastTrie's cuckoo seeds are fixed by default (and YFastTrie's inner trie shares them); adversarial keys can force kicks and reseeds, and a caller seed is no defence against an attacker who knows it (ADR 0007).
-- **Not a worst-case O(log log U) update.** YFastTrie's updates carry up to 2w - 1 contiguous word moves, and a split / merge / borrow is amortized; vEBTree (planned) is the worst-case member.
+- **Not a worst-case O(log log U) update.** YFastTrie's updates carry up to 2w - 1 contiguous word moves, and a split / merge / borrow is amortized; vEBTree (0.5.0, unreleased) is the worst-case member, at O(U) space.
 
 ## Ecosystem
 

@@ -1,12 +1,12 @@
 /**
  * @zakkster/lite-loglogn -- ambient type tests (tsc -p test/types/tsconfig.json).
  *
- * Exports: `VERSION` and the classes `StratifiedBitset`, `XFastTrie` and
- * `YFastTrie` (each with its dump snapshot interface). Each member session appends a type-level assertion block for its
+ * Exports: `VERSION` and the classes `StratifiedBitset`, `XFastTrie`, `YFastTrie` and
+ * `vEBTree` (the first three with a dump snapshot interface). Each member session appends a type-level assertion block for its
  * class here. ASCII-only.
  */
 
-import { VERSION, StratifiedBitset, XFastTrie, YFastTrie } from '../../LogLogN.js';
+import { VERSION, StratifiedBitset, XFastTrie, YFastTrie, vEBTree } from '../../LogLogN.js';
 import type { StratifiedBitsetDump, XFastTrieDump, YFastTrieDump } from '../../LogLogN.js';
 
 // VERSION is a string.
@@ -355,3 +355,79 @@ void yxd;
 y.forEach(() => {});
 // @ts-expect-error -- not iterable.
 for (const k of y) void k;
+
+// --- vEBTree ------------------------------------------------------------------
+
+const vb = new vEBTree(1 << 16);
+const vbc: vEBTree = vb;
+void vbc;
+
+// @ts-expect-error -- the constructor needs a universe.
+new vEBTree();
+// @ts-expect-error -- the universe is a number, not a string.
+new vEBTree('65536');
+// @ts-expect-error -- the constructor takes only a universe (no capacity, no seed).
+new vEBTree(65536, 8);
+
+// Getters are numbers and readonly.
+const vsize: number = vb.size;
+const vuniv: number = vb.universe;
+const vbits: number = vb.bits;
+const vbyte: number = vb.byteLength;
+void vsize; void vuniv; void vbits; void vbyte;
+// @ts-expect-error -- size is readonly.
+vb.size = 1;
+// @ts-expect-error -- universe is readonly.
+vb.universe = 1;
+// @ts-expect-error -- bits is readonly.
+vb.bits = 1;
+// @ts-expect-error -- byteLength is readonly.
+vb.byteLength = 1;
+
+// has / delete -> boolean; add chains (returns this).
+const vh: boolean = vb.has(5);
+const vd: boolean = vb.delete(5);
+const va: vEBTree = vb.add(5).add(6);
+void vh; void vd; void va;
+// @ts-expect-error -- has takes a number.
+vb.has('5');
+// @ts-expect-error -- add returns this, not a boolean.
+const vab: boolean = vb.add(5);
+void vab;
+
+// successor / predecessor / min / max -> number | undefined.
+const vs: number | undefined = vb.successor(5);
+const vp: number | undefined = vb.predecessor(5);
+const vmin: number | undefined = vb.min();
+const vmax: number | undefined = vb.max();
+void vs; void vp; void vmin; void vmax;
+// @ts-expect-error -- successor may be undefined: not assignable to number without narrowing.
+const vsn: number = vb.successor(1);
+void vsn;
+// @ts-expect-error -- successor never returns null.
+const vnul: number | null = vb.successor(1);
+void vnul;
+
+// clear returns void.
+const vcl: void = vb.clear();
+void vcl;
+
+// No dump, capacity, levels, iterator or forEach.
+// @ts-expect-error -- no dump.
+vb.dump();
+// @ts-expect-error -- no capacity.
+void vb.capacity;
+// @ts-expect-error -- no levels.
+void vb.levels;
+// @ts-expect-error -- no forEach.
+vb.forEach(() => {});
+// @ts-expect-error -- not iterable.
+for (const k of vb) void k;
+
+// Distinct from its siblings.
+// @ts-expect-error -- a vEBTree is not a StratifiedBitset (no levels, no dump).
+const vsb: StratifiedBitset = vb;
+void vsb;
+// @ts-expect-error -- a vEBTree is not a YFastTrie (no capacity, no dump).
+const vyf: YFastTrie = vb;
+void vyf;

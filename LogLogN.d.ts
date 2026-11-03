@@ -2,7 +2,7 @@
  * @zakkster/lite-loglogn -- ambient type surface.
  *
  * Hand-written to mirror EXACTLY the runtime exports of LogLogN.js: `VERSION`
- * and the classes `StratifiedBitset`, `XFastTrie` and `YFastTrie`. The three-place version sync
+ * and the classes `StratifiedBitset`, `XFastTrie`, `YFastTrie` and `vEBTree`. The three-place version sync
  * (package.json / LogLogN.js VERSION / llms.txt) is gated by test/QaAudit.test.js. One ambient declaration
  * block per member is appended below as each member ships. ASCII-only.
  *
@@ -275,4 +275,61 @@ export class YFastTrie {
     clear(): void;
     /** Cold, allocating. A fresh snapshot independent of later mutation. */
     dump(): YFastTrieDump;
+}
+
+/**
+ * vEBTree -- worst-case O(log log U) has / add / delete / successor /
+ * predecessor and O(1) min / max over a FIXED universe [0, U), 2 <= U <= 2^32:
+ * a flattened van Emde Boas tree in one preallocated Uint32Array. No hashing,
+ * no reseed, no amortized restructuring, no capacity: every key in [0, U) is
+ * always admissible. SPACE is O(U), allocated up front: with w = ceil(log2 U),
+ * a node of width w <= 8 is a bitmap of S(w) = 1 word (w <= 5) or 2^(w-5)
+ * words, and a node of width w >= 9 costs S(w) = 2 + S(hi) + 2^hi * S(lo),
+ * lo = (w > 24 ? 16 : 8), hi = w - lo. The ROOT holds only ceil(U / 2^lo)
+ * clusters, so byteLength = 4 * S(w) for w <= 8 and, for w >= 9,
+ * 4 * (2 + S(hi) + ceil(U / 2^lo) * S(lo)) (4 bytes per word).
+ * Examples: U = 2 -> 4, U = 2^16 -> 8,232, U = 2^20 -> 131,604,
+ * U = 2^24 -> 2,105,392, U = 2^32 -> 539,500,592. A sparse large universe
+ * belongs to YFastTrie (O(n) space).
+ *
+ * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
+ * (not a number, not an integer in [0, U)) touches nothing: has / delete ->
+ * false, successor / predecessor -> undefined, add -> RangeError. Absent =
+ * `undefined`. A key >= 2^31 on Node (>= 2^30 on Chrome / Electron,
+ * pointer-compressed) may box as a HeapNumber when the returning call is not
+ * inlined.
+ */
+export class vEBTree {
+    /**
+     * @param universe integer in [2, 2^32]; otherwise throws RangeError
+     *   `[lite-loglogn] vEBTree universe must be an integer in [2, 2^32]; got ...`.
+     */
+    constructor(universe: number);
+
+    /** Number of keys present. */
+    readonly size: number;
+    /** The fixed universe U (keys are integers in [0, U)). */
+    readonly universe: number;
+    /** Key bit-width w = ceil(log2 U). */
+    readonly bits: number;
+    /** Bytes of the one typed array owned: 4 * words, S(w) with the trimmed root (see the class comment). */
+    readonly byteLength: number;
+
+    /** True iff x is present. A bad key returns false. */
+    has(x: number): boolean;
+    /** Idempotent. Throws RangeError on a bad key, with no state touched. Returns this. */
+    add(x: number): this;
+    /** True if x was present. A bad key returns false. */
+    delete(x: number): boolean;
+    /** Smallest key strictly greater than x, or undefined. */
+    successor(x: number): number | undefined;
+    /** Largest key strictly less than x, or undefined. */
+    predecessor(x: number): number | undefined;
+    /** Smallest key, or undefined if empty. */
+    min(): number | undefined;
+    /** Largest key, or undefined if empty. */
+    max(): number | undefined;
+
+    /** Cold. Removes every key and restores the constructed (empty) state. */
+    clear(): void;
 }

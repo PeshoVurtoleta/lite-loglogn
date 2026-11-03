@@ -6,6 +6,81 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`vEBTree` (0.5.0, unreleased): a flattened van Emde Boas tree.** Worst-case
+  O(log log U) `has` / `add` / `delete` / `successor` / `predecessor` and O(1)
+  `min` / `max` over a fixed universe U in [2, 2^32], in ONE preallocated
+  `Uint32Array` (no hashing, no reseed, no amortized split). Constructor
+  `new vEBTree(universe)` (no capacity, no seed); getters `size`, `universe`,
+  `bits`, `byteLength`; `clear()`. Layout: leaf cutoff w <= 8, a per-width split
+  (lo = 8, or 16 above w = 24), a `[min, max]` header with min not stored in its
+  cluster, EMPTY = min > max stored `[0xFFFFFFFF, 0]`, the root's cluster count
+  trimmed to ceil(U / 2^lo). Seven self-contained hot loops (no helper call,
+  recursion or closure). Appended after `YFastTrie`; the three older members are
+  byte-identical.
+- **ADR 0009 (`decisions/0009-veb-flattening.md`).** The flattened layout, the
+  split table, the trimmed root, and the expected loss row against
+  StratifiedBitset published up front (WIN on `min` / `max` and on out-of-range
+  queries, LOSE on `has` and on same-word neighbours); per-operation counts are
+  gated, never written in prose.
+- **Space numbers.** Exact `byteLength` (O(U), the whole universe allocated by
+  the constructor): U = 2 -> 4 B, 257 -> 76 B, 2^16 -> 8,232 B, 2^20 -> 131,604 B,
+  2^24 -> 2,105,392 B, 2^24 + 1 -> 2,115,708 B (trimmed root), 2^28 -> 33,718,804 B,
+  2^32 -> 539,500,592 B. About 0.97 of StratifiedBitset's bytes for w = 13 .. 32.
+- **`test/ParityPrefix.test.js` + `test/vectors/parity-prefix.json`.** Everything
+  before the vEBTree marker (StratifiedBitset, XFastTrie, YFastTrie and their
+  shared prelude) is byte-pinned (bytes + sha256) against the 0.4.1 engine bytes,
+  with same-length mutation, grown-region and missing-marker controls;
+  `parity.json` is untouched.
+- **Test-only vEB reference and vectors.** `test/helpers/vebRef.mjs` (the textbook
+  recursion kept out of the engine), `vebSketch.mjs` (the research sketch),
+  `vebStream.mjs` (seeded op streams) and `test/vectors/veb-g1.json`, regenerated
+  byte for byte and replayed on the reference and on the engine by
+  `test/VebVectors.test.js` (engine mutants run in Workers with a kill
+  timer; a timeout is a FAIL).
+- **`test/VEBTree.test.js` + `test/_veb-big-worker.mjs`.** Units and boundaries
+  at several universes, the exact `byteLength` table, `clear()` against a fresh
+  layout, a U = 2^31 + 12345 run against the reference, and the U = 2^32
+  empty-encoding assertion in its own Worker (one at a time, fail closed), with
+  must-fail mutants run through `data:` URLs.
+- **`test/VebCount.test.js` + `test/helpers/vebCost.mjs`.** Exact reads and
+  writes per operation on the engine's three columns (`_t`, `_g`, `_p`) through
+  Proxies, expected values from an independent model walking the reference, the
+  loss row against StratifiedBitset (WIN / LOSE per operation), a seeded op
+  stream over 12 universes with coverage floors, and must-fail mutants.
+- **`test/VebFuzz.test.js`.** A seeded differential fuzz (`LOGLOGN_SEED`, parsed
+  by `test/helpers/seed.mjs`, fail closed) of the engine against the reference, a
+  `Set` oracle and the sketch, with the layout compared word for word at
+  checkpoints and `clear()` mixed in.
+- **Type block.** `LogLogN.d.ts` declares `vEBTree` (the exact constructor
+  `RangeError` text, read-only getters, no `dump` / `capacity` / `seed`), with
+  `test/types/loglogn.test-d.ts` positive uses and `@ts-expect-error` negatives.
+- **`test/DocSync.test.js`.** README, llms.txt, GUIDE.md and `LogLogN.d.ts` must
+  not call vEBTree planned, and the vEBTree sections of README and llms.txt must
+  carry the exact comma-formatted `byteLength` table above, with must-fail
+  fixtures.
+- **Docs.** README: a fourth quick-start, a vEBTree deep dive (layout, depth,
+  trimmed root, space table, the loss row), an API section, roster, design-decision
+  and "what this is not" entries; llms.txt: a `### vEBTree` section.
+
+### Changed
+
+- **`LogLogN.js` header and roster comment.** vEBTree is no longer "planned": the
+  header comment states its bound and its `byteLength` formula next to the other
+  members'. No change to StratifiedBitset, XFastTrie or YFastTrie.
+- **`test/QaAudit.test.js`.** The frozen export surface adds `vEBTree`, and a
+  vEBTree block covers bad keys (whole-`_t` compare), `-0`, the constructor
+  table and leaf-word edges in a Worker, with must-fail controls.
+- **`test/XFastTrieOracle.test.js`.** The `parseSeed` consumer pin goes from 5 to 6
+  (the vEBTree fuzz reads `LOGLOGN_SEED`).
+- **`test/ParityPrefix.test.js` and `test/YftBytecode.test.js`.** Both assumed
+  YFastTrie was the last member; both now cut at the vEBTree marker, and every
+  control still fails as designed.
+- **README, "Y0 floor" wording.** The Y0 split / merge coverage floor is at least
+  1 split AND 1 merge in every `measureAllocs` batch; the earlier text read the
+  observed per-batch minimum as if it were the floor.
+
 ## [0.4.1] - 2026-11-01
 
 ### Added

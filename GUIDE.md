@@ -3,7 +3,7 @@
 A repo-only decision guide for the sub-logarithmic family: which member, which
 bitset, reach-for / avoid, and how to measure the bound and the space price
 yourself. StratifiedBitset (0.2.0),
-XFastTrie (0.3.0) and YFastTrie (0.4.0) are shipped; vEBTree is PLANNED. It is NOT an API
+XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0, in progress) are the four members. It is NOT an API
 encyclopedia (that is the README + `LogLogN.d.ts`); it answers "which member,
 is my bound real, and what does it cost in space?"
 
@@ -29,7 +29,7 @@ Amendment 1, ADR 0006). Timing is evidence on one host, not the proof: no R^2
 floor and no slope band is gated. Each member declares which axis it fits;
 StratifiedBitset fits the `w` axis (REPORTED, A8 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66: R^2 0.7293 vs 0.6589
 for log2(w), 1 run), and does not claim a log2(w) line. "log2(w) must win" belongs
-to the strict O(log log U) members (XFastTrie and YFastTrie shipped, vEBTree planned), proven
+to the strict O(log log U) members (XFastTrie, YFastTrie and vEBTree), proven
 there by counts.
 
 ---
@@ -53,7 +53,7 @@ START -- what do you need on a BOUNDED integer universe?
 |   (many elements)?                                  -> YFastTrie (wc query, am update, O(n) space)      [0.4.0]
 |
 +-- Worst-case O(log log U) with a compact universe
-    and you want the classic structure?              -> vEBTree (wc, O(U) space)              [planned 0.5.0]
+    and you want the classic structure?              -> vEBTree (wc, O(U) space)              [0.5.0]
 ```
 
 ## Picker table
@@ -63,7 +63,7 @@ START -- what do you need on a BOUNDED integer universe?
 | Teachable predecessor / successor, array-embedded | StratifiedBitset | O(log_32 U); min / max read Lc words (Lc = levels <= 7) | O(U/w) | 0.2.0 |
 | Fastest query, sparse set in a huge universe, space and update cost accepted | XFastTrie | O(log log U) query; O(w) update | O(n*w), preallocated at a FIXED capacity | 0.3.0 |
 | O(log log U) query at O(n) space | YFastTrie | O(log log U) query; update O(log log U) probes + at most 2w-1 word moves, split / merge / borrow amortized | O(n), preallocated at a FIXED capacity | 0.4.0 |
-| Classic worst-case, compact universe | vEBTree | O(log log U) worst-case | O(U) | planned 0.5.0 |
+| Classic worst-case, compact universe | vEBTree | O(log log U) worst-case | O(U) | 0.5.0 |
 
 ---
 
@@ -155,15 +155,53 @@ START -- what do you need on a BOUNDED integer universe?
 
 - A dense universe: StratifiedBitset is far smaller (YFastTrie is 6.496 to 262.501 times its bytes at U = 2^16, REPORTED) and its query is a handful of words.
 - Anything where a plain binary search over a sorted array suffices: in the 2026-10-25 `witness:yft` run (REPORTED, one run) YFastTrie `successor` was slower than a local `Uint32Array` binary search at every n tested (ratio 3.0364 at n = 3,000,000, 2.8628 at n = 10,000,000, w = 28).
-- A hard worst-case update bound: the single-op tail is REPORTED, not bounded in time (the stated bound is the count-gated work bound: a split / merge / borrow moves <= 2w words). vEBTree (planned) is the worst-case member.
+- A hard worst-case update bound: the single-op tail is REPORTED, not bounded in time (the stated bound is the count-gated work bound: a split / merge / borrow moves <= 2w words). vEBTree is the worst-case member.
 - Untrusted keys: the inner trie's cuckoo seeds are fixed by default, so adversarial keys can force kicks and reseeds; a stalled inner add during a split or borrow throws a `RangeError` with the set unchanged (so `delete` can throw too; ADR 0007, ADR 0008).
 - A growing set: add of a new key at `size === capacity` throws a RangeError.
 
 ### Measure it yourself
 
 - Bound (DETERMINISTIC): `npm test` (`YftCount`, `YFastTrieSpace`, `YftVectors`, `YFastTrieOracle`).
-- Zero-GC (DETERMINISTIC): `npm run torture` lanes Y0a / Y0b / Y1 (+ Y1c) / Y2 / Y3 / Y4, `npm run test:perf`.
+- Zero-GC (DETERMINISTIC): `npm run torture` lanes Y0a / Y0b / Y1 (+ Y1c) / Y1b / Y2 / Y3 / Y4, `npm run test:perf`.
 - Speed (REPORTED, release-time, quiet host): `npm run witness:yft` (YFastTrie vs XFastTrie successor A/B with the 2% effect floor; foils, add+delete and the tail MAX are REPORTED with no timing verdict; `--yft --smoke` is the counts-only gate in `npm test`). The 2026-10-25 run (QUIET, 1 run): successor ratio vs XFastTrie 0.5178 at n = 1,000,000 and 0.9154 at n = 1,000 (w = 28); 1.0444, a LOSS, at w = 16, n = 4096.
+
+---
+
+## vEBTree
+
+### Reach for it
+
+- A dense, small-to-medium universe (U up to about 2^24) where you want a
+  worst-case O(log log U) bound with no hashing, no reseed and no amortized
+  restructuring: every op walks a fixed, shallow path (depth at most 2;
+  DETERMINISTIC, pinned by `test/VebVectors.test.js` and
+  `test/VebFuzz.test.js` against an independent oracle).
+- O(1) `min` / `max` (the root header holds both).
+- Predictable depth and no capacity to choose: any key in [0, U) is always
+  admissible, and an update never throws on a valid key.
+- Exact, up-front space: `byteLength` is a closed form in U (DETERMINISTIC,
+  README / llms.txt table; checked by `test/DocSync.test.js`). Whole-universe
+  cost, e.g. U = 2^16 -> 8,232 B, U = 2^20 -> 131,604 B.
+
+### Avoid it
+
+- A sparse set in a huge universe: space is O(U) whatever n is (U = 2^32 is
+  539,500,592 B). Use YFastTrie (O(n), fixed capacity) or XFastTrie.
+- Where StratifiedBitset already suffices: it is the same O(U) order of space
+  (vEBTree is about 0.97 of its bytes from w = 13 up, 0.985 at w = 12, equal at
+  w = 11, and 1.061 / 1.118 at w = 10 / 9). The published loss row (LOSE, count-gated in
+  `test/VebCount.test.js`, test `A3 vEB vs SB loss row, U=2^16`): at U = 2^16
+  vEBTree LOSES to StratifiedBitset on `successor` and on `has` (it reads more
+  words per op; the counts live in that test, not here). Its case is the bound
+  shape (one fixed shallow path, O(1) min / max), not fewer reads at small U.
+- Non-integer or unbounded keys: see the family boundary.
+
+### Pick it by hand
+
+- Bound (DETERMINISTIC): `npm test` (`VebVectors`, `VebFuzz`, `VebCount`,
+  `VEBTree` incl. the U = 2^32 Worker).
+- Space (DETERMINISTIC): `new vEBTree(U).byteLength`, synced to the docs by
+  `test/DocSync.test.js`.
 
 ---
 

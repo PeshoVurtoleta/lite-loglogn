@@ -34,12 +34,13 @@
  *       U = 2^16 (alloc / transient / gc, every op kind), V2 the U = 2^28
  *       depth-2 ring (V2a in-process alloc, V2b arrayBuffers growth in a
  *       Worker with a kill timer), V3 the U = 2^25 + 3 delete-heavy max
- *       refresh (alloc / transient, refreshes == deletes exactly, `_t`
- *       byte-equal to a fresh tree after), V4 keys >= 2^31 in the tree at
+ *       refresh in a Worker with a kill timer (alloc / transient, refreshes
+ *       == deletes exactly, `_t` byte-equal to a fresh tree after; a hang is
+ *       a timeout FAIL), V4 keys >= 2^31 in the tree at
  *       U = 2^31 + 1 (transient only, every arg / return < 2^30), V5
  *       4,096-cycle retention. A build without the vEBTree export fails closed
  *       (exit 1, veb=null on the GATE line).
- *   Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) + 8 (CV1-CV8) = 28.
+ *   Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) + 9 (CV1-CV9) = 29.
  * KNOWN GAP (narrowed): a real >4 ms pause is host timing and cannot be forced, so the
  * gc kick (a forced major) pins maxMajor only. The maxPauseMs THRESHOLD AND WIRING are
  * pinned deterministically by the separate `T3w` line: the exact gcVerdict() gcLane
@@ -122,6 +123,18 @@ async function main() {
     // allocates ~2.9 KB per window; the empty-fn baseline subtracts it, and the
     // min over windows strips its +-1 KB jitter. A box every op reads 16 B/op.
     const NS_MAX_EXCESS = (16 * NS_K) / 1024;
+    // Parent-only ceiling on the V3 Worker's posted empty-fn baseline (baseMin,
+    // B per NS_K-op window): a baseline that boxes (or a readout that drifts up)
+    // would calibrate a real box away, so V3 FAILS above it. Never posted to or
+    // read by the Worker. CV9 must exceed it raw (boxExcess + baseMin). By
+    // formula from a measured warm max: NS_BASE_MAX = NS_MAX_EXCESS x
+    // 2^ceil(log2(2 x warmMax / NS_MAX_EXCESS)) = 1024 x 2^ceil(log2(3632 /
+    // 1024)) = 4,096, warmMax 1,816 (warm Worker baselines 1,784-1,816 over 40
+    // fresh V3 Workers; veb-nsbase-probe-2026-11-03.log, PRELIMINARY host). It
+    // is >= 2 x warmMax and 256x under a 16 B/op box in the baseline (1,050,368).
+    const NS_BASE_MAX = 4 * NS_MAX_EXCESS;
+    // The one baseline predicate: V3's ceiling and CV9's raw window both use it.
+    function nsBaseOk(b) { return Number.isInteger(b) && b >= 0 && b <= NS_BASE_MAX; }
 
     const KEYS = 65536;     // query ring, power of two
     const KMASK = KEYS - 1;
@@ -205,7 +218,11 @@ async function main() {
     }
 
     const emptyFn = function empty(i) { SINK[0] = (SINK[0] + (i & 1)) | 0; };
-    const nsBase = nsLane(emptyFn);
+    // The empty-fn baseline, named so laneParity can pin its text (the V3 Worker
+    // calls the same function twice at runV3's start, keeping the second; this
+    // process takes it once, cold).
+    function takeNsBase() { return nsLane(emptyFn); }
+    const nsBase = takeNsBase();
 
     // Excess bytes per window over the empty baseline, or null.
     function nsExcess(fn) {
@@ -1873,7 +1890,8 @@ async function main() {
     // ==== V-tiers: vEBTree (PLAN-vebtree G2, C-21) ===========================
     // Run after the Y-tiers so T / X / Y keep their own feedback; the V-tiers
     // drive vEBTree through their OWN step closures (makeStepV here, makeStepV2
-    // in test/_veb-torture-worker.mjs) -- no older call site sees a vEBTree.
+    // and makeStepV3 in test/_veb-torture-worker.mjs) -- no older call site
+    // sees a vEBTree.
     // Keys < 2^30 everywhere except V4's two permanent keys (C-11 boxing
     // caveat: V4 keeps every arg / return < 2^30; CV7 returns 2^31 on purpose).
     //   V1  2,000,000 mixed ops (makeStepY's op mix and tally) at U = 2^16 on
@@ -1900,7 +1918,21 @@ async function main() {
     //       lanes `_t` byte-equal to a fresh vEBTree(2^25 + 3)'s. A cold census
     //       (one cycle, `_p` cleared before each delete) proves the key set
     //       drives mode-1 and mode-2 max refreshes at the root AND inside an
-    //       internal w = 16 cluster (C-12, C-18 (3) / (4)).
+    //       internal w = 16 cluster (C-12, C-18 (3) / (4)). V3 runs in a Worker
+    //       (startVebTorture, kill timer KILL_MS; FILLER 1): a refresh-breaking
+    //       engine mutant that loops forever on a leaf scan is a V3 timeout FAIL
+    //       (exit 1), not a hung torture. Same lane TEXT as in-process:
+    //       measureAllocs with V3's options, and the Worker's transient lane is
+    //       this file's nsLane family by source text (laneParity: 5 functions
+    //       incl. takeNsBase + 3 constants; drift = V3 FAIL). Not the same
+    //       state: the Worker warms the lane once (its first takeNsBase() is
+    //       discarded; a fresh Worker's first lane reads 1,784 or 2,760-2,872
+    //       B per window, later ones 1,784-1,816) and its new-space capacity
+    //       differs (2,883,584 B vs 1,835,008-2,097,152 B on the main thread;
+    //       veb-nsbase-probe-2026-11-03.log). Text cannot see the Worker's call
+    //       site, SINK or node:v8 import: the posted baseline must pass
+    //       nsBaseOk (0..NS_BASE_MAX = 4,096 B per window), and CV9 (one box
+    //       every 8th op) judges the lane itself.
     //   V4  U = 2^31 + 1 (w = 32, root trimmed to 32,769 clusters): permanent
     //       keys 2^31 (the root max) and 2^30 - 1 (a barrier above the ring),
     //       4,096 even permanent keys < 2^29, an odd ring < 2^29 added and
@@ -1908,7 +1940,8 @@ async function main() {
     //       < 2^30, but successor / has / delete read the root max slot (2^31)
     //       raw on every op. TRANSIENT lane only (Y2b's shape): excess
     //       < NS_MAX_EXCESS with >= 8 valid windows. Cold, outside the lane:
-    //       max() === 2147483648, answers, size before == after. The instance
+    //       max() === 2147483648, byteLength === 269,762,648, answers, size
+    //       before == after. The instance
     //       (~270 MB) is dropped + gc() before anything else runs.
     //   V5  4,096 x (new vEBTree(2^10), 64 adds, 64 deletes, clear()):
     //       tracker.size() 0 after the drain and one gc later, collected
@@ -1921,10 +1954,14 @@ async function main() {
     // abGrowth > 0 and >= 128 B per add -- it also proves the Worker measures
     // its OWN arrayBuffers), CV5 delete ascending (V3's step factory and count
     // check: refreshes != deletes), CV6 RetainOnRefresh (a subclass whose
-    // delete retains [x] when x is the max, through V3's alloc lane: alloc > 0),
+    // delete retains [x] when x is the max, through V3's alloc lane: alloc > 0)
+    // -- CV5 and CV6 each run in their own Worker through V3's Worker path,
     // CV7 bigSucc (V4's step + successor(2^30 - 1), which returns 2^31 from a
     // never-inlined 850 B method, on V4's own instance: excess >= NS_MAX_EXCESS),
-    // CV8 retained array (V5 size > 0).
+    // CV8 retained array (V5 size > 0), CV9 v3WorkerBox (one [i] every 8th op on
+    // V3's step inside the V3 Worker, after V3's lanes, same isolate + baseline:
+    // excess >= NS_MAX_EXCESS, baseMin in range (nsBaseOk) AND excess + baseMin >
+    // NS_BASE_MAX).
     // GATE segment `| veb leak=size .. alloc .. transient .. abGrowth ..
     // refreshes=+N bigKeyExcess=e B/65536`: alloc = max(V1, V2a, V3), transient
     // = max(V1, V3, V4), gc = V1's window, abGrowth = V2b, refreshes = V3,
@@ -1943,18 +1980,12 @@ async function main() {
     const CV4_BYTES = 128;      // Uint32Array(32) per internal level
     const V2A_ITERS = 250000;   // V2a measureAllocs iterations per batch
     const V2A_BATCHES = 4;      // V2a measured batches
-    const V3_U = 33554435;      // 2^25 + 3, w = 26 (root trimmed to 513 clusters)
-    const V3_S = [3, 50, 140, 255];     // leaf cluster (bits 8..15) per root cluster
-    const V3_L = [1, 9, 77, 200];       // key inside its leaf (bits 0..7)
-    const V3_M = 1024;          // keys: 64 root clusters x 4 x 4
-    const V3_CYCLE = 2 * V3_M;  // ops per cycle: V3_M adds, then V3_M deletes
-    const V3_ITERS = V3_CYCLE * 122;    // measureAllocs iterations (= its warmup): whole cycles
-    const V3_BATCHES = 8;
     const V4_U = 2147483649;    // 2^31 + 1, w = 32 (lo = hi = 16)
     const V4_TOP = 2147483648;  // 2^31: permanent, the root max
     const V4_BAR = 1073741823;  // 2^30 - 1: permanent, above every ring key
     const V4_RU = 1 << 29;      // ring keys < 2^29
     const V4_POP = 4096;        // permanent even keys < 2^29
+    const V4_BYTES = 269762648; // byteLength at U = 2^31 + 1 (G2 TASK 0: formula x 4 == engine)
     // CV4 anchor: add()'s per-level descent -- the parent pointer is set and b
     // moves into cluster pj. Count-checked to occur EXACTLY once in LogLogN.js,
     // and located between the vEB section's `add(x) {` and `delete(x) {`.
@@ -2032,6 +2063,11 @@ async function main() {
         return typeof r.error === 'string' ? r.error : null;
     }
 
+    // The first line of an error string (a Worker stack), for a one-line tier print.
+    function line1(e) {
+        return String(e).split('\n')[0];
+    }
+
     // The CV4 mutant source, or a string starting 'BAD ' (never flips). Cold.
     function cv4Source() {
         const src = readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
@@ -2045,107 +2081,6 @@ async function main() {
             return { n, src: 'BAD anchor at ' + at + ' not inside vEBTree add() (' + addAt + '..' + delAt + ')' };
         }
         return { n, src: src.replace(CV4_ANCHOR, CV4_INJECT + CV4_ANCHOR) };
-    }
-
-    // ---- V3 helpers -----------------------------------------------------------
-    // The 1,024 V3 keys, ascending by construction (j, then s, then l). Cold.
-    function v3Keys() {
-        const k = new Uint32Array(V3_M);
-        let n = 0;
-        for (let j = 0; j < 64; j++) {
-            for (let a = 0; a < V3_S.length; a++) {
-                for (let b = 0; b < V3_L.length; b++) {
-                    k[n++] = (((8 * j + 1) << 16) | (V3_S[a] << 8) | V3_L[b]) >>> 0;
-                }
-            }
-        }
-        return k;
-    }
-    // null when k is V3_M strictly ascending (so distinct) keys < V3_U in 64
-    // distinct root clusters (key >>> 16) x 4 leaf clusters ((key >>> 8) & 255),
-    // else the reason. Cold.
-    function v3KeyErr(k) {
-        if (k.length !== V3_M) return 'length ' + k.length;
-        const rc = new Set();
-        const lc = new Set();
-        for (let i = 0; i < V3_M; i++) {
-            if (!(k[i] < V3_U)) return 'key ' + k[i] + ' >= U';
-            if (i > 0 && !(k[i] > k[i - 1])) return 'not strictly ascending at ' + i;
-            rc.add(k[i] >>> 16);
-            lc.add(k[i] >>> 8);
-        }
-        return rc.size === 64 && lc.size === 256 ? null : 'root clusters ' + rc.size + ' leaf clusters ' + lc.size;
-    }
-    const V3_DESC = new Uint16Array(V3_M);
-    const V3_ASC = new Uint16Array(V3_M);
-    for (let d = 0; d < V3_M; d++) {
-        V3_DESC[d] = V3_M - 1 - d;
-        V3_ASC[d] = d;
-    }
-    // The V3 cycle step, its OWN closure (vEBTree only). Op p = i mod 2,048:
-    // p < 1,024 adds keys[p]; else deletes keys[order[p - 1,024]] after
-    // checking max() === x (a hit counts a refresh). Tally cnt (Int32Array(4)):
-    // 0 adds, 1 deletes, 2 refreshes, 3 bad (a delete that returned false, or
-    // size != 0 after a cycle's last delete). V3 passes V3_DESC; CV5 V3_ASC.
-    function makeStepV3(set, keys, order, cnt) {
-        return function stepV3(i) {
-            const p = i & (V3_CYCLE - 1);
-            if (p < V3_M) {
-                set.add(keys[p]);
-                cnt[0]++;
-                return;
-            }
-            const x = keys[order[p - V3_M]];
-            if (set.max() === x) cnt[2]++;
-            if (!set.delete(x)) cnt[3]++;
-            cnt[1]++;
-            if (p === V3_CYCLE - 1 && set.size !== 0) cnt[3]++;
-        };
-    }
-    // null when cnt holds exactly `ops` ops of V3's model (adds == deletes ==
-    // refreshes == ops / 2, bad 0), else the reason. V3 and CV5 share it. Cold.
-    function v3CountErr(cnt, ops) {
-        const want = ops / 2;
-        if (cnt[0] === want && cnt[1] === want && cnt[2] === want && cnt[3] === 0) return null;
-        return 'adds=' + cnt[0] + ' deletes=' + cnt[1] + ' refreshes=' + cnt[2] + ' bad=' + cnt[3] +
-            ' (want ' + want + ' / ' + want + ' / ' + want + ' / 0)';
-    }
-    // V3's retained lane; CV6 runs through it too. Cold wrapper.
-    function v3Alloc(set, keys, cnt, iterations, batches) {
-        return measureAllocs(makeStepV3(set, keys, V3_DESC, cnt), { iterations, batches });
-    }
-    // One descending cycle with `_p` (the delete frame stack, Int32Array(8),
-    // frames [base, w, acc, mode]) cleared to -1 before each delete, so only that
-    // delete's frames are read. c: 0 / 1 root (w 26) mode 1 / 2, 2 / 3 internal
-    // cluster (w 16), 4 / 5 root summary (w 10), 6 bad. null when `_p` is not
-    // an Int32Array(8). Leaves the tree empty. Cold.
-    function v3Census(set, keys) {
-        const q = set._p;
-        if (!(q instanceof Int32Array) || q.length !== 8) return null;
-        const c = new Int32Array(7);
-        for (let p = 0; p < V3_M; p++) set.add(keys[p]);
-        for (let d = V3_M - 1; d >= 0; d--) {
-            q.fill(-1);
-            if (!set.delete(keys[d])) c[6]++;
-            for (let f = 0; f < 8; f += 4) {
-                const fw = q[f + 1];
-                const md = q[f + 3];
-                if (md === -1) continue;
-                const row = fw === 26 ? 0 : fw === 16 ? 2 : fw === 10 ? 4 : -1;
-                if (row < 0 || (md !== 1 && md !== 2)) c[6]++;
-                else c[row + md - 1]++;
-            }
-        }
-        if (set.size !== 0) c[6]++;
-        return c;
-    }
-    // `_t` of a and b byte-equal (same length). Cold.
-    function vTEqual(a, b) {
-        const x = a._t;
-        const y = b._t;
-        return x.length === y.length &&
-            Buffer.compare(Buffer.from(x.buffer, x.byteOffset, x.byteLength),
-                Buffer.from(y.buffer, y.byteOffset, y.byteLength)) === 0;
     }
 
     // ---- V4 helpers -----------------------------------------------------------
@@ -2191,7 +2126,7 @@ async function main() {
         const size0 = set.size;
         const pre = top === V4_TOP && size0 === distinct && set.has(V4_TOP) &&
             set.successor(V4_RU) === V4_BAR && set.predecessor(V4_BAR) === pkMax &&
-            set.successor(V4_BAR) === V4_TOP && set.bits === 32;
+            set.successor(V4_BAR) === V4_TOP && set.bits === 32 && set.byteLength === V4_BYTES;
         const step = makeStepV4(set, k, pk);
         const ns = nsExcess(step);
         const size1 = set.size;
@@ -2352,47 +2287,67 @@ async function main() {
             ' leaks=' + box5.leaks.length + ' badCycles=' + bad5[0] +
             ' | ' + (v5Ok ? 'ok' : 'FAIL'));
 
-        // ---- V3: delete-heavy max refresh at U = 2^25 + 3 -------------------------
-        const keys3 = v3Keys();
-        const kErr3 = v3KeyErr(keys3);
-        const set3 = new Veb(V3_U);
-        const cen3 = v3Census(set3, keys3);
+        // ---- V3: delete-heavy max refresh at U = 2^25 + 3, in a Worker -----------
+        // FILLER 1 (C-19): a refresh-breaking engine mutant can loop forever on a
+        // leaf scan; in a Worker the kill timer turns that hang into a V3 FAIL.
+        // laneOk3 (laneParity): the Worker's transient lane is THIS file's nsLane
+        // family by TEXT -- 5 functions (newSpaceUsed, nsLane, emptyFn, takeNsBase,
+        // nsExcess; nsNorm strips per-line indent, collapses [ \t]+ and KEEPS
+        // newlines, so an edit that joins two lines (an ASI change) is drift) and
+        // 3 constants (NS_K, NS_W, NS_MAX_EXCESS); drift = V3 FAIL. Text cannot see
+        // the Worker's takeNsBase() call site, SINK or node:v8 import: the posted
+        // baseMin <= NS_BASE_MAX ceiling (here) and CV9 v3WorkerBox (the CV block)
+        // judge those.
+        const nsNorm = (x) => x.replace(/^[ \t]+/gm, '').replace(/[ \t]+/g, ' ');
+        const laneOk3 = nsNorm(vw.NS_TEXT) ===
+            nsNorm([newSpaceUsed, nsLane, emptyFn, takeNsBase, nsExcess].map(String).join('\n')) &&
+            vw.NS_K === NS_K && vw.NS_W === NS_W && vw.NS_MAX_EXCESS === NS_MAX_EXCESS;
+        const j3 = await vw.startVebTorture({ src: null, kind: 'v3' }, 'V3');
+        const e3 = vErr(j3);
+        const r3 = e3 === null ? j3.result : null;
+        const ops3 = vw.V3_ITERS * (vw.V3_BATCHES + 1) + NS_K * (2 + NS_W);
+        const alignOk3 = vw.V3_ITERS % vw.V3_CYCLE === 0 && NS_K % vw.V3_CYCLE === 0;
+        const kErr3 = r3 === null ? null : r3.kErr;
+        const cen3 = r3 === null ? null : r3.census;
+        const cnt3 = r3 === null ? null : r3.cnt;
+        const b3 = r3 === null ? null : r3.bytesPerCall;
+        const cErr3 = cnt3 === null ? 'no tally' : vw.v3CountErr(cnt3, ops3);
+        const t3 = r3 === null || r3.excess === null ? null : Math.max(0, r3.excess) / NS_K;
         const cenOk3 = cen3 !== null && cen3[0] > 0 && cen3[1] > 0 && cen3[2] > 0 && cen3[3] > 0 && cen3[6] === 0;
-        const alignOk3 = V3_ITERS % V3_CYCLE === 0 && NS_K % V3_CYCLE === 0;
-        const cnt3 = new Int32Array(4);
-        const al3 = v3Alloc(set3, keys3, cnt3, V3_ITERS, V3_BATCHES);
-        const b3 = al3.bytesPerCall;
-        const ns3 = nsExcess(makeStepV3(set3, keys3, V3_DESC, cnt3));
-        const ops3 = V3_ITERS * (V3_BATCHES + 1) + NS_K * (2 + NS_W);
-        const cErr3 = v3CountErr(cnt3, ops3);
-        const fresh3 = new Veb(V3_U);
-        const tEq3 = set3.size === 0 && vTEqual(set3, fresh3);
-        const t3 = ns3 === null ? null : Math.max(0, ns3.excess) / NS_K;
-        const a3Ok = b3 !== null && al3.settled === true && Math.round(b3) === 0;
-        const n3Ok = ns3 !== null && ns3.excess < NS_MAX_EXCESS;
-        const v3Ok = kErr3 === null && cenOk3 && alignOk3 && a3Ok && n3Ok && cErr3 === null && tEq3 &&
-            set3.bits === 26;
+        const a3Ok = b3 !== null && r3.settled === true && Math.round(b3) === 0;
+        const n3Ok = r3 !== null && r3.excess !== null && r3.excess < NS_MAX_EXCESS;
+        const base3 = r3 === null ? null : r3.baseMin;
+        const baseOk3 = nsBaseOk(base3);
+        const v3Ok = r3 !== null && laneOk3 && kErr3 === null && cenOk3 && alignOk3 && a3Ok && n3Ok &&
+            baseOk3 && cErr3 === null && r3.tEqual === true && r3.bits === 26;
         if (!v3Ok) {
-            fails.push('V3 keys=' + (kErr3 === null ? 'ok' : kErr3) +
-                ' census=' + (cen3 === null ? 'null' : Array.from(cen3).join('/')) + ' (want >0 x4, bad 0)' +
-                ' aligned=' + alignOk3 + ' bits=' + set3.bits +
-                ' alloc bytesPerCall=' + b3 + ' settled=' + al3.settled +
-                ' transient ' + (ns3 === null ? 'not measured (null)' : 'excess ' + ns3.excess + ' B per ' + NS_K +
+            fails.push('V3 ' + (r3 === null ? 'worker FAIL: ' + e3 :
+                'keys=' + (kErr3 === null ? 'ok' : kErr3) +
+                ' census=' + (cen3 === null ? 'null' : cen3.join('/')) + ' (want >0 x4, bad 0)' +
+                ' aligned=' + alignOk3 + ' bits=' + r3.bits +
+                ' alloc bytesPerCall=' + b3 + ' settled=' + r3.settled +
+                ' transient ' + (r3.excess === null ? 'not measured (null)' : 'excess ' + r3.excess + ' B per ' + NS_K +
                     ' ops (limit ' + NS_MAX_EXCESS + ')') +
-                ' counts ' + (cErr3 === null ? 'ok' : cErr3) + ' tEqualFresh=' + tEq3);
+                ' baseMin=' + base3 + (baseOk3 ? '' : ' (want 0..' + NS_BASE_MAX + ': the Worker empty-fn baseline' +
+                    ' is out of range, a box could be calibrated away)') +
+                ' counts ' + (cErr3 === null ? 'ok' : cErr3) + ' tEqualFresh=' + r3.tEqual) +
+                (laneOk3 ? '' : ' laneParity=BAD (the Worker transient lane drifted from this file\'s nsLane)'));
         }
-        console.log('V3 cycles=' + (ops3 / V3_CYCLE) + ' ops=' + ops3 + ' U=' + V3_U + ' keys=' + V3_M +
-            ' (' + (kErr3 === null ? 'distinct, < U, 64 x 4 x 4' : 'BAD ' + kErr3) + ')' +
-            ' byteLength=' + set3.byteLength +
-            ' alloc=' + (b3 === null ? 'null' : Math.round(b3)) + ' B/op allocRaw=' + fmt(b3, 4) +
-            ' transient=' + fmt(t3, 3) + ' B/op (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
-            ' nsExcess=' + (ns3 === null ? 'null' : ns3.excess) +
-            ' nsWin0=' + (ns3 === null ? 'null' : ns3.first) +
-            ' adds=' + cnt3[0] + ' deletes=' + cnt3[1] + ' refreshes=' + cnt3[2] + ' bad=' + cnt3[3] +
-            ' census root m1/m2=' + (cen3 === null ? 'null' : cen3[0] + '/' + cen3[1] +
-                ' w16 m1/m2=' + cen3[2] + '/' + cen3[3] + ' w10 m1/m2=' + cen3[4] + '/' + cen3[5] +
-                ' bad=' + cen3[6]) +
-            ' tEqualFresh=' + tEq3 +
+        console.log('V3 cycles=' + (ops3 / vw.V3_CYCLE) + ' ops=' + ops3 + ' U=' + vw.V3_U + ' keys=' + vw.V3_M +
+            (r3 === null ? ' worker error=' + line1(e3) :
+                ' (' + (kErr3 === null ? 'distinct, < U, 64 x 4 x 4' : 'BAD ' + kErr3) + ')' +
+                ' byteLength=' + r3.byteLength +
+                ' alloc=' + (b3 === null ? 'null' : Math.round(b3)) + ' B/op allocRaw=' + fmt(b3, 4) +
+                ' transient=' + fmt(t3, 3) + ' B/op (limit ' + NS_MAX_EXCESS + ' B / ' + NS_K + ' ops)' +
+                ' nsExcess=' + (r3.excess === null ? 'null' : r3.excess) +
+                ' nsWin0=' + (r3.first === null ? 'null' : r3.first) +
+                ' baseMin=' + base3 + ' (limit ' + NS_BASE_MAX + ')' +
+                ' adds=' + cnt3[0] + ' deletes=' + cnt3[1] + ' refreshes=' + cnt3[2] + ' bad=' + cnt3[3] +
+                ' census root m1/m2=' + (cen3 === null ? 'null' : cen3[0] + '/' + cen3[1] +
+                    ' w16 m1/m2=' + cen3[2] + '/' + cen3[3] + ' w10 m1/m2=' + cen3[4] + '/' + cen3[5] +
+                    ' bad=' + cen3[6]) +
+                ' tEqualFresh=' + r3.tEqual) +
+            ' laneParity=' + (laneOk3 ? 'ok' : 'BAD') + ' worker killMs=' + vw.KILL_MS +
             ' | ' + (v3Ok ? 'ok' : 'FAIL'));
 
         // ---- V4: keys >= 2^31 in the tree, U = 2^31 + 1 (transient only) ----------
@@ -2402,7 +2357,8 @@ async function main() {
         const t4 = v4.excess === null ? null : Math.max(0, v4.excess) / NS_K;
         const v4Ok = v4.pre && v4.post && v4.excess !== null && v4.valid >= 8 && v4.excess < NS_MAX_EXCESS;
         if (!v4Ok) {
-            fails.push('V4 max=' + v4.top + ' (want ' + V4_TOP + ') answers=' + v4.pre + '/' + v4.post +
+            fails.push('V4 max=' + v4.top + ' (want ' + V4_TOP + ') byteLength=' + v4.byteLength +
+                ' (want ' + V4_BYTES + ') answers=' + v4.pre + '/' + v4.post +
                 ' size=' + v4.size0 + '/' + v4.size1 +
                 ' transient ' + (v4.excess === null ? 'not measured (null)' : 'excess ' + v4.excess + ' B per ' +
                     NS_K + ' ops (limit ' + NS_MAX_EXCESS + ') valid=' + v4.valid + ' (want >= 8)'));
@@ -2449,32 +2405,38 @@ async function main() {
         const cv8Flip = live8 > 0;
         held8.length = 0;
 
-        // CV5: V3's step factory + count check, deletes ascending.
-        const set5c = new Veb(V3_U);
-        const cnt5c = new Int32Array(4);
-        const step5c = makeStepV3(set5c, keys3, V3_ASC, cnt5c);
-        const ops5c = V3_CYCLE * 4;
-        for (let i = 0; i < ops5c; i++) step5c(i);
-        const cErr5c = v3CountErr(cnt5c, ops5c);
-        const cv5Flip = cErr5c !== null && cnt5c[2] !== cnt5c[1] && cnt5c[1] === ops5c / 2 && cnt5c[3] === 0;
+        // CV5: V3's step factory + count check, deletes ascending (V3's Worker path).
+        const j5c = await vw.startVebTorture({ src: null, kind: 'cv5' }, 'CV5');
+        const e5c = vErr(j5c);
+        const r5c = e5c === null ? j5c.result : null;
+        const cnt5c = r5c === null ? null : r5c.cnt;
+        const ops5c = vw.CV5_OPS;
+        const cErr5c = cnt5c === null ? null : vw.v3CountErr(cnt5c, ops5c);
+        const cv5Flip = cnt5c !== null && r5c.ops === ops5c && cErr5c !== null && cnt5c[2] !== cnt5c[1] &&
+            cnt5c[1] === ops5c / 2 && cnt5c[3] === 0;
 
-        // CV6: RetainOnRefresh through V3's alloc lane.
-        const cv6Hold = [];
-        class RetainOnRefresh extends Veb {
-            delete(x) {
-                if (this.max() === x) cv6Hold.push([x]);
-                return super.delete(x);
-            }
-        }
-        const cnt6c = new Int32Array(4);
-        const al6c = v3Alloc(new RetainOnRefresh(V3_U), keys3, cnt6c, V3_CYCLE * 10, 4);
-        const cv6Bpc = al6c.bytesPerCall;
-        const cv6Held = cv6Hold.length;
+        // CV6: RetainOnRefresh (defined in the Worker) through V3's alloc lane, V3's Worker path.
+        const j6c = await vw.startVebTorture({ src: null, kind: 'cv6' }, 'CV6');
+        const e6c = vErr(j6c);
+        const r6c = e6c === null ? j6c.result : null;
+        const cv6Bpc = r6c === null ? null : r6c.bytesPerCall;
+        const cv6Held = r6c === null ? null : r6c.held;
         const cv6Flip = cv6Bpc !== null && Math.round(cv6Bpc) > 0;
-        cv6Hold.length = 0;
 
         // CV7 (measured inside vTier4 on V4's own instance).
         const cv7Flip = v4.c7 !== null && v4.c7 >= NS_MAX_EXCESS;
+
+        // CV9 v3WorkerBox (measured inside the V3 Worker after V3's own lanes, on
+        // V3's instance, same isolate and nsBase): one [i] every 8th op on V3's
+        // step. Flips only if the excess over the Worker's baseline reaches
+        // NS_MAX_EXCESS, baseMin is in range (nsBaseOk) AND the raw window
+        // (excess + baseMin) clears the baseline ceiling (!nsBaseOk), so a blind
+        // readout (node:v8 stub: 0 / 0) leaves it PASSED, and so does a baseline
+        // outside nsBaseOk (a box hidden in the baseline), which also FAILS the V3
+        // line's baseMin <= NS_BASE_MAX ceiling.
+        const box9 = r3 === null ? null : r3.boxExcess;
+        const boxValid9 = r3 === null ? null : r3.boxValid;
+        const cv9Flip = Number.isInteger(box9) && box9 >= NS_MAX_EXCESS && baseOk3 && !nsBaseOk(box9 + base3);
 
         console.log('CV controls' +
             ' CV1 retain.alloc=' + (cv1Bpc === null ? 'null' : Math.round(cv1Bpc)) + ' B/op ' +
@@ -2487,15 +2449,20 @@ async function main() {
             (r4 === null ? ' error=' + e4 : ' abGrowth=' + r4.abGrowth + ' adds=' + r4.adds +
                 ' perAdd=' + fmt(per4, 1) + ' B held=' + r4.held) + ' ' +
             (cv4Flip ? 'flipped' : 'PASSED') +
-            ' CV5 ascDelete.refreshes=' + cnt5c[2] + '/' + cnt5c[1] + ' deletes ' +
+            ' CV5 ascDelete.refreshes=' + (cnt5c === null ? 'null error=' + line1(e5c) : cnt5c[2] + '/' + cnt5c[1]) +
+            ' deletes ' +
             (cv5Flip ? 'flipped' : 'PASSED') +
             ' CV6 retainOnRefresh.alloc=' + (cv6Bpc === null ? 'null' : Math.round(cv6Bpc)) + ' B/op held=' +
-            cv6Held + ' ' + (cv6Flip ? 'flipped' : 'PASSED') +
+            cv6Held + (e6c === null ? '' : ' error=' + line1(e6c)) + ' ' + (cv6Flip ? 'flipped' : 'PASSED') +
             ' CV7 bigSucc.nsExcess=' + (v4.c7 === null ? 'null' : v4.c7) + ' B/' + NS_K +
             ' valid=' + v4.c7valid + ' ' + (cv7Flip ? 'flipped' : 'PASSED') +
             ' CV8 retained.size=' + live8 + ' ' + (cv8Flip ? 'flipped' : 'PASSED') +
-            ' | ' + (cv1Flip && cv2Flip && cv3Flip && cv4Flip && cv5Flip && cv6Flip && cv7Flip && cv8Flip ?
-                'ok' : 'FAIL'));
+            ' CV9 v3WorkerBox.nsExcess=' + box9 + ' B/' + NS_K + ' raw=' +
+            (Number.isInteger(box9) && Number.isInteger(base3) ? box9 + base3 : 'null') +
+            ' (limit ' + NS_BASE_MAX + ') valid=' + boxValid9 + (r3 === null ? ' error=' + line1(e3) : '') + ' ' +
+            (cv9Flip ? 'flipped' : 'PASSED') +
+            ' | ' + (cv1Flip && cv2Flip && cv3Flip && cv4Flip && cv5Flip && cv6Flip && cv7Flip && cv8Flip &&
+                cv9Flip ? 'ok' : 'FAIL'));
         if (!cv1Flip) fails.push('control CV1 retain PASSED its check (alloc ' + cv1Bpc + ' B/op): V1 alloc lane is blind');
         if (!cv2Flip) fails.push('control CV2 box PASSED its check: V1 transient lane is blind');
         if (!cv3Flip) {
@@ -2508,11 +2475,13 @@ async function main() {
                 CV4_BYTES) + '): V2b worker abGrowth lane is blind');
         }
         if (!cv5Flip) {
-            fails.push('control CV5 ascDelete PASSED its check (' + (cErr5c === null ? 'counts matched' : cErr5c) +
+            fails.push('control CV5 ascDelete PASSED its check (' + (cErr5c === null ?
+                (e5c === null ? 'counts matched' : 'worker FAIL: ' + e5c) : cErr5c) +
                 '): V3 refresh count is blind');
         }
         if (!cv6Flip) {
             fails.push('control CV6 RetainOnRefresh PASSED its check (alloc ' + cv6Bpc + ' B/op, held ' + cv6Held +
+                (e6c === null ? '' : ', worker FAIL: ' + e6c) +
                 '): V3 alloc lane is blind');
         }
         if (!cv7Flip) {
@@ -2520,16 +2489,22 @@ async function main() {
                 '): V4 transient lane is blind');
         }
         if (!cv8Flip) fails.push('control CV8 retained PASSED its check (size ' + live8 + '): V5 is blind');
+        if (!cv9Flip) {
+            fails.push('control CV9 v3WorkerBox PASSED its check (nsExcess ' + box9 + ', baseMin ' + base3 +
+                ', valid ' + boxValid9 + ', want excess >= ' + NS_MAX_EXCESS + ', baseMin in range 0..' +
+                NS_BASE_MAX + ' and excess + baseMin > ' + NS_BASE_MAX + (r3 === null ? ', worker FAIL: ' + e3 : '') +
+                '): V3 Worker transient lane is blind');
+        }
 
         return {
             alloc: b1 === null || b2 === null || b3 === null ? null :
                 Math.max(Math.round(b1), Math.round(b2), Math.round(b3)),
-            allocSettled: al1.settled === true && al2.settled === true && al3.settled === true,
+            allocSettled: al1.settled === true && al2.settled === true && r3 !== null && r3.settled === true,
             transient: t1 === null || t3 === null || t4 === null ? null : Math.max(t1, t3, t4),
             major: sV1.gc.major, minor: sV1.gc.minor, maxMs: sV1.gc.maxMs,
             abGrowth: rb === null ? null : rb.abGrowth,
             abSettled: rb !== null && rb.settled === true,
-            refreshes: cnt3[2],
+            refreshes: cnt3 === null ? null : cnt3[2],
             bigKeyExcess: v4.excess,
             live: live5, findings: findings5.length, warnings: box5.warns.length,
         };
@@ -2538,7 +2513,7 @@ async function main() {
     let veb = null;
     if (typeof vEBTree !== 'function') {
         fails.push('veb: vEBTree export missing');
-        console.log('V vEBTree export missing (pre-vEB build): V1-V5 / CV1-CV8 not run, veb=null | FAIL');
+        console.log('V vEBTree export missing (pre-vEB build): V1-V5 / CV1-CV9 not run, veb=null | FAIL');
     } else {
         veb = await vebTiers(vEBTree);
     }

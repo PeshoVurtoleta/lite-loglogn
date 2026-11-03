@@ -693,7 +693,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: 0.5.0
-status: in progress (2026-11-03: L-06 SETTLED; G1 complete -- fceb851 engine rungs 1 + 2, 998bcbd gates (units, U = 2^32 Worker, fuzz, exact count gate); G2 complete -- 48644f9: torture V1-V5 + 28 controls, VebSpace, VebBytecode pins (V8 14.6, fail closed on any other V8: maintainer 2026-11-03); G4a docs landed -- ad238cf: no counts per C-4 (confirmed 2026-11-03), G4b-i landed (e8eeabb: vEB 0 B/op in README / llms / .d.ts / GUIDE from the G2 QUIET verify log; successor / predecessor never inlined on V8 14.6, traced in Maglev and TurboFan 2026-11-03); header w defined (53cba8a). Read-count sweep vs StratifiedBitset: RESEARCH.md 14.8 (vEB reads fewer words only at min / max and header-decided successor / predecessor; maintainer decision waiting on C-7 / S-H1, informed by G3). Next: G3 planner, G3 in a QUIET window, G4b-ii, release 0.5.0 (HOLD-RELEASE in NEXT.md until then). Maintainer ruling 2026-11-02 F-B5-1 "Stop at header": an absent delete stops at an internal header that proves absence, PLAN C-18 (6))
+status: in progress (2026-11-03: L-06 SETTLED; G1 complete -- fceb851 engine rungs 1 + 2, 998bcbd gates (units, U = 2^32 Worker, fuzz, exact count gate); G2 complete -- 48644f9: torture V1-V5 + 28 controls, VebSpace, VebBytecode pins (V8 14.6, fail closed on any other V8: maintainer 2026-11-03); G4a docs landed -- ad238cf: no counts per C-4 (confirmed 2026-11-03), G4b-i landed (e8eeabb: vEB 0 B/op in README / llms / .d.ts / GUIDE from the G2 QUIET verify log; successor / predecessor never inlined on V8 14.6, traced in Maglev and TurboFan 2026-11-03); header w defined (53cba8a). Read-count sweep vs StratifiedBitset: RESEARCH.md 14.8 (vEB reads fewer words only at min / max and header-decided successor / predecessor; maintainer 2026-11-03: SHIP vEBTree AS BUILT with honest WIN / LOSE positioning, C-7 stays; the per-leaf summary word and S-H1 each become a SEPARATE variant member after G3, section 10). Next: G3 planner, G3 in a QUIET window, G4b-ii, release 0.5.0 (HOLD-RELEASE in NEXT.md until then). Maintainer ruling 2026-11-02 F-B5-1 "Stop at header": an absent delete stops at an internal header that proves absence, PLAN C-18 (6))
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0
@@ -1146,9 +1146,19 @@ which fits this family's bounded-in-U theme (section 2).
   summaries are disjoint high up. Unscheduled; pairs with R2.
 - **S-H1 StratifiedBitset [min, max] headers (candidate, 2026-11-02, RESEARCH.md 15.4).** min / max in 1
   read (from 4 - 7), out-of-range successor / predecessor in 1 read; two compares per add, a bounded
-  re-search when the min or max is deleted. A StratifiedBitset minor release, decided only AFTER the
-  vEBTree count gate (B5) has measured the wins it would copy; never inside 0.5.0. Gates: the count
-  test shows the read drop; a must-fail control leaves the header stale after deleting the min.
+  re-search when the min or max is deleted. The B5 count gate and the RESEARCH.md 14.8 sweep have measured
+  the wins it would copy (vEB min / max 1 vs 2 - 7; header-decided successor 1 vs up to 13). Honest cost
+  (estimated): every add / delete reads both headers (add ~1 -> 3 reads), and deleting the min / max
+  re-searches (up to ~13 reads at w = 32). **Maintainer 2026-11-03: a SEPARATE variant member, not a change to
+  StratifiedBitset** (which stays byte-pinned, as vEBTree does), so StratifiedBitset, the variant and vEBTree
+  are compared side by side; started only after G3 has timed the shapes it targets. Never inside 0.5.0. Gates:
+  the count test shows the read drop; a must-fail control leaves the header stale after deleting the min.
+- **vEB leaf-summary variant (candidate, maintainer 2026-11-03; name open).** vEBTree ships as built (C-7: no per-leaf
+  summary word). The summary-word design becomes a SEPARATE member, so vEBTree, the variant and StratifiedBitset
+  stay side by side and every difference is measured, not argued. Expected (not modelled): a leaf visit capped near
+  2 - 3 reads instead of up to 8, at 1.094 - 1.105x StratifiedBitset space at w >= 12 (RESEARCH.md 14.5 / 14.8).
+  Its own class in LogLogN.js, copied from vEBTree by design parity (the vEBTree region stays byte-pinned); its own
+  cost model, count gate, torture lanes and the 14.8 sweep re-run on three columns. After 0.5.0; not scheduled.
   Related, feature-on-request only: `clearRange` / `addRange` (no allocation, no path stack needed).
 
 **Gates (in addition to section 5):**

@@ -295,9 +295,13 @@ export class YFastTrie {
  * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
  * (not a number, not an integer in [0, U)) touches nothing: has / delete ->
  * false, successor / predecessor -> undefined, add -> RangeError. Absent =
- * `undefined`. A key >= 2^31 on Node (>= 2^30 on Chrome / Electron,
- * pointer-compressed) may box as a HeapNumber when the returning call is not
- * inlined.
+ * `undefined`. Hot methods allocate 0 bytes for keys < 2^30; a returned key
+ * >= 2^31 on Node (>= 2^30 on Chrome / Electron, pointer-compressed) may box as
+ * a HeapNumber when the returning call is not inlined. On V8 14.6 (Node v26.8.2)
+ * successor / predecessor are never inlined (traced in Maglev and TurboFan:
+ * bytecode 850 / 838 B, over the 460 B inlining limit), so a returned key >= 2^31
+ * boxes there: 16 B per call (measured, torture control CV7). That trace is scoped to that V8. clear() allocates
+ * nothing; the constructor allocates the columns once.
  */
 export class vEBTree {
     /**

@@ -64,6 +64,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trimmed root, space table, the loss row), an API section, roster, design-decision
   and "what this is not" entries; llms.txt: a `### vEBTree` section.
 
+- **Torture lanes V1 / V2a / V2b / V3 / V4 / V5 + controls CV1-CV8 (vEBTree is
+  now ALLOCATION-gated).** V1 2,000,000 mixed ops at U = 2^16; V2a 1,000,000 ops
+  at U = 2^28 (depth 2) and V2b a Worker run of 200,000 ops (abGrowth 0); V3
+  U = 2^25 + 3, delete-heavy, 3,493,888 ops with every delete refreshing a max
+  (refreshes == deletes); V4 U = 2^31 + 1 with the key 2^31 stored and every
+  argument / return < 2^30; V5 a 4096-cycle leak census. Values: alloc 0 B/op,
+  transient 0.000 B/op, gc major 0 / minor 0, abGrowth 0, 4096/4096 collected
+  (QUIET verify run 2026-11-03, load1 1.63 vs baseline 2.21, Node v26.8.2; V1 /
+  V2 / V5 identical in 3 logged runs, V3 / V4 / CV5-CV7 in 2; count gates, not
+  timing). The eight controls each flip (CV7: a successor returning a key >= 2^31
+  boxes 16 B per call, 1,048,584 B over 65,536 calls). The `| veb ...` GATE segment
+  is printed. Must-fail controls in all: 5 (T3) + 6 (X4) + 9 (Y4) + 8 (CV) = 28.
+- **`test/VebSpace.test.js`.** The `byteLength` table and ratio table against a
+  test-owned model, column identity and no-growth in a Worker, with must-fail
+  controls (untrimmed root, per-leaf summary, a growing and an extra-column variant).
+- **`test/VebBytecode.test.js`.** Per-method bytecode size pins for the vEBTree hot
+  bodies, keyed to V8 14.6 and failing closed on an unpinned V8; delete /
+  successor / predecessor must exceed the 460 B inlining limit on any V8.
+- **`test/tools/inl-veb.mjs`.** The vEBTree driver for `npm run inline-budget-diff`
+  (REPORTED, repo-only).
+
 ### Changed
 
 - **`LogLogN.js` header and roster comment.** vEBTree is no longer "planned": the
@@ -80,6 +101,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **README, "Y0 floor" wording.** The Y0 split / merge coverage floor is at least
   1 split AND 1 merge in every `measureAllocs` batch; the earlier text read the
   observed per-batch minimum as if it were the floor.
+
+### Documented
+
+- **README, llms.txt, GUIDE.md, `LogLogN.d.ts`: vEBTree zero-allocation claims.**
+  0 B/op on every hot method (keys < 2^30) for all four members, the vEB
+  allocation table rows, the V1-V5 numbers above with provenance, and the boxing
+  sentence: on V8 14.6 (Node v26.8.2) successor / predecessor are never inlined
+  (traced in Maglev and TurboFan, bytecode 850 / 838 B over the 460 B limit), so a returned key >= 2^31
+  boxes 16 B per call; scoped to that V8. No timings and no per-operation word
+  counts are written in prose.
+- **README.md, GUIDE.md and llms.txt: planning ids removed** from headings and prose (C-n and witness-run
+  labels); ADR numbers kept.
 
 ## [0.4.1] - 2026-11-01
 

@@ -27,7 +27,7 @@ The bound is proven by COUNTS (DETERMINISTIC): a counting test over the shipped
 code asserts the exact words touched per op as a function of `levels` (ADR 0004
 Amendment 1, ADR 0006). Timing is evidence on one host, not the proof: no R^2
 floor and no slope band is gated. Each member declares which axis it fits;
-StratifiedBitset fits the `w` axis (REPORTED, A8 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66: R^2 0.7293 vs 0.6589
+StratifiedBitset fits the `w` axis (REPORTED, witness run 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66: R^2 0.7293 vs 0.6589
 for log2(w), 1 run), and does not claim a log2(w) line. "log2(w) must win" belongs
 to the strict O(log log U) members (XFastTrie, YFastTrie and vEBTree), proven
 there by counts.
@@ -100,7 +100,7 @@ START -- what do you need on a BOUNDED integer universe?
   `node ~/.claude/hooks/quiet-lock.mjs run "loglogn witness" -- npm run witness`
   (exit 0 pass / 1 fail / 2 inconclusive host); `npm run witness:w32` adds the
   opt-in w = 32 (about 554 MB); `npm run witness:tier` is the peel A/B.
-- A8 headline (REPORTED, 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1
+- Witness headline (REPORTED, 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1
   3.66 -> 3.71, 1 run): at w = 28 the member beat a local binary search at all 9
   n from 1e3 to 1e7 (15/0 each; member 11.74-17.84 ns/op, binary search
   32.22 -> 197.78), so the crossover is at or below n = 1e3, the smallest n tested.
@@ -177,6 +177,12 @@ START -- what do you need on a BOUNDED integer universe?
   DETERMINISTIC, pinned by `test/VebVectors.test.js` and
   `test/VebFuzz.test.js` against an independent oracle).
 - O(1) `min` / `max` (the root header holds both).
+- 0 B/op hot paths (DETERMINISTIC: torture V1, 2,000,000 mixed ops at U = 2^16 ->
+  0 B/op, transient 0.000 B/op, gc major 0 / minor 0; QUIET verify run 2026-11-03,
+  load1 1.63 vs baseline 2.21, Node v26.8.2, identical in 3 logged runs, a count gate). On V8 14.6 (Node v26.8.2)
+  successor / predecessor are never inlined (traced in both optimizing tiers, Maglev
+  and TurboFan), so a key >= 2^31 they return boxes there: 16 B per call (measured,
+  torture control CV7); other engines / versions are not claimed.
 - Predictable depth and no capacity to choose: any key in [0, U) is always
   admissible, and an update never throws on a valid key.
 - Exact, up-front space: `byteLength` is a closed form in U (DETERMINISTIC,
@@ -202,6 +208,7 @@ START -- what do you need on a BOUNDED integer universe?
   `VEBTree` incl. the U = 2^32 Worker).
 - Space (DETERMINISTIC): `new vEBTree(U).byteLength`, synced to the docs by
   `test/DocSync.test.js`.
+- Zero-GC (DETERMINISTIC): `npm run torture` lanes V1-V5.
 
 ---
 
@@ -231,7 +238,7 @@ successor-only -> lite-o1 `BitSet` (fixed 3 levels, O(1) in U); StratifiedBitset
 owns predecessor / max and U up to 2^32, labelled O(log_32 U), and returns
 `undefined` where `BitSet` returns -1.
 
-Speed (REPORTED, A8 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run, n = 4096,
+Speed (REPORTED, witness run 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run, n = 4096,
 w = 16..24): lite-o1 `BitSet` 4.28-4.82 ns/op vs the member 4.87-7.61 ns/op, so
 `BitSet` was faster where it applies. At n = 1e7, w = 28 (REPORTED): lite-logn
 `SortedArray` 273.71, `Treap` 927.84, `SkipList` 1166.44, lite-o1 `EliasFano`

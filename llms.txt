@@ -17,8 +17,8 @@ strict O(log log U) member (queries only; its updates are O(w)); YFastTrie keeps
 the O(log log U) query at O(n) space (updates: O(log log U) probes plus at most
 2w-1 word moves, split / merge / borrow amortized); vEBTree (0.5.0, unreleased) is
 the worst-case member: O(log log U) for every operation, O(1) min / max, O(U) space.
-Every hot op of StratifiedBitset, XFastTrie and YFastTrie allocates zero bytes
-after construction.
+Every hot op of StratifiedBitset, XFastTrie, YFastTrie and vEBTree allocates zero
+bytes after construction (keys < 2^30; see the boxing note).
 
 It is the O(log log U) sibling of @zakkster/lite-o1 (the constant) and
 @zakkster/lite-logn (the logarithm in n): lite-loglogn holds the double
@@ -47,7 +47,8 @@ repository, gated, and unreleased:
   at a FIXED capacity.
 - vEBTree (0.5.0, unreleased) -- flattened van Emde Boas in ONE Uint32Array;
   worst-case O(log log U) has / add / delete / successor / predecessor, O(1)
-  min / max; O(U) SPACE, the whole universe allocated up front.
+  min / max; O(U) SPACE, the whole universe allocated up front; 0 B/op on every
+  hot method (keys < 2^30).
 
 ## Exports (from the single main file LogLogN.js)
 
@@ -286,6 +287,12 @@ string, Symbol, BigInt, boxed Number) touches nothing: has / delete -> false,
 successor / predecessor -> undefined, add -> RangeError `[lite-loglogn] key must be
 an integer in [0, U); got ...`. `-0` aliases key 0. A returned key >= 2^31 (>= 2^30
 on a pointer-compressed engine) may box a HeapNumber when the call is not inlined.
+Allocation: hot methods 0 B (keys < 2^30; torture V1-V5, below); clear() 0 B (cold,
+`_t.fill(0)` + header rewrite, no new buffer); the constructor allocates `_t`, `_g`,
+`_p` once. On V8 14.6 (Node v26.8.2) successor / predecessor are never inlined
+(traced 2026-11-03 in Maglev and TurboFan, default flags, untimed: bytecode 850 / 838 B
+exceeds the 460 B inlining limit), so a returned key >= 2^31 boxes: 16 B per call (measured, torture
+control CV7). Scoped to that V8; other engines / versions are not claimed.
 
 Bound: worst-case O(log log U) for has / add / delete / successor / predecessor and
 O(1) for min / max; no hashing, no reseed, no amortized step. Depth is
@@ -346,8 +353,19 @@ counts). The member is for the worst case: no restructuring tail.
   2026-11-01, Node v26.8.2, load1 4.0-4.6, PRELIMINARY host; count gates): U = 2^16,
   C = 43, census 1 split / 1 merge / 1 borrow per cycle, 5,000 cycles -> alloc 0 B/op,
   abGrowth 0, transient nsExcess 0 B / 256 cycles; Y4 gains CY8 AllocBorrow (56 B/op)
-  and CY9 noRefill (borrows +0), nine controls, 5 + 6 + 9 = 20 across T3, X4, Y4; no Y
-  lane fires an inner reseed (X2 covers kicks and reseeds). `--yft --smoke` is gated in npm test by YftWitness (counts / strings
+  and CY9 noRefill (borrows +0), nine controls; no Y
+  lane fires an inner reseed (X2 covers kicks and reseeds).
+  vEBTree lanes V1-V5 (QUIET verify run 2026-11-03, load1 1.63 vs baseline 2.21, 12
+  cores, Darwin arm64, Node v26.8.2 / V8 14.6.202.34; V1 / V2 / V5 identical in 3
+  logged runs, V3 / V4 / CV5-CV7 in 2; count gates, not timing): V1 2,000,000 mixed
+  ops at U = 2^16 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; V2a
+  1,000,000 ops at U = 2^28 (byteLength 33,718,804) -> 0 B/op, V2b Worker 200,000
+  ops abGrowth 0; V3 U = 2^25 + 3, 3,493,888 delete-heavy ops, 1,746,944 deletes each
+  refreshing a max -> 0 B/op; V4 U = 2^31 + 1 (the key 2^31 stored, arguments and
+  returns < 2^30) -> transient 0.000 B/op over 16 valid windows; V5 4096/4096
+  collected, 0 findings; CV1-CV8 each flip (CV7: successor returning a key >= 2^31,
+  1,048,584 B / 65,536 calls = 16 B per call). Torture must-fail controls in all:
+  5 + 6 + 9 + 8 = 28 across T3, X4, Y4, CV. `--yft --smoke` is gated in npm test by YftWitness (counts / strings
   only, five must-fail fakes).
   `npm run test:perf`: PerfGate 15/15 (7 zero-alloc scenarios + 3 must-fail teeth +
   flag pin (2) + detector (1) + arrayBuffers attribution (1) + GATE key-set pin (1)) + XFastTriePerf 17/17
@@ -366,7 +384,7 @@ counts). The member is for the worst case: no restructuring tail.
   (test/helpers/abVerdict.mjs); tierVerdict is unchanged. `npm run witness:yft`
   (`--yft`: YFastTrie vs XFastTrie successor A/B, foils and the tail MAX REPORTED)
   uses the same floor; its numbers are in the YFT-WITNESS block above.
-- REPORTED (docs only; same A8 run: 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run): the U-sweep fits better vs w (R^2 0.7293) than vs log2(w)
+- REPORTED (docs only; same witness run: 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run): the U-sweep fits better vs w (R^2 0.7293) than vs log2(w)
   (R^2 0.6589); no R^2 floor or slope band is gated. lite-o1 BitSet is faster where
   it applies (4.28-4.82 vs 4.87-7.61 ns/op at n = 4096, w = 16..24).
 
@@ -380,8 +398,8 @@ counts). The member is for the worst case: no restructuring tail.
   `null` is not zero; an out-of-universe key fails closed.
 - typeof-guard FIRST, before any coercion, at the door of every op (the recurring
   Symbol / BigInt / {valueOf} / boxed-Number footgun).
-- Zero allocation on every steady-state hot path of StratifiedBitset, XFastTrie and
-  YFastTrie (0 B/op), proven by `node --expose-gc test/torture.mjs`.
+- Zero allocation on every steady-state hot path of StratifiedBitset, XFastTrie,
+  YFastTrie and vEBTree (0 B/op; keys < 2^30), proven by `node --expose-gc test/torture.mjs`.
 - SPACE is a co-headline: every member states its footprint bound alongside its
   time bound.
 

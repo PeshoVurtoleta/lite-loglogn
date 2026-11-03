@@ -139,8 +139,12 @@ engine diff against it is the header hunk plus one appended section.
 ## Boxing note
 
 The siblings' caveat applies unchanged. The hot paths are 0 B/op on keys < 2^30. A returned
-key >= 2^31 can box when the call is not inlined, and the hot bodies (inline leaf scans)
-are large enough that they are not inlined. Torture steps that use keys >= 2^31 therefore
+key >= 2^31 can box when the call is not inlined. On V8 14.6 (Node v26.8.2) successor /
+predecessor (850 / 838 B) exceed both inlining limits (Maglev 100 B, TurboFan 460 B) and
+every traced decision declines them (.handoff/evidence/veb-g4bi-inlining-trace-2026-11-03.log),
+so a key >= 2^31 they return boxes (16 B per call, torture CV7). The same trace shows
+`delete` declined by TurboFan and `has` / `add` inlined there; it makes no claim about
+other engines or versions. Torture steps that use keys >= 2^31 therefore
 run on the TRANSIENT lane only.
 
 ## Literature (conclusions only)

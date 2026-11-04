@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- 1+ sessions, research copies only (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04 (section 10); planners next
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED; R0 research + measurement scheduled before Demo, 2026-11-04]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED; R0 research + measurement done 2026-11-04, handshake and PROPOSAL ruled; planners next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1183,10 +1183,11 @@ which fits this family's bounded-in-U theme (section 2).
   - D-R2: yes;
   - D-R3: fixed pools with no growth;
   - D-R4: runs in R1, plus `runOptimize`.
-- **Bounds corrected (computed).**
-  - full array 14 reads (13 probes + 1 confirm); runs 13; small array 8;
-  - bitmap successor <= 6 words; top next-chunk <= 7 words; min / max 4 after the fix.
-  - EXPECTED until R0's count gate.
+- **Bounds measured (R0, 2026-11-04; RESEARCH.md 12.13).**
+  - full array 14 reads (13 probes + 1 confirm), predecessor 15; small array 8, predecessor 9;
+  - runs 25 halfword reads (each probe reads 2), predecessor 27 -- not 13;
+  - bitmap successor / predecessor <= 6 words, has 1, after hoisting a double summary read (the draft read 7);
+    top next-chunk <= 7 words; min / max 4 top reads (+1 header read with per-chunk min / max).
 - **Candidate changes for R0** to prototype and measure (12.12 ranking):
   - (1) run containers of <= 32 runs in the 128 B small pool, plus a full-chunk form;
   - (2) a singleton kind (the low 16 bits in `_slot`, 0 B of pool) and smaller small-array size classes;
@@ -1201,8 +1202,7 @@ which fits this family's bounded-in-U theme (section 2).
   - writing set ops with lazy cardinality (a dirty bitset beside `_card`).
 - **Input for R3 / R4:** a private snapshot is a copy of the six typed arrays. The portable format stays R3.
 - **Open:**
-  - the version slot: the draft says 0.7.0; the v0.6.0 slot is free (section 7);
-  - the ADR number: the draft cites decisions/0010, which does not exist yet.
+  - the version slot and the ADR number: ruled at R0 (0.6.0; decisions/0010).
 
 **R0 -- research + measurement, before Demo (maintainer, 2026-11-04).** One or more sessions. Work only in research copies under `.handoff/research/roaring/`: no LogLogN.js edit, no planner. Every measured number goes to RESEARCH.md section 12 with provenance (date, host, load, Node, run count). Timings go through `quiet-lock` and are REPORTED.
 1. **Count gate prototype** (the VebCount Proxy technique) on the fixed draft: exact worst reads per op and container kind. It replaces every EXPECTED bound above.
@@ -1216,6 +1216,28 @@ which fits this family's bounded-in-U theme (section 2).
 6. **Each candidate change** above as its own variant copy, fuzzed with `roaring-fuzz.mjs` (targeted cases kept) and measured on 1-5.
 
 Output: the best-version draft, plus a decision sheet for the maintainer handshake. The sheet covers D-R1..D-R5, the candidate list, the R2 rank strategy, and the version slot and ADR. Only then the planner.
+
+**R0 outcome (maintainer handshake, 2026-11-04; RESEARCH.md 12.13; rows in `.handoff/research/roaring/DECISIONS.md`).**
+- D-R1: a paged chunk table (pageBits 8) at large U, the direct table at small U, chosen at construction
+  (default amended by PROPOSAL Q-1: direct unless maxPages is sized below the page count).
+- D-R2: keep the bitmap summary. D-R3: fixed pools in R1; size classes (8 / 16 / 64) in R2.
+- D-R4: runs, `runOptimize`, small runs (<= 32 runs in a 128 B slot) and a FULL kind in R1. D-R5: PagedBitset stays
+  an oracle / baseline only.
+- Adopted: a SINGLE kind, per-chunk [min, max] headers (no has early reject), promote / demote hysteresis
+  (32 / 2048), the bitmap summary built while setting.
+- Keys >= 2^31 box on return: documented in R1 (as vEBTree CV7); a signed / `successorInto` API in R2.
+- Delete from a FULL chunk falls back to a large slot, as add does. Ingestion: `addRange` building runs directly + a
+  documented `runOptimize` cadence. R2 rank: a cold `buildRank()`. The planner shrinks successor / predecessor
+  (both over the 460 B single-inline limit).
+- Version slot 0.6.0; ADR `decisions/0010-roaringset.md`.
+- PROPOSAL pass RULED (2026-11-04; `.handoff/PROPOSAL-roaringset.md`): Q-1 the layout is paged iff its metadata is
+  smaller than the direct table at the given maxPages / pageBits; maxPages defaults to all pages, so the default
+  set is direct at every U (amends D-R1: paged at 2^32 when maxPages <= 254, pb8). Q-2 one class `RoaringSet` with
+  a readonly `paged`. Q-3 `addRange(lo, hi)` half-open, fail-closed (precount, RangeError before any write).
+  Q-4 positional (universe, maxSmall = 1024, maxLarge = 256, maxPages = all, pageBits = 8), universe required in
+  [1, 2^32], no KNOBS. Q-5 R1 has no iterator / rank / select; `dump()` ships; R2: buildRank + rank / select,
+  successorInto, vb2 size classes, deleteRange, forEach.
+- Next: the RoaringSet planners (one per group, 7 groups), then the coder bursts, then Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

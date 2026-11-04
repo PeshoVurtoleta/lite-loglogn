@@ -948,18 +948,22 @@ Five improvements were applied in the fixed copy:
 - add / delete copy loops moved into cold helpers;
 - `runOptimize` also turns runs back into an array when that is smaller.
 
-Bound corrections, computed. A lower bound over n entries is ceil(log2(n + 1)) probes plus one confirm read:
+Bound corrections, computed, then MEASURED in R0 (12.13; u1-base.log / u1-best.log). A lower bound over n entries is
+ceil(log2(n + 1)) probes plus one confirm read; predecessor reads one more (rank j-1 after a failed confirm); a run
+probe reads 2 halfwords:
 
-| target | probes | confirm | total | stated |
-| --- | --- | --- | --- | --- |
-| full array (4,096) | 13 | 1 | 14 | 12 (12.3 and ROADMAP section 7; both corrected 2026-11-04) |
-| small array (64) | 7 | 1 | 8 | -- |
-| runs (2,048) | 12 | 1 | 13 | -- |
+| target | computed | measured has / successor / predecessor | stated |
+| --- | --- | --- | --- |
+| full array (4,096) | 13 + 1 = 14 | `_lU16` 14 / 14 / 15 | 12 (12.3 and ROADMAP section 7; both corrected 2026-11-04) |
+| small array (64) | 7 + 1 = 8 | `_sData` 8 / 8 / 9 | -- |
+| runs (2,048) | 2p + 1 = 25, predecessor 2p + 3 = 27 (p = 12) | `_lU16` 25 / 25 / 27 | 13 (12.11 counted probes, not halfwords) |
 
-- A bitmap successor reads up to 6 words. A top-pyramid next-chunk reads up to 7.
+- A bitmap successor / predecessor reads 6 words after the summary-read hoist (the draft read 7: a summary word read
+  twice); has reads 1. A top-pyramid next-chunk reads up to 7. min / max: 4 top reads (5 with the per-chunk header
+  read in the best draft).
 - Kind 2 holds 1..4,096 keys, not 65..4,096: it takes chunks when the small pool is empty.
 
-All of these stay EXPECTED until a count gate exists.
+R0 measured them (12.13).
 
 The draft settles D-R1 (b), D-R2, D-R3 (fixed pools) and D-R4 (runs in R1) by construction. Those are still the maintainer's calls (ROADMAP section 10), along with:
 - a 64 / 65 promote-demote thrash (a demote threshold of ~32 fixes it);
@@ -1040,6 +1044,166 @@ Desk research: library documentation, the Roaring papers and the draft's code. N
 - Roaring papers: [lazy unions, arXiv 1603.06549](https://arxiv.org/pdf/1603.06549), [CRoaring, arXiv 1709.07821](https://arxiv.org/pdf/1709.07821v5), [64-bit Roaring (Chambi, Lemire, Godin)](https://r-libre.teluq.ca/930/1/Roaring64bits.pdf)
 - [zroar on CRoaring's 64-bit ART](https://ziggit.dev/t/zroar-serialized-roaring-bitmaps-in-zig-outperforms-croaring-2x-to-9x/17321)
 - All fetched 2026-11-04.
+
+### 12.13 R0: the draft measured, the best version (2026-11-04, orchestrator; research copy only)
+
+R0 measured the maintainer's draft (the fixed copy of 12.11, 1799ce67) and built `RoaringDraft.best.mjs` (fd261191) and `RoaringDraft.best-paged.mjs` (8a1b4667) from it. Sources (gitignored): `.handoff/research/roaring/`; logs in `logs/`, named below. Nothing here touches `LogLogN.js`.
+
+**What was measured:**
+- U1 counts: every typed-array read, write and move per (shape, op), by search plus hill-climb, checked against a Set model (1,919,196 calls on the base, 0 mismatches; u1-base.log). DETERMINISTIC.
+- U2 space: `byteLength` of the minimal pools per (n, shape), at U = 2^20 and 2^32, against StratifiedBitset, YFastTrie, PagedBitset (u2-best.log). DETERMINISTIC.
+- U3 seven one-change variants (va, vb1, vb2, vc, vd, ve, vf), each with its own fuzz and mutants.
+- U4 allocation: 42 core lanes plus hi-key info lanes (alloc-harness a60602e4). DETERMINISTIC.
+- U5 bytecode bytes per hot function against the 460 B single-inline limit. DETERMINISTIC.
+- U6 timing: interleaved A/B against StratifiedBitset. REPORTED (session 1: fixed + 7 variants; session 2: fixed / vd / best / best-paged, u6-best.log).
+- The harnesses were reviewed: round 1 REJECTED (5 literal blockers), round 2 REJECTED (a shared eval call site; a crashed u1-teeth child), round 3 APPROVED (orchestrator record).
+
+**Base defects found (fixed in best):**
+- The `Math.clz32` box: `Math.clz32` of a raw `Uint32Array` load with bit 31 set boxes. Three core lanes FAIL on the base: bitmap.predecessor ~17.79 B/op, bitmap.max ~16.00, gap.predecessor ~5.83 (r3-u4-base-a.log, 39/42 ok; base-b ~17.79 / ~16.00 / ~5.85). `| 0` on the 11 loads gives 42/42 on best and best-paged (r3-u4-best.log, r3-u4-bestp.log).
+- Double summary reads: `_bmpNextGEQ` / `_bmpPrevLEQ` / `_chunkMin` read a summary word twice. A bitmap successor read 7 words on the base (bmp-poles-4098: `_lU32` 2 + `_bSum` 5, u1-base.log) against 6 after the hoist (`_lU32` 2 + `_bSum` 4, u1-best.log). The base bitmap min read 5 words (bmp-high-4097); the hoisted-only min of 4 is EXPECTED (computed), not measured (best has headers: 0 words).
+- Superseded from the session-1 digest: the `hi.has` flake came from all lanes sharing one step call site. With per-lane sites `hi.has` reads 0.000 on every module (r3-u4-base-a / -base-b / -best / -bestp / -va..-vf.log; the ctl-alloc-has control reads ~32.01 by design); the shared-site run still reads ~16.00 (r3-u4-base-shared.log).
+
+**Corrected bounds (worst typed-array reads per op; computed bound from 12.11, then measured in best):**
+
+| kind (n) | search | computed (12.11) | has / successor / predecessor in-kind reads | rdX has / succ / pred |
+| --- | --- | --- | --- | --- |
+| small (64) | `_sData` | 7 probes + 1 = 8 | `_sData` 8 / 8 / 9 | 11 / 13 / 14 |
+| array (4,096) | `_lU16` | 13 + 1 = 14 | `_lU16` 14 / 14 / 15 | 17 / 19 / 20 |
+| runs (2,048) | `_lU16` | 12 + 1 = 13 | `_lU16` 25 / 25 / 27 | 28 / 30 / 32 |
+| bitmap | words | successor / predecessor 6 (12.11 stated only "bitmap successor <= 6"; predecessor was never stated) | 1 / 6 / 6 words (has `_lU32` 1; successor / predecessor `_lU32` 2 + `_bSum` 4) | 3 / 10 / 10 (poles) |
+
+- Source: u1-best.log, shapes small-64, full-4096, runs-2048, bmp-poles-4098. rdX = reads excluding `_q`, the whole op.
+- Runs: a `_lbRun` probe reads 2 halfwords, so has / successor = 2p + 1 = 25 and predecessor = 2p + 3 = 27 (p = 12).
+- Predecessor on small / array reads one more than the 12.11 bound (rank j-1 after a failed confirm): 9 vs 8, 15 vs 14.
+- Top pyramid holds: successor / predecessor <= 7, min / max = 4 top reads (+1 header read in best = 5).
+- Largest single-op work: array add at the 4097th key 4,117 reads, 2,184 writes, 2,114 moves; runs-2048-lean delete at the run-split spill 8,288 reads (u1-best.log conversion row).
+
+**Variants (U1 from u1-<x>.log; U2 from u2-summary.md / u2-all.log; U5 from u5-compare-<x>.txt):**
+
+| variant | change | win | cost | in best |
+| --- | --- | --- | --- | --- |
+| va | small runs (kind 5) + FULL (kind 6) | full-65536 has 3 -> 1; 1e6 clustered 32,600,216 -> 978,930 B | runs-32 add 22 -> 103 reads; has +44, add +40 B | yes |
+| vb1 | SINGLE (kind 7) | add 875 -> 752 B; 1e3 sparse 612,460 -> 485,580 B | has +15, successor +34 B | yes |
+| vb2 | size classes 8 / 16 / 64 | 1e6 sparse 9,003,700 -> 4,939,286 B | `_promoteSmall` 485 B (>460); has +42, delete +61 B | no (D-R3) |
+| vc | paged chunk table | 2^32 empty floor 484,150 -> 29,500 B (pb8) | +1 read per metadata access; at 2^20 +3,480 B | best-paged only |
+| vd | `_cMin` / `_cMax` headers | min / max 7..11 / 8..10 -> 5 / 5 in every non-empty row (u1-base.log vs u1-vd.log, u1-best.log) | +262,144 B at 2^32 direct; has +2 reads with the early reject (dropped in best) | yes, no has reject |
+| ve | demote at 32 / 2048 | 64 / 65 thrash 10,000 -> 1 conversions (ve-thrash.log); bmp-4097 delete 2,116 -> 4 reads | delete +6 B | yes |
+| vf | summary built while setting | 4097th add 10,322 -> 4,115 reads; run spill 8,291 -> 6,179 | none | yes |
+
+- Fuzz: best 124 ok rows (best-fuzz.log); best-paged 168 ok rows at each of pb 6 / 8 / 10 (bestp-fuzz-p6.log, bestp-fuzz.log, bestp-fuzz-p10.log). Mutants: best 47 / 51 killed, 4 reasoned equivalent, 0 unexplained (best-mutants.log); best-paged 17 / 17 (bestp-mutants.log).
+- fuzz2 floors (kinds@check >= 100 on every non-exempt kind): base + 7 variants green (r2-fuzz2-*.log). The port to best is green: 124 ok rows, 0 FAIL, exit 0, load1 at end 2.37 (best-fuzz-r2.log; R-scenario kinds@check at U=2^32: 1:13373 2:1852 3:1297 4:144 5:25553 6:1397 7:168115). The best-paged port is green: 168 / 168 at pageBits 8, 6 and 10 (bestp-fuzz-r2.log, -p6, -p10), with the same floors plus an R-only kind 7 (SINGLE) floor (lowest 1,085).
+- Harness teeth: u1-teeth 6/6 incl. writes, moves and a cached-local read (r3-u1-teeth.log); U4 controls flip: conv ~100.01 B/op, has ~64.01 (r3-u4-controls.log); U4 verdicts identical in 55/55 lanes over two base runs (r3-u4-determinism.txt; B/op identical in 51/55, raw window bytes in 26/55, so jitter is real and only verdicts are gated).
+
+**best and best-paged, U1 (worst rdX; base / best / best-paged; u1-base.log, u1-best.log, u1-bestp.log):**
+
+| shape | has | add | delete | successor | predecessor | min | max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| singleton | 5 / 2 / 3 | 6 / 5 / 9 | 9 / 6 / 9 | 8 / 6 / 7 | 12 / 9 / 11 | 7 / 5 / 6 | 8 / 5 / 6 |
+| small-64 | 11 / 11 / 12 | 76 / 76 / 77 | 11 / 12 / 13 | 13 / 13 / 14 | 12 / 14 / 15 | 7 / 5 / 6 | 8 / 5 / 6 |
+| full-4096 | 17 / 17 / 18 | 10322 / 4117 / 4118 | 17 / 18 / 19 | 19 / 19 / 20 | 18 / 20 / 21 | 7 / 5 / 6 | 8 / 5 / 6 |
+| bmp-4097 | 3 / 3 / 4 | 6 / 6 / 9 | 2116 / 7 / 8 | 7 / 7 / 8 | 13 / 9 / 11 | 9 / 5 / 6 | 9 / 5 / 6 |
+| full-65536 | 3 / 1 / 2 | 6 / 5 / 9 | 4 / 3 / 4 | 7 / 5 / 6 | 13 / 9 / 11 | 9 / 5 / 6 | 9 / 5 / 6 |
+| runs-32 | 16 / 16 / 17 | 22 / 103 / 104 | 18 / 101 / 102 | 17 / 18 / 19 | 18 / 20 / 21 | 7 / 5 / 6 | 9 / 5 / 6 |
+| runs-2048 | 28 / 28 / 29 | 8290 / 6178 / 6179 | 8291 / 6180 / 6181 | 29 / 30 / 31 | 30 / 32 / 33 | 7 / 5 / 6 | 9 / 5 / 6 |
+| u32-edge | 6 / 6 / 7 | 6 / 6 / 9 | 9 / 7 / 9 | 14 / 10 / 12 | 17 / 10 / 12 | 7 / 5 / 6 | 8 / 5 / 6 |
+
+- worst rdX = condensed search worst; conversion rows read up to +2 more (e.g. runs-2048 delete split spill 6,182 vs 6,180, runs-2048-lean delete split spill 8,288 vs 8,287, u1-best.log conversion rows).
+
+- Paging (best -> best-paged, u1-compare-bestp.txt, 211 changed rows): +1 read on 175, +2 on 21, +3 on 8, +4 on 6, -1 on 1. A page free moves 768 words (singleton delete, 0 -> 768).
+- Model cross-check: best 1,919,129 calls, best-paged 1,919,122 calls, 0 mismatches each.
+
+**best and best-paged, U2 (bytes; u2-best-summary.md, minimal pools, min of pre / post runOptimize):**
+
+| U = 2^32 | base | best | best-paged pb8 | StratifiedBitset | YFastTrie |
+| --- | --- | --- | --- | --- | --- |
+| empty | 484,150 | 746,294 | 31,548 | 554,189,364 | 4,695 |
+| 1e3 sparse | 612,460 | 747,724 | 729,518 | 554,189,364 | 64,637 |
+| 1e3 clustered | 509,524 | 746,814 | 40,528 | 554,189,364 | 64,637 |
+| 1e6 sparse | 9,003,700 | 9,265,844 | 9,270,198 | 554,189,364 | 47,484,715 |
+| 1e6 clustered | 32,600,216 | 1,241,074 | 1,245,428 | 554,189,364 | 47,484,715 |
+| 1e6 dense | 737,890 | 1,000,034 | 285,288 | 554,189,364 | 47,484,715 |
+
+- U = 2^20 empty floor: base 25,510; best 25,574; best-paged pb8 31,038. 1e6 sparse: 152,380 / 152,444 / 157,908.
+- best-paged pb6 / pb10 empty floor at 2^32: 28,860 / 48,060.
+- The clustered win needs runOptimize at chunk edges (best pre 32,862,360); see DECISIONS P-3.
+
+**best and best-paged, U4 and U5:**
+
+| module | core lanes | hi.has | hi.successor | hi.predecessor | hi.min | hi.max | log |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| base | 39/42 | 0 | ~32 | ~36.98 | ~16 | ~16 | r3-u4-base-a.log |
+| best | 42/42 | 0 | ~32 | ~32 | ~16 | ~16 | r3-u4-best.log |
+| best-paged | 42/42 | 0 | ~32 | ~32 | ~16 | ~16 | r3-u4-bestp.log |
+
+- All three fail the 5 `ni.hi.*` lanes (result and argument box on keys >= 2^31); the result box on successor / predecessor / min / max is the vEBTree CV7 class (14.7), a docs and API call (P-1).
+
+| fn (bytes) | base | best | best-paged | over 460 B single-inline |
+| --- | --- | --- | --- | --- |
+| has | 380 | 439 | 452 | no (best, best-paged) |
+| add | 875 | 946 | 908 | yes |
+| delete | 751 | 960 | 989 | yes |
+| successor | 511 | 621 | 647 | yes |
+| predecessor | 661 | 759 | 785 | yes |
+| min / max | 45 | 45 | 56 | no |
+
+- Source: u5-compare-best.txt, u5-compare-bestp.txt. `_chunkMin` / `_chunkMax` shrink 286 / 327 -> 11 B (headers). `_addRun` 695 -> 1,007, `_deleteRun` 632 -> 935.
+
+**U6 timing, session 1 (REPORTED, not for best):** u6-timing.log + u6-timing-high.log, digests u6-digest.md, u6-digest-high.md. 2026-11-04 04:17Z, Apple M4 Pro 12 cores, Node v26.8.2, V8 14.6.202.34-node.28, quiet-lock `--strict` QUIET (load1 2.52 start / 1.10 end, baseline 2.21), K 15 interleaved rotated rounds, statistic = median of per-round ratio vs StratifiedBitset (x SB; < 1 = faster), A/A control SB-AA in [0.9, 1.1]. Default lane 105 cells, 12 INCONCLUSIVE (excluded). Keys < 2^30: no boxing and not full 32-bit coverage (the key cap).
+
+| op (cells) | vEBTree | YFastTrie | BitSet | fixed | va | vb1 | vb2 | vc | vd | ve | vf |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| has (14) | 3.60 | 108.76 | 1.00 | 6.26 | 7.46 | 5.20 | 9.11 | 5.69 | 4.87 | 5.41 | 5.35 |
+| add (14) | 2.72 | 33.89 | 0.86 | 7.61 | 7.64 | 6.93 | 7.50 | 8.05 | 7.49 | 7.58 | 7.51 |
+| delete (14) | 4.62 | 30.25 | 0.81 | 6.89 | 6.76 | 6.52 | 7.19 | 7.80 | 7.05 | 6.75 | 6.71 |
+| predecessor (14) | 3.16 | 13.88 | n/a | 2.14 | 1.96 | 1.87 | 2.46 | 2.57 | 1.68 | 1.98 | 2.02 |
+| min (15) | 0.29 | 0.44 | 0.63 | 0.76 | 0.79 | 0.77 | 0.92 | 0.89 | 0.53 | 0.76 | 0.76 |
+| max (9) | 0.37 | 0.39 | n/a | 1.03 | 1.03 | 1.04 | 1.26 | 1.30 | 0.58 | 1.04 | 1.02 |
+| successor (13) | 3.80 | 11.80 | 1.05 | 2.12 | 1.93 | 2.23 | 2.52 | 2.53 | 1.71 | 2.00 | 2.09 |
+
+- Worst cell of the whole table: YFastTrie has 108.76. Worst Roaring cells: has 9.11 (vb2) and 7.46 (va); add 8.05 (vc); delete 7.80 (vc). Fixed base has / add / delete run 6.26 / 7.61 / 6.89 x SB. These are medians over the conclusive cells of each op, one run, one host.
+- High lane (w = 32, keys in [2^31, 2^32), returned keys box), n 4096 / 65536, 2 cells per op: fixed has 2.07, successor 0.95, predecessor 0.92, min 0.55, max 1.21; worst variant cell has 2.96 (vd), max 1.27 (vc); vEBTree has 3.73, YFastTrie has 80.01 (u6-digest-high.md).
+
+**U6 best / best-paged (REPORTED; 1 run each lane).** `quiet-lock run --strict`, QUIET both lanes. Default: 2026-11-04 06:38Z, load1 1.54 start / 1.24 end vs baseline 2.21, 105 cells, 8 INCONCLUSIVE (A/A control drift; excluded), wall 131.83 s, exit 0 (u6-best.log / .json, digest u6-best-digest.md). High: load1 1.24 / 1.20, 10 cells, 0 INCONCLUSIVE, exit 0 (u6-best-high.*, u6-best-high-digest.md). Same shapes and K 15 as session 1; default lane keys < 2^30 (no boxing, not full 32-bit coverage), high lane keys in [2^31, 2^32). Fixed and vd re-run in the same process as anchors. x SB time, median over conclusive cells:
+
+| op (cells) | vEB | YFT | BitSet | fixed | vd | best | best-paged pb8 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| has (14) | 3.66 | 104.33 | 0.99 | 6.49 | 4.39 | 5.86 | 4.52 |
+| add (15) | 2.78 | 35.09 | 0.91 | 8.38 | 8.52 | 8.73 | 8.94 |
+| delete (15) | 4.68 | 33.39 | 0.89 | 8.10 | 8.28 | 8.40 | 8.69 |
+| successor (13) | 3.39 | 17.25 | 1.00 | 2.42 | 2.65 | 1.84 | 2.07 |
+| predecessor (14) | 3.27 | 13.06 | n/a | 2.12 | 1.79 | 1.73 | 2.11 |
+| min (15) | 0.29 | 0.44 | 0.63 | 0.77 | 0.53 | 0.53 | 0.65 |
+| max (11) | 0.37 | 0.34 | n/a | 1.04 | 0.50 | 0.50 | 0.63 |
+
+High lane (w = 32, keys in [2^31, 2^32), 2 cells per op): has fixed 2.11 / vd 2.94 / best 1.34 / best-paged 1.79; successor 0.97 / 0.87 / 0.84 / 0.92; predecessor 0.95 / 0.69 / 0.67 / 0.75; min 0.56 / 0.43 / 0.43 / 0.50; max 1.16 / 0.92 / 0.45 / 0.52.
+
+- Reading: best is at or below the fixed base on successor / predecessor / min / max (successor 2.42 -> 1.84, max 1.04 -> 0.50) and within +0.35 x SB on add / delete (8.38 -> 8.73, 8.10 -> 8.40). Paging (best -> best-paged) costs +0.21 / +0.29 x SB on add / delete, +0.23 / +0.38 on successor / predecessor, +0.12 / +0.13 on min / max. On has, best-paged reads 4.52 vs best 5.86: has is the one op where the paged build is faster in this run. One run on one host; the cause is unmeasured.
+
+**Provenance (2026-11-04, Apple M4 Pro, 12 cores, Node v26.8.2, V8 14.6.202.34-node.28; load1 from each log header):**
+
+| unit | log | UTC | load1 | runs | tier |
+| --- | --- | --- | --- | --- | --- |
+| U1 base / best / best-paged | u1-base.log / u1-best.log / u1-bestp.log | 03:09 / 05:49 / 06:09 | 5.63 / 4.20 / 8.94 | 1 each, seed 6221147 | DETERMINISTIC |
+| U2 all modules | u2-best.log | 06:10 | 4.82 | 1 | DETERMINISTIC |
+| U4 base a / b / best / best-paged | r3-u4-base-a.log, -base-b.log, -best.log, -bestp.log | 05:57 / 05:58 / 06:02 / 06:02 | 5.92 / 5.68 / 8.57 / 6.56 | 2 base, 1 each | DETERMINISTIC |
+| U5 base / best / best-paged | u5-base.log / u5-best.log / u5-bestp.log | 03:18 / 05:50 / 06:09 | 17.81 / 4.59 / 5.99 | 1 each | DETERMINISTIC |
+| fuzz best | best-fuzz.log | 04:51 | 95.30 | 1 (40 seeds x 4000 ops) | DETERMINISTIC |
+| U6 session 1 default + high | u6-timing.log, u6-timing-high.log | 04:17 | 2.52 / 1.10 | 1, K 15 | REPORTED |
+| U6 best default + high | u6-best.log, u6-best-high.log | 06:38 / 06:40 | 1.54 / 1.24, 1.24 / 1.20 (baseline 2.21) | 1 each, K 15 | REPORTED |
+
+- Load was parallel-agent load on a shared host; for DETERMINISTIC counts it is provenance only.
+- Harness shas: alloc-harness a60602e4, roaring-fuzz2 4e139485, compare-counts 4de3c9e2, u1-teeth.mjs 9b1d2486, count-harness a543acc0.
+
+**Handshake (maintainer, 2026-11-04; every ruling = the recommended option; full rows in `.handoff/research/roaring/DECISIONS.md`):**
+- D-R1 paged chunk table (pageBits 8) at large U, direct table at small U, chosen at construction (crossover: planner). D-R2 keep the bitmap summary. D-R3 fixed pools in R1; size classes (vb2) in R2. D-R4 runs + runOptimize + small runs + FULL in R1. D-R5 PagedBitset stays an oracle / baseline only.
+- Variants: adopt va, vb1, vd (without the has early reject), ve, vf -- the best draft as measured.
+- P-1 keys >= 2^31 box: documented in R1 (as vEBTree CV7); a signed / `successorInto` API in R2. P-2 delete-from-FULL falls back to a large slot. P-3 `addRange` building runs directly + a documented runOptimize cadence. P-4 R2 rank: cold `buildRank()`. P-5 a planner task shrinks successor / predecessor. P-6 version 0.6.0. P-7 ADR `decisions/0010-roaringset.md`.
+
+**PROPOSAL handshake (maintainer, 2026-11-04; `.handoff/PROPOSAL-roaringset.md` section 6).** Q-1 bytes rule for
+the layout (paged at 2^32 pb8 iff maxPages <= 254, computed: 2,816 (P + 1) + 512 + 4 P + 2 < 720,896); default
+pools at 2^32: direct 3,036,204 B, paged with every page 3,040,558 B (byteLength of fd261191 / 8a1b4667, computed
+2026-11-04). Q-2 one class + `paged`; Q-3 half-open fail-closed `addRange`; Q-4 positional, universe required;
+Q-5 no iterator in R1, `dump()` with kind names.
 
 ---
 

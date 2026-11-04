@@ -922,6 +922,53 @@ Tier 2). (4) StratifiedBitset 0.2.0 gets tiered fast paths in one class, a new r
 general pyramid is approved, with the general form as its parity oracle
 (`.handoff/PLAN-stratifiedbitset.md` ADDENDUM 15+).
 
+### 12.11 First full draft, reviewed (2026-11-04, orchestrator; research copy only)
+
+The maintainer supplied a full RoaringSet draft. It is a pure-JS, zero-GC class:
+- a 4-level chunk pyramid (2,115 words);
+- five container kinds: empty, small array (<= 64), full array, bitmap with a 66-word summary, runs;
+- fixed pools plus one spare slab, so every conversion builds aside and swaps handles;
+- counting set algebra.
+
+Checked with a differential fuzz against a Set + sorted-array model: 6 scenarios x 40 seeds x 4,000 ops, plus 6 targeted cases. Untimed; allocation not measured.
+
+What holds:
+- The top and bitmap pyramid walks are correct at every word boundary (fuzz-agreed).
+- The API matches the other members: guards, `throwKey`, undefined out of range, `delete` never throws.
+- Every pool exhaustion fails closed, with state equal to the model after the throw.
+
+Two bugs, both missed by the random fuzz and caught only by targeted cases:
+- (a) `_demoteBitmapToArray` hard-codes the chunk count to 4,096 keys. The 2049-run spill paths demote with fewer, so `has` / `successor` / `predecessor` read stale slab words.
+- (b) `_intersectBitmapBitmap` reads B's summary from A's `_bSum`. `intersects` and the three size ops are wrong when both sets hold a bitmap in one chunk; a self-test hides it.
+
+Five improvements were applied in the fixed copy:
+- argument checks before `other._size`;
+- `min` / `max` top-down in 4 reads;
+- `clear()` restores the fresh layout;
+- add / delete copy loops moved into cold helpers;
+- `runOptimize` also turns runs back into an array when that is smaller.
+
+Bound corrections, computed. A lower bound over n entries is ceil(log2(n + 1)) probes plus one confirm read:
+
+| target | probes | confirm | total | stated |
+| --- | --- | --- | --- | --- |
+| full array (4,096) | 13 | 1 | 14 | 12 (here in 12.3 and in ROADMAP section 7) |
+| small array (64) | 7 | 1 | 8 | -- |
+| runs (2,048) | 12 | 1 | 13 | -- |
+
+- A bitmap successor reads up to 6 words. A top-pyramid next-chunk reads up to 7.
+- Kind 2 holds 1..4,096 keys, not 65..4,096: it takes chunks when the small pool is empty.
+
+All of these stay EXPECTED until a count gate exists.
+
+The draft settles D-R1 (b), D-R2, D-R3 (fixed pools) and D-R4 (runs in R1) by construction. Those are still the maintainer's calls (ROADMAP section 10), along with:
+- a 64 / 65 promote-demote thrash (a demote threshold of ~32 fixes it);
+- the missing iterate, `rank` / `select` and writing set ops;
+- the version slot (the draft says 0.7.0; ROADMAP gives v0.6.0 to the next Tier 2 member);
+- the cited decisions/0010, which does not exist yet.
+
+Sources (gitignored): `.handoff/research/roaring/` holds README.md, the original and fixed drafts, and `roaring-fuzz.mjs`. The original fails 5 / 6 targeted cases: 2 bugs plus 3 improvement checks. The fixed copy passes 6 / 6, and both pass the random scenarios.
+
 ---
 
 ## 13. Research intake (2026-10-22) -- inverse Ackermann, compositions, exotic candidates

@@ -30,7 +30,8 @@
  *   describeKill(r) -> string   one line saying why (first failure text, error, or 'survived').
  *   DEFAULT_MODULE_URL, KILL_MS.
  *
- * The fuzz job is deterministic per (module, seeds, ops, base, only): no timing assertion lives here.
+ * The fuzz job is deterministic per (module, seeds, ops, base, seedsBy, names, draft, only): no timing
+ * assertion lives here.
  */
 
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';

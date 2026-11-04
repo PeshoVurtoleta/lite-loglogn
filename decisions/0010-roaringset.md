@@ -167,8 +167,9 @@ slot), small runs (<= 32 runs, a 128 B small slot) and FULL (all 65,536 keys, 0 
 - P-5 (ruled). A shrink of `successor` / `predecessor` (dead -1 exits first) is a planned task: the
   in-chunk guards become unconditional and the dead -1 exits of `_bmpNextGEQ` / `_bmpPrevLEQ` go
   (C-9, lands with G4). R0 draft sizes (before the shrink): `successor` 621, `predecessor` 759,
-  `add` 946, `delete` 960 B direct (paged draft: `successor` 647, `predecessor` 785), all over the 460 B limit; `has` 439 and `min` / `max` 45 are
-  within. The shipped bytecode figures are the G4 pins, not these.
+  `add` 946, `delete` 960 B direct (paged draft: `successor` 647, `predecessor` 785), all over the
+  460 B limit; `has` 439 and `min` / `max` 45 are within. The shipped bytecode figures are the G4
+  pins, not these.
 - P-6 / P-7 (ruled). Version slot 0.6.0; this record is `decisions/0010-roaringset.md`.
 - Q-4 (ruled). Positional constructor `(universe, maxSmall = 1024, maxLarge = 256, maxPages = all,
   pageBits = 8)`; universe REQUIRED in [1, 2^32]; maxSmall [0, 65535]; maxLarge [1, 65534];
@@ -180,8 +181,8 @@ slot), small runs (<= 32 runs, a 128 B small slot) and FULL (all 65,536 keys, 0 
 - Set ops (C-6): `intersects`, `intersectionSize`, `unionSize`, `differenceSize` count, never
   materialize; `other` must be a RoaringSet of the same universe, either layout, any pageBits
   (a direct x paged pair gets its own fuzz row).
-- Semantics: `successor` / `predecessor` are STRICT; -0 aliases key 0; a bad key touches
-  nothing (`has` / `delete` -> false, `successor` / `predecessor` -> undefined, `add` -> RangeError).
+- Semantics: `successor` / `predecessor` are STRICT; -0 aliases key 0; a bad key touches nothing
+  (`has` / `delete` -> false, `successor` / `predecessor` -> undefined, `add` -> RangeError).
 
 ## Boxing note
 
@@ -207,10 +208,12 @@ pointer-compressed); P-1 documents it, as vEBTree CV7 does.
 
 No hardware, dates or ops-per-second are cited.
 
-- Roaring bitmaps (Lemire et al., Software: Practice and Experience, 2018; originating papers Chambi et al. and Lemire et al., both 2016): the
-  array / bitmap / run container design over 2^16-key chunks is the origin of the chunk size and
-  of the array / bitmap / run kinds here (SINGLE, small and FULL are this package's own). This record does NOT adopt its serialization format or its growable
-  allocation. Cited from general knowledge, not from an R0 source; no number is taken from it.
+- Roaring bitmaps (Lemire et al., Software: Practice and Experience, 2018; originating papers Chambi
+  et al. and Lemire et al., both 2016): the array / bitmap / run container design over 2^16-key
+  chunks is the origin of the chunk size and of the array / bitmap / run kinds here (SINGLE, small
+  and FULL are this package's own). This record does NOT adopt its serialization format or its
+  growable allocation. Cited from general knowledge, not from an R0 source; no number is taken from
+  it.
 - The package's own FastBit1024 grown one level is the bitmap summary (D-R2): a bounded
   `successor` inside a bitmap, an edge over the standard bitmap scan.
 
@@ -222,11 +225,14 @@ No hardware, dates or ops-per-second are cited.
 - Every behavior change carries a gate that FAILS on the old code (revert check against the
   frozen 'before' build `.handoff/frozen/LogLogN.65b7d53-55efef65.js`); a mutant anchor whose
   count is not 1 is a FAIL.
-- Mutant kill sets (targets; lands with G1): RoaringMutants = 47 fuzz rows (43 killed, 4 reasoned equivalents B1, B2c,
-  B2d, S9, 0 unexplained or ABORT) plus 5 CONTRACT rows outside the 47 (the 4 new throw-site
-  hoists and the universe-default mutant), killed by an oracle child: 48 of 52 killed, 4
-  equivalents (C-10a). After the G4 shrink B2c / B2d are dropped with their code and the
-  broken anchors B2a / va-m9 are re-cut: 46 of 48 killed, 2 equivalents (B1, S9) (C-9).
+- Mutant kill sets (what the test gates now): RoaringMutants = 47 fuzz rows (43 killed, 4 reasoned
+  equivalents B1, B2c, B2d, S9, 0 unexplained or ABORT) plus 6 CONTRACT rows outside the 47 (the 4
+  new throw-site hoists, the universe-default mutant, and the maxSmall-default mutant), the first
+  5 killed by an oracle child, the maxSmall-default one in the test process (a default-constructed
+  byteLength), with one unmutated control per job kind (a mutant that does not parse is an ABORT
+  and FAILS its row): 49 of 53 killed, 4 equivalents (C-10a). After the G4 shrink B2c / B2d will
+  be dropped with their code and the broken anchors B2a / va-m9 will be re-cut: 49 of 51 killed, 2
+  equivalents (B1, S9) (C-9).
 - The crossover mutant `<` -> `<=` is killed by the TIE row (U 184,942,592, `(0, 1, 10, pb8)`);
   the 254 / 255 rows kill the zero-page mutant (C-13).
 - Exact byteLength: a test-owned formula (K = 8,460 plus the Q-1 rule) against the engine in
@@ -248,8 +254,9 @@ No hardware, dates or ops-per-second are cited.
   +1 .. +4 reads at every U; option 3 voids the single contract and splits the surface.
 - **Dropping the bitmap summary (D-R2).** Rejected: a bitmap successor up to 2,048 words
   (EXPECTED) against 6 measured.
-- **vb2 size classes in R1 (D-R3).** Rejected for R1: `_promoteSmall` 485 B (> 460 B),
-  `has` +42 B, U6 `has` 9.11 x SB (REPORTED: 1 run, 2026-11-04 04:17Z, Apple M4 Pro, Node v26.8.2, QUIET load1 2.52 vs baseline 2.21, keys < 2^30, u6-timing.log); moved to R2.
+- **vb2 size classes in R1 (D-R3).** Rejected for R1: `_promoteSmall` 485 B (> 460 B), `has` +42 B,
+  U6 `has` 9.11 x SB (REPORTED: 1 run, 2026-11-04 04:17Z, Apple M4 Pro, Node v26.8.2, QUIET load1
+  2.52 vs baseline 2.21, keys < 2^30, u6-timing.log); moved to R2.
 - **Runs deferred to R2 (D-R4).** Rejected: 1e6 clustered 32,862,360 -> 1,241,074 B only with
   runs and `runOptimize`.
 - **PagedBitset as a shipped tier (D-R5).** Rejected: 17,318,716 B empty at 2^32.
@@ -279,7 +286,7 @@ REPORTED gates nothing. Gates marked "lands with G<n>" do not exist yet at the t
 record and are not claimed to pass.
 
 - G1 (the engine, DETERMINISTIC): `test/RoaringSet.test.js`; `test/RoaringFuzz.test.js` (seeded
-  fuzz against the Set model); `test/RoaringMutants.test.js` (48 of 52 killed, 4 reasoned
+  fuzz against the Set model); `test/RoaringMutants.test.js` (49 of 53 killed, 4 reasoned
   equivalents, C-10a); `test/RoaringVectors.test.js` (pinned traces). Lands with G1.
 - G2 (layout, DETERMINISTIC): `test/RoaringPagedSpace.test.js` (byteLength rows incl. the TIE and
   254 / 255 rows); `test/RoaringDirectParity.test.js` (the direct set against its frozen

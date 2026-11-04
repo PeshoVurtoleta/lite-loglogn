@@ -2009,6 +2009,33 @@ function popcnt32(x) {
 }
 
 /**
+ * Cold. True iff o is a RoaringSet. The set ops' `other` guard calls this module helper rather than naming
+ * the class inside its own body: a class-body reference to `RoaringSet` gives the class a context, and every
+ * method that reads a module binding (throwKey, throwRPool, DEMOTE_*) then reads it one context deeper
+ * (+2 / +4 B of bytecode on add / delete).
+ * @param {*} o
+ * @returns {boolean}
+ */
+function isRoaringSet(o) {
+    return o instanceof RoaringSet;
+}
+
+/**
+ * Cold. Throws when a counting set op receives a bad `other`: TypeError when it is not a RoaringSet,
+ * RangeError when its universe differs. Kept out of the set-op bodies (string concat stays cold).
+ * @param {*} other
+ * @param {number} u this set's universe
+ */
+function throwROther(other, u) {
+    if (!(other instanceof RoaringSet)) {
+        throw new TypeError('[lite-loglogn] RoaringSet expected a RoaringSet; got ' +
+            (other === null ? 'null' : typeof other));
+    }
+    throw new RangeError('[lite-loglogn] RoaringSet universe mismatch: expected ' +
+        u + ', got ' + other._u);
+}
+
+/**
  * RoaringSet -- a compressed ordered set over a FIXED universe [0, U),
  * 1 <= U <= 2^32, Roaring-style: the key space splits into 2^16-key chunks,
  * each held by the smallest fitting container (kind ids in `_kind`):
@@ -3377,6 +3404,373 @@ export class RoaringSet {
         this._sFree[this._sTop++] = slot;
         this._kind[m] = 4;
         this._slot[m] = lSlot;
+    }
+
+    /**
+     * Cold, O(chunks both sets hold). True iff the two sets share at least one key (stops at the first
+     * shared key). `other` must be a RoaringSet of the same universe (either layout, a direct x paged pair
+     * included; any pageBits): otherwise TypeError (not a RoaringSet) or RangeError (universe mismatch).
+     * Neither set changes. Allocates nothing.
+     * @param {RoaringSet} other
+     * @returns {boolean}
+     */
+    intersects(other) {
+        if (!isRoaringSet(other) || other._u !== this._u) throwROther(other, this._u);
+        const tA = this._top;
+        const tB = other._top;
+        for (let m3 = tA[2114] & tB[2114]; m3 !== 0; m3 &= m3 - 1) {
+            const i2 = 31 - Math.clz32(m3 & -m3);
+            for (let m2 = tA[2112 + i2] & tB[2112 + i2]; m2 !== 0; m2 &= m2 - 1) {
+                const i1 = (i2 << 5) | (31 - Math.clz32(m2 & -m2));
+                for (let m1 = tA[2048 + i1] & tB[2048 + i1]; m1 !== 0; m1 &= m1 - 1) {
+                    const w = (i1 << 5) | (31 - Math.clz32(m1 & -m1));
+                    for (let m0 = tA[w] & tB[w]; m0 !== 0; m0 &= m0 - 1) {
+                        const c = (w << 5) | (31 - Math.clz32(m0 & -m0));
+                        if (this._chunkIntersectionSize(c, other, true) > 0) return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Cold, O(chunks both sets hold). |this AND other|. Same `other` contract as intersects(). Neither set
+     * changes. Allocates nothing for counts < 2^30; a count >= 2^31 on Node (>= 2^30 pointer-compressed)
+     * returns boxed (expected, not measured).
+     * @param {RoaringSet} other
+     * @returns {number}
+     */
+    intersectionSize(other) {
+        if (!isRoaringSet(other) || other._u !== this._u) throwROther(other, this._u);
+        const tA = this._top;
+        const tB = other._top;
+        let total = 0;
+        for (let m3 = tA[2114] & tB[2114]; m3 !== 0; m3 &= m3 - 1) {
+            const i2 = 31 - Math.clz32(m3 & -m3);
+            for (let m2 = tA[2112 + i2] & tB[2112 + i2]; m2 !== 0; m2 &= m2 - 1) {
+                const i1 = (i2 << 5) | (31 - Math.clz32(m2 & -m2));
+                for (let m1 = tA[2048 + i1] & tB[2048 + i1]; m1 !== 0; m1 &= m1 - 1) {
+                    const w = (i1 << 5) | (31 - Math.clz32(m1 & -m1));
+                    for (let m0 = tA[w] & tB[w]; m0 !== 0; m0 &= m0 - 1) {
+                        const c = (w << 5) | (31 - Math.clz32(m0 & -m0));
+                        total += this._chunkIntersectionSize(c, other, false);
+                    }
+                }
+            }
+        }
+        return total;
+    }
+
+    /**
+     * Cold, O(chunks both sets hold). |this OR other| = size + other.size - intersectionSize(other) (one
+     * intersection pass). Same `other` contract and allocation note as intersectionSize().
+     * @param {RoaringSet} other
+     * @returns {number}
+     */
+    unionSize(other) {
+        if (!isRoaringSet(other) || other._u !== this._u) throwROther(other, this._u);
+        return this._size + other._size - this.intersectionSize(other);
+    }
+
+    /**
+     * Cold, O(chunks both sets hold). |this AND NOT other| = size - intersectionSize(other) (one
+     * intersection pass). Same `other` contract and allocation note as intersectionSize().
+     * @param {RoaringSet} other
+     * @returns {number}
+     */
+    differenceSize(other) {
+        if (!isRoaringSet(other) || other._u !== this._u) throwROther(other, this._u);
+        return this._size - this.intersectionSize(other);
+    }
+
+    /**
+     * Cold. |chunk c of this AND chunk c of other| as a Smi (<= 65,536); with stopAtOne, 1 at the first
+     * shared key. Each set reads chunk c through ITS OWN row (`this._mi(c)` / `other._mi(c)`) and its own
+     * arrays, so a direct x paged pair and differing pageBits are exact (C-6). Kind 0 on either side -> 0.
+     */
+    _chunkIntersectionSize(c, other, stopAtOne) {
+        const mA0 = this._mi(c);
+        const mB0 = other._mi(c);
+        const kA = this._kind[mA0];
+        const kB = other._kind[mB0];
+        if (kA === 0 || kB === 0) return 0;
+        if (kA === 6) return stopAtOne ? 1 : other._card[mB0] + 1;
+        if (kB === 6) return stopAtOne ? 1 : this._card[mA0] + 1;
+        if (kA === 7) return other._chunkHasLo(mB0, kB, this._slot[mA0]);
+        if (kB === 7) return this._chunkHasLo(mA0, kA, other._slot[mB0]);
+        const pA = kA <= 2 ? 0 : (kA === 3 ? 2 : 1);
+        const pB = kB <= 2 ? 0 : (kB === 3 ? 2 : 1);
+        let setA = this;
+        let setB = other;
+        let leftK = kA;
+        let rightK = kB;
+        let mA = mA0;
+        let mB = mB0;
+        if (pA > pB) {
+            setA = other;
+            setB = this;
+            leftK = kB;
+            rightK = kA;
+            mA = mB0;
+            mB = mA0;
+        }
+        const sA = setA._slot[mA];
+        const sB = setB._slot[mB];
+        if (leftK <= 2) {
+            const lenA = setA._card[mA] + 1;
+            const baseA = sA << (leftK === 1 ? 6 : 12);
+            const arrA = leftK === 1 ? setA._sData : setA._lU16;
+            if (rightK <= 2) {
+                const lenB = setB._card[mB] + 1;
+                const baseB = sB << (rightK === 1 ? 6 : 12);
+                const arrB = rightK === 1 ? setB._sData : setB._lU16;
+                return this._intersectArrayArray(baseA, lenA, baseB, lenB, stopAtOne, arrA, arrB);
+            }
+            if (rightK === 3) {
+                return this._intersectArrayBitmap(baseA, lenA, sB, stopAtOne, arrA, setB._lU32);
+            }
+            const runsB = setB._runs[mB] + 1;
+            const baseB = sB << (rightK === 5 ? 6 : 12);
+            const arrB = rightK === 5 ? setB._sData : setB._lU16;
+            return this._intersectArrayRun(baseA, lenA, baseB, runsB, stopAtOne, arrA, arrB);
+        }
+        if (leftK !== 3) {
+            const runsA = setA._runs[mA] + 1;
+            const baseA = sA << (leftK === 5 ? 6 : 12);
+            const arrA = leftK === 5 ? setA._sData : setA._lU16;
+            if (rightK !== 3) {
+                const runsB = setB._runs[mB] + 1;
+                const baseB = sB << (rightK === 5 ? 6 : 12);
+                const arrB = rightK === 5 ? setB._sData : setB._lU16;
+                return this._intersectRunRun(baseA, runsA, baseB, runsB, stopAtOne, arrA, arrB);
+            }
+            return this._intersectRunBitmap(baseA, runsA, sB, stopAtOne, arrA, setB._lU32, setB._bSum);
+        }
+        return this._intersectBitmapBitmap(sA, sB, stopAtOne, setA._lU32, setB._lU32, setA._bSum, setB._bSum);
+    }
+
+    /** Cold. has() of low bits `lo` in row m of kind k (1-5 or 7; FULL is handled by the caller), as 1 / 0. */
+    _chunkHasLo(m, k, lo) {
+        const slot = this._slot[m];
+        if (k === 7) return slot === lo ? 1 : 0;
+        if (k === 1) {
+            const len = this._card[m] + 1;
+            const base = slot << 6;
+            const j = this._lb16(this._sData, base, len, lo);
+            return j < len && this._sData[base + j] === lo ? 1 : 0;
+        }
+        if (k === 2) {
+            const len = this._card[m] + 1;
+            const base = slot << 12;
+            const j = this._lb16(this._lU16, base, len, lo);
+            return j < len && this._lU16[base + j] === lo ? 1 : 0;
+        }
+        if (k === 3) return (this._lU32[(slot << 11) + (lo >>> 5)] & (1 << (lo & 31))) !== 0 ? 1 : 0;
+        const nRuns = this._runs[m] + 1;
+        const u16 = k === 5 ? this._sData : this._lU16;
+        const base = k === 5 ? slot << 6 : slot << 12;
+        const r = this._lbRun(u16, base, nRuns, lo);
+        return r < nRuns && u16[base + (r << 1)] <= lo ? 1 : 0;
+    }
+
+    /** Cold. Sorted array x sorted array (uA / uB, lenA / lenB keys at baseA / baseB): galloping merge. */
+    _intersectArrayArray(baseA, lenA, baseB, lenB, stopAtOne, uA, uB) {
+        if (lenA > lenB) return this._intersectArrayArray(baseB, lenB, baseA, lenA, stopAtOne, uB, uA);
+        let count = 0;
+        let idxB = 0;
+        for (let i = 0; i < lenA; i++) {
+            const target = uA[baseA + i];
+            if (idxB >= lenB) break;
+            if (uB[baseB + idxB] === target) {
+                if (stopAtOne) return 1;
+                count++;
+                idxB++;
+                continue;
+            }
+            if (uB[baseB + idxB] > target) continue;
+            let step = 1;
+            let next = idxB + step;
+            while (next < lenB && uB[baseB + next] < target) {
+                idxB = next;
+                step <<= 1;
+                next = idxB + step;
+            }
+            let l = idxB;
+            let h = next < lenB ? next : lenB - 1;
+            while (l <= h) {
+                const m = (l + h) >>> 1;
+                const val = uB[baseB + m];
+                if (val === target) {
+                    if (stopAtOne) return 1;
+                    count++;
+                    l = m + 1;
+                    break;
+                }
+                if (val < target) l = m + 1;
+                else h = m - 1;
+            }
+            idxB = l;
+        }
+        return count;
+    }
+
+    /** Cold. Sorted array x bitmap (slotB of uB = _lU32): one bit probe per array key. */
+    _intersectArrayBitmap(baseA, lenA, slotB, stopAtOne, uA, uB) {
+        const bBase = slotB << 11;
+        let count = 0;
+        for (let i = 0; i < lenA; i++) {
+            const lo = uA[baseA + i];
+            if ((uB[bBase + (lo >>> 5)] & (1 << (lo & 31))) !== 0) {
+                if (stopAtOne) return 1;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Cold. Sorted array x runs ((start, len - 1) pairs at baseB of uB): galloping run cursor. */
+    _intersectArrayRun(baseA, lenA, baseB, runsB, stopAtOne, uA, uB) {
+        let count = 0;
+        let rIdx = 0;
+        for (let i = 0; i < lenA; i++) {
+            const target = uA[baseA + i];
+            if (rIdx >= runsB) break;
+            let idx = baseB + (rIdx << 1);
+            let start = uB[idx];
+            let end = start + uB[idx + 1];
+            if (target > end) {
+                let step = 1;
+                let next = rIdx + step;
+                while (next < runsB) {
+                    const nIdx = baseB + (next << 1);
+                    if (uB[nIdx] + uB[nIdx + 1] < target) {
+                        rIdx = next;
+                        step <<= 1;
+                        next = rIdx + step;
+                    } else {
+                        break;
+                    }
+                }
+                let l = rIdx + 1;
+                let h = next < runsB ? next : runsB - 1;
+                while (l < h) {
+                    const m = (l + h) >>> 1;
+                    const mIdx = baseB + (m << 1);
+                    if (uB[mIdx] + uB[mIdx + 1] < target) l = m + 1;
+                    else h = m;
+                }
+                rIdx = l;
+                if (rIdx >= runsB) break;
+                idx = baseB + (rIdx << 1);
+                start = uB[idx];
+                end = start + uB[idx + 1];
+                if (target > end) break;
+            }
+            if (target >= start) {
+                if (stopAtOne) return 1;
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Cold. Runs x runs: a two-cursor overlap sweep. */
+    _intersectRunRun(baseA, runsA, baseB, runsB, stopAtOne, uA, uB) {
+        let iA = 0;
+        let iB = 0;
+        let count = 0;
+        while (iA < runsA && iB < runsB) {
+            const startA = uA[baseA + (iA << 1)];
+            const endA = startA + uA[baseA + (iA << 1) + 1];
+            const startB = uB[baseB + (iB << 1)];
+            const endB = startB + uB[baseB + (iB << 1) + 1];
+            if (endA < startB) {
+                iA++;
+            } else if (endB < startA) {
+                iB++;
+            } else {
+                const lo = startA > startB ? startA : startB;
+                const hi = endA < endB ? endA : endB;
+                if (hi >= lo) {
+                    if (stopAtOne) return 1;
+                    count += hi - lo + 1;
+                }
+                if (endA < endB) iA++;
+                else if (endB < endA) iB++;
+                else { iA++; iB++; }
+            }
+        }
+        return count;
+    }
+
+    /** Cold. Runs x bitmap (slotB, its 66-word summary sumB): masked edge words, summary-driven middle words. */
+    _intersectRunBitmap(baseA, runsA, slotB, stopAtOne, uA, uB, sumB) {
+        const bBase = slotB << 11;
+        const sBase = slotB * 66;
+        let count = 0;
+        for (let r = 0; r < runsA; r++) {
+            const start = uA[baseA + (r << 1)];
+            const end = start + uA[baseA + (r << 1) + 1];
+            const wStart = start >>> 5;
+            const wEnd = end >>> 5;
+            if (wStart === wEnd) {
+                const w = uB[bBase + wStart] & (-1 << (start & 31)) & (-1 >>> (31 - (end & 31)));
+                if (w !== 0) {
+                    if (stopAtOne) return 1;
+                    count += popcnt32(w);
+                }
+            } else {
+                let w = uB[bBase + wStart] & (-1 << (start & 31));
+                if (w !== 0) {
+                    if (stopAtOne) return 1;
+                    count += popcnt32(w);
+                }
+                const firstFull = wStart + 1;
+                const lastFull = wEnd - 1;
+                if (firstFull <= lastFull) {
+                    const s1Start = firstFull >>> 5;
+                    const s1End = lastFull >>> 5;
+                    for (let s1 = s1Start; s1 <= s1End; s1++) {
+                        const bLo = s1 === s1Start ? (firstFull & 31) : 0;
+                        const bHi = s1 === s1End ? (lastFull & 31) : 31;
+                        const mask = (-1 << bLo) & (-1 >>> (31 - bHi));
+                        for (let m = sumB[sBase + s1] & mask; m !== 0; m &= m - 1) {
+                            const bit = 31 - Math.clz32(m & -m);
+                            const fw = uB[bBase + (s1 << 5) + bit];
+                            if (stopAtOne) return 1;
+                            count += popcnt32(fw);
+                        }
+                    }
+                }
+                w = uB[bBase + wEnd] & (-1 >>> (31 - (end & 31)));
+                if (w !== 0) {
+                    if (stopAtOne) return 1;
+                    count += popcnt32(w);
+                }
+            }
+        }
+        return count;
+    }
+
+    /** Cold. Bitmap x bitmap: AND of the two summaries picks the words both sides hold. */
+    _intersectBitmapBitmap(slotA, slotB, stopAtOne, uA, uB, sumA, sumB) {
+        const bA = slotA << 11;
+        const bB = slotB << 11;
+        const sA = slotA * 66;
+        const sB = slotB * 66;
+        let count = 0;
+        for (let s1 = 0; s1 < 64; s1++) {
+            for (let m = sumA[sA + s1] & sumB[sB + s1]; m !== 0; m &= m - 1) {
+                const i = (s1 << 5) | (31 - Math.clz32(m & -m));
+                const w = uA[bA + i] & uB[bB + i];
+                if (w !== 0) {
+                    if (stopAtOne) return 1;
+                    count += popcnt32(w);
+                }
+            }
+        }
+        return count;
     }
 
     /** Cold, allocating. A fresh snapshot ({ universe, size, paged, chunks }) independent of later mutation. */

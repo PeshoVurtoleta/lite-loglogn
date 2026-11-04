@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1 + G2 landed, G3..G4 next (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1 + G2 + G3 set ops landed, addRange + G4 next (section 10)
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 engine core + G2 paging landed 2026-11-04; G3..G4 next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 engine core + G2 paging landed 2026-11-04, G3 set ops 2026-11-05; addRange + G4 next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1255,7 +1255,11 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   RoaringPagedSpace, RoaringDirectParity, RoaringPagedFuzz (page floors at the default budget, kind floors under
   LOGLOGN_ROARING_FUZZ=full) and RoaringPagedMutants (26 / 26 killed). The RoaringSet torture worker (38 lanes)
   landed beside it.
-- Next: G3 set ops + addRange, then G4 shrink, the torture wiring, docs and perf, then Demo.
+- G3 set ops landed (2026-11-05): intersects / intersectionSize / unionSize / differenceSize, each set reading its
+  own row (direct x paged and differing pageBits), cold, insertions only (hot bytecode unchanged); torture now runs
+  the 38 R lanes with 11 must-fail controls + retention on both layouts.
+- Next: addRange (G3-B3), set-op tests (G3-B2a, re-planned to built layouts), then G4 shrink, docs and perf, then
+  Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

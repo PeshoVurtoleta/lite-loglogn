@@ -10,7 +10,8 @@
  *   - the white-box block is FIXED to the shipped kinds (1 small, 2 array, 3 bitmap, 4 runs, 5 smallRuns,
  *     6 full, 7 single) with per-chunk metadata read through the row of `rs._mi(c)`. A draft without `_mi`
  *     (R/RoaringDraft.best.mjs) is supported ONLY through the explicit option { draft: true } (row = c);
- *   - REMOVED (G3 adds them back, SPEC C-21): checkPair and every call of it, the bitmap x bitmap /
+ *   - G3-B2a RESTORED (SPEC C-21): checkPair and its calls, the bitmap x bitmap / va kind-pair / vb SINGLE x kinds /
+ *     kind x kind intersection cases (B ctor args (2, 3): direct on the real build (C-5); paged pb3 vs the lane's pbP only under RoaringPagedFuzz forced lanes). Was REMOVED in G1: the bitmap x bitmap /
  *     kind-pair / SINGLE x kinds intersection cases (set ops), the XK (pageBits) argument, the vc
  *     paged-row checks, the vb2 size-class paths and the `_q` counter read;
  *   - the six basic scenarios now draw ops from their own PRNG stream (keys and ops are independent
@@ -269,6 +270,31 @@ export function runRoaringFuzz(RoaringSet, opts) {
         return null;
     }
 
+    // Set ops (G3, SPEC C-21): all four against the model, both argument orders, self, and neither set written
+    // (size + dump() before == after). Expected values come from the JS Set model only.
+    const stateKey = (rs) => rs.size + '|' + JSON.stringify(rs.dump());
+    function checkPair(a, ma, b, mb) {
+        const ka = stateKey(a), kb = stateKey(b);
+        let inter = 0;
+        const [sm, lg] = ma.s.size <= mb.s.size ? [ma.s, mb.s] : [mb.s, ma.s];
+        for (const k of sm) if (lg.has(k)) inter++;
+        // one call, one compare, then dump() + size of both sets must be unchanged (A-1: after EVERY call)
+        const one = (name, got, want) => {
+            if (got !== want) return name + ' ' + got + ' vs ' + want;
+            if (stateKey(a) !== ka || stateKey(b) !== kb) return name + ' changed a set (size / dump)';
+            return null;
+        };
+        const un = ma.s.size + mb.s.size - inter;
+        return one('intersectionSize', a.intersectionSize(b), inter) || one('intersectionSize (swapped)', b.intersectionSize(a), inter) ||
+            one('intersects', a.intersects(b), inter > 0) || one('intersects (swapped)', b.intersects(a), inter > 0) ||
+            one('unionSize', a.unionSize(b), un) || one('unionSize (swapped)', b.unionSize(a), un) ||
+            one('differenceSize', a.differenceSize(b), ma.s.size - inter) || one('differenceSize (swapped)', b.differenceSize(a), mb.s.size - inter) ||
+            one('a self intersectionSize', a.intersectionSize(a), ma.s.size) || one('a self unionSize', a.unionSize(a), ma.s.size) ||
+            one('a self differenceSize', a.differenceSize(a), 0) || one('a self intersects', a.intersects(a), ma.s.size > 0) ||
+            one('b self intersectionSize', b.intersectionSize(b), mb.s.size) || one('b self unionSize', b.unionSize(b), mb.s.size) ||
+            one('b self differenceSize', b.differenceSize(b), 0) || one('b self intersects', b.intersects(b), mb.s.size > 0);
+    }
+
     // ---- W2 probes ---------------------------------------------------------------------------------------------
     // One query point against the sorted-array model.
     function probeQ(rs, md, q, U, what) {
@@ -380,7 +406,7 @@ export function runRoaringFuzz(RoaringSet, opts) {
                 }
                 if (first) break;
                 if (op % 25 === 0 || op === OPS - 1) {
-                    const d = checkSet(S, M, r, sc.U);
+                    const d = checkSet(S, M, r, sc.U) || checkPair(A, mA, B, mB);
                     if (d) first = { op, d };
                 }
             }
@@ -465,7 +491,7 @@ export function runRoaringFuzz(RoaringSet, opts) {
                 if (op % sc.every === 0 || op === OPS - 1 || opt) {
                     let d = checkSet(S, M, r, sc.U) || gapProbes(S, M, r, sc.U, 24, 'gap ');
                     for (let i = 0; i < H.length && d === null; i++) d = boundaryProbes(S, M, H[i], sc.U, 'L1/L2 ');
-                    d = d;
+                    d = d || checkPair(A, mA, B, mB);
                     if (d) first = { op, d: (opt ? 'after runOptimize: ' : '') + d };
                 }
             }
@@ -556,7 +582,7 @@ export function runRoaringFuzz(RoaringSet, opts) {
                 if (op % sc.every === 0 || op === OPS - 1 || opt) {
                     let d = checkSet(S, M, r, sc.U) || gapProbes(S, M, r, sc.U, 24, 'gap ');
                     for (let i = 0; i < H.length && d === null; i++) d = boundaryProbes(S, M, H[i], sc.U, 'L1/L2 ');
-                    d = d;
+                    d = d || checkPair(A, mA, B, mB);
                     if (d) first = { op, d: (opt ? 'after runOptimize: ' : '') + d };
                 }
             }
@@ -594,6 +620,27 @@ export function runRoaringFuzz(RoaringSet, opts) {
         del(60050);                                          // splits a run -> 2049 runs -> spill
     });
 
+    {
+        // bitmap x bitmap in one chunk, different slots and different summaries in A and B (G3, SPEC C-21); B ctor args (2, 3): direct on the real build (C-5); paged pb3 vs the lane's pbP only under RoaringPagedFuzz forced lanes
+        let d = null;
+        try {
+            for (const extra of [[], [2, 3]]) {
+                const A = new RoaringSet(1 << 20, 4, 8), B = new RoaringSet(1 << 20, 4, 8, ...extra);
+                const mA = new Model(), mB = new Model();
+                const aa = (x) => { A.add(x); mA.add(x); }, ab = (x) => { B.add(x); mB.add(x); };
+                for (let x = 0; x < 5000; x++) aa(65536 + 60000 + (x % 5536));   // A chunk 1 bitmap first
+                for (let x = 0; x < 5000; x++) aa(x * 13);                       // A chunk 0: spread bitmap
+                for (let x = 0; x < 5000; x++) ab(x * 13);                       // B chunk 0: same keys
+                if (kindOf(A, 0) !== 3 || kindOf(A, 1) !== 3 || kindOf(B, 0) !== 3) throw new Error('bitmap x bitmap kinds ' + kindOf(A, 0) + kindOf(A, 1) + kindOf(B, 0));
+                let want = 0; for (let x = 0; x < 5000; x++) if (mA.s.has(x * 13)) want++;
+                if (want !== 5000) throw new Error('model intersection ' + want);
+                d = d || checkPair(A, mA, B, mB) || checkPair(B, mB, A, mA);
+                if (d) d = 'B extra [' + extra.join() + ']: ' + d;
+            }
+        } catch (e) { d = 'threw ' + e.message; }
+        if (d) failures++;
+        log((d ? 'FAIL ' : 'ok   ') + 'bitmap x bitmap slots'.padEnd(26) + (d ? ' ' + d : ''));
+    }
     targeted('runOptimize run -> array', (rs, add) => {
         for (let x = 60000; x < 60100; x++) add(x);          // full array, 1 run
         rs.runOptimize();                                    // -> run container
@@ -901,6 +948,52 @@ export function runRoaringFuzz(RoaringSet, opts) {
         for (const k of [4, 5, 6]) if (!seen.has(k)) throw new Error('churn never saw kind ' + k + ' (saw ' + [...seen].join() + ')');
         t.chk('churn end');
     });
+    {
+        // intersections over every kind pair: A has kind c in chunk c + 1 (c = 1..6), B_r has kind ((c + r) % 6) + 1 (G3, SPEC C-21)
+        const KB = [null,
+            (add, b, r) => { for (let i = 0; i < 40; i++) add(b + Math.floor(r() * 65536)); },                  // 1 small
+            (add, b, r) => { for (let i = 0; i < 1000; i++) add(b + Math.floor(r() * 65536)); },                // 2 array
+            (add, b, r) => { for (let i = 0; i < 10000; i++) add(b + Math.floor(r() * 65536)); },               // 3 bitmap
+            (add, b, r) => { for (let q = 0; q < 50; q++) { const s0 = q * 1300 + Math.floor(r() * 600); const n = 3 + Math.floor(r() * 400); for (let i = 0; i < n; i++) add(b + s0 + i); } }, // 4 runs
+            (add, b, r) => { for (let q = 0; q < 12; q++) { const s0 = q * 5400 + Math.floor(r() * 2000); const n = 3 + Math.floor(r() * 2000); for (let i = 0; i < n; i++) add(b + s0 + i); } }, // 5 small runs
+            (add, b) => { for (let i = 0; i < 65536; i++) add(b + i); },                                       // 6 FULL
+        ];
+        const mk = (rot, seed, extra) => {
+            const rs = new RoaringSet(VA_U, 8, 8, ...extra), md = new Model(), r = rng(seed);
+            const add = (x) => { rs.add(x); md.add(x); };
+            for (let c = 1; c <= 6; c++) KB[((c - 1 + rot) % 6) + 1](add, c * 65536, r);
+            rs.runOptimize();
+            for (let c = 1; c <= 6; c++) {
+                const want = ((c - 1 + rot) % 6) + 1;
+                if (kindOf(rs, c) !== want) throw new Error('rot ' + rot + ' chunk ' + c + ' kind ' + kindOf(rs, c) + ' (want ' + want + ')');
+            }
+            return [rs, md];
+        };
+        let d = null;
+        try {
+            const [A, mA] = mk(0, 101, []);
+            for (const extra of [[], [2, 3]]) {                                        // B ctor args (2, 3): direct on the real build (C-5); paged pb3 vs the lane's pbP only under RoaringPagedFuzz forced lanes
+                for (let rot = 0; rot < 6 && !d; rot++) {
+                    const [B, mB] = mk(rot, 202 + rot, extra);
+                    d = checkPair(A, mA, B, mB) || checkPair(B, mB, A, mA) || checkSet(B, mB, rng(5), VA_U);
+                    if (d) d = 'rot ' + rot + ' B[' + extra.join() + ']: ' + d;
+                }
+            }
+            // disjoint pairs inside one chunk: small runs vs small runs / runs / arrays / bitmap -> intersects false
+            const S = (fill) => { const rs = new RoaringSet(VA_U, 8, 8), md = new Model(); fill((x) => { rs.add(x); md.add(x); }); rs.runOptimize(); return [rs, md]; };
+            const evens = S((add) => { for (let x = 0; x < 65536; x += 2) add(x); });                                  // bitmap
+            const sr = S((add) => { for (let q = 0; q < 10; q++) for (let i = 0; i < 9; i++) add(q * 100 + i); });       // kind 5
+            const sr2 = S((add) => { for (let q = 0; q < 10; q++) for (let i = 0; i < 9; i++) add(q * 100 + 50 + i); }); // kind 5, disjoint
+            const lr = S((add) => { for (let q = 0; q < 40; q++) for (let i = 0; i < 9; i++) add(q * 100 + 50 + i); }); // kind 4, disjoint from sr
+            const ar = S((add) => { for (let q = 0; q < 60; q++) add(q * 100 + 30); });                                // small array, disjoint
+            const pairs = [[sr, sr2], [sr, lr], [sr, ar], [sr2, ar], [lr, ar]];
+            if (kindOf(sr[0], 0) !== 5 || kindOf(sr2[0], 0) !== 5 || kindOf(lr[0], 0) !== 4 || kindOf(evens[0], 0) !== 3) throw new Error('disjoint kinds ' + kindOf(sr[0], 0) + kindOf(sr2[0], 0) + kindOf(lr[0], 0) + kindOf(evens[0], 0));
+            for (const [[a, ma], [b, mb]] of pairs) { if (!d) d = checkPair(a, ma, b, mb); if (!d && a.intersects(b)) d = 'disjoint intersects true'; }
+            if (!d) d = checkPair(sr[0], sr[1], evens[0], evens[1]) || checkPair(lr[0], lr[1], evens[0], evens[1]);
+        } catch (e) { d = 'threw ' + e.message; }
+        if (d) failures++;
+        log((d ? 'FAIL ' : 'ok   ') + 'va kind-pair intersections'.padEnd(26) + (d ? ' ' + d : ''));
+    }
     // ===== APPENDED from roaring-fuzz.vb.mjs (vb-fuzz-diff.txt), renamed vb*; edits marked best: ==========
 
     // ===== APPENDED (R0 U3 b): the SINGLE kind and the small-array size classes ==========================
@@ -1069,6 +1162,55 @@ export function runRoaringFuzz(RoaringSet, opts) {
         for (let i = 5; i >= 0; i--) del(VB_LO(i));
         for (let i = 3; i >= 0; i--) del(65536 + VB_LO(i));
     });
+    for (const extra of [[], [2, 3]]) {
+        // intersections: a SINGLE in A against every kind in B (hit and miss); B ctor args (2, 3): direct on the real build (C-5); paged pb3 vs the lane's pbP only under RoaringPagedFuzz forced lanes (G3, SPEC C-21)
+        const U = 1 << 20;
+        const A = new RoaringSet(U, 16, 4), B = new RoaringSet(U, 6, 16, ...extra);
+        const mA = new Model(), mB = new Model();
+        const addA = (x) => { A.add(x); mA.add(x); }, addB = (x) => { B.add(x); mB.add(x); };
+        const V = 100;
+        for (let h = 0; h < 2; h++) {                                // h = 0: B holds V; h = 1: it does not
+            const c0 = h * 7;
+            const has = (c) => { if (h === 0) addB(c * 65536 + V); };
+            has(c0); if (h === 1) addB(c0 * 65536 + 200);           // SINGLE
+            has(c0 + 1); for (let i = 0; i < 5; i++) addB((c0 + 1) * 65536 + 300 + i * 3);       // small array
+            has(c0 + 2); for (let i = 0; i < 12; i++) addB((c0 + 2) * 65536 + 300 + i * 3);      // small array
+            has(c0 + 3); for (let i = 0; i < 40; i++) addB((c0 + 3) * 65536 + 300 + i * 3);      // small array
+            has(c0 + 4); for (let i = 0; i < 500; i++) addB((c0 + 4) * 65536 + 301 + i * 3);     // full array
+            has(c0 + 5); for (let i = 0; i < 5000; i++) addB((c0 + 5) * 65536 + 1 + i * 13);     // bitmap
+            for (let i = 0; i < 1000; i++) if (h === 0 || i !== V) addB((c0 + 6) * 65536 + i);  // runs
+        }
+        B.runOptimize();
+        for (let c = 0; c < 14; c++) addA(c * 65536 + V);
+        const shapesB = []; for (let c = 0; c < 14; c++) shapesB.push(vbShape(B, c));
+        let d = checkSet(A, mA, rng(7), U) || checkSet(B, mB, rng(8), U) || checkPair(A, mA, B, mB) || checkPair(B, mB, A, mA);
+        // a second A whose SINGLEs (key V + 1) miss everywhere but the two run chunks 6 and 13
+        const A2 = new RoaringSet(U, 16, 1), mA2 = new Model();
+        for (let c = 0; c < 14; c++) { A2.add(c * 65536 + V + 1); mA2.add(c * 65536 + V + 1); }
+        d = d || checkPair(A2, mA2, B, mB) || checkPair(B, mB, A2, mA2);
+        if (!d) {
+            const want = 'S a64 a64 a64 A B R S a64 a64 a64 A B R';
+            if (shapesB.join(' ') !== want) d = 'B shapes ' + shapesB.join(' ') + ' (want ' + want + ')';
+            else if (vbShape(A, 0) !== 'S') d = 'A not SINGLE';
+        }
+        if (d) failures++;
+        log((d ? 'FAIL ' : 'ok   ') + ('SINGLE x every kind B[' + extra.join() + ']').padEnd(26) + (d ? ' ' + d : ' (B: ' + shapesB.join(' ') + ')'));
+    }
+    {
+        // kind x kind in the same chunks, two sets with different pool sizes (so different slot orders), B ctor args (2, 3): direct on the real build (C-5); paged pb3 vs the lane's pbP only under RoaringPagedFuzz forced lanes
+        const U = 1 << 20;
+        let d = null;
+        for (const extra of [[], [2, 3]]) {
+            const A = new RoaringSet(U, 5, 8), B = new RoaringSet(U, 2, 8, ...extra);
+            const mA = new Model(), mB = new Model();
+            const sizes = [2, 6, 8, 9, 12, 16, 17, 30, 64];
+            for (let c = 0; c < sizes.length; c++) for (let i = 0; i < sizes[c]; i++) { const x = c * 65536 + VB_LO(i); A.add(x); mA.add(x); }
+            for (let c = sizes.length - 1; c >= 0; c--) for (let i = 0; i < sizes[sizes.length - 1 - c]; i++) { const x = c * 65536 + VB_LO(i + 1); B.add(x); mB.add(x); }
+            d = d || checkSet(A, mA, rng(9), U) || checkSet(B, mB, rng(10), U) || checkPair(A, mA, B, mB) || checkPair(B, mB, A, mA);
+        }
+        if (d) failures++;
+        log((d ? 'FAIL ' : 'ok   ') + 'kind x kind, other pools'.padEnd(26) + (d ? ' ' + d : ''));
+    }
     {
         // clear() == fresh layout, every pool (vb2: the two tiny free lists too)
         const rs = new RoaringSet(1 << 20, 4, 4), fresh = new RoaringSet(1 << 20, 4, 4);
@@ -1147,7 +1289,7 @@ export function runRoaringFuzz(RoaringSet, opts) {
                     prevShape.set(pk, now);
                 }
                 if (op % 25 === 0 || op === OPS - 1) {
-                    const d = checkSet(S, M, r, sc.U);
+                    const d = checkSet(S, M, r, sc.U) || checkPair(A, mA, B, mB);
                     if (d) first = { op, d };
                 }
             }
@@ -1694,6 +1836,37 @@ export function runRoaringFuzz(RoaringSet, opts) {
         while (n > 2048) { t.del(t.rs.predecessor(2 * b)); n--; }
         t.kind(1, 2, 'demoted at 2048'); t.chk('demoted');
     });
+    {
+        // SINGLE and FULL against every kind (hit and miss), both argument orders (G3, SPEC C-21; restored from the draft case 'best SINGLE/FULL x kinds', XK dropped)
+        const U = BU, mkB = () => new RoaringSet(U, 8, 12);
+        const B = mkB(), mB = new Model();
+        const addB = (x) => { B.add(x); mB.add(x); };
+        const V = 4000;
+        const fills = [
+            (b, on) => { addB(b + (on ? V : 2)); addB(b + 1); },                                       // 1 small (2 keys)
+            (b, on) => { if (on) addB(b + V); for (let i = 0; i < 300; i++) addB(b + 1 + 7 * i); },    // 2 array
+            (b, on) => { if (on) addB(b + V); for (let i = 0; i < 5000; i++) addB(b + 2 + 13 * i); },  // 3 bitmap
+            (b, on) => { for (let r = 0; r < 41; r++) for (let j = 0; j < 9; j++) if (on || r * 100 + j !== V) addB(b + r * 100 + j); }, // 4 runs (41)
+            (b, on) => { for (let r = 0; r < 8; r++) for (let j = 0; j < 9; j++) if (on || r * 1000 + j !== V) addB(b + r * 1000 + j); }, // 5 small runs
+            (b, on) => { for (let x = 0; x < 65536; x++) if (on || x !== V) addB(b + x); },             // 6 FULL (or FULL minus V)
+            (b, on) => { addB(b + (on ? V : V + 1)); },                                                // 7 SINGLE
+        ];
+        for (let h = 0; h < 2; h++) for (let k = 0; k < 7; k++) fills[k]((h * 7 + k) * 65536, h === 0);
+        B.runOptimize();
+        const A = new RoaringSet(U, 2, 2), mA = new Model();                                    // SINGLE V everywhere
+        for (let c = 0; c < 14; c++) { A.add(c * 65536 + V); mA.add(c * 65536 + V); }
+        const F = new RoaringSet(U, 2, 2), mF = new Model();                                    // FULL in 0..13
+        for (let c = 0; c < 14; c++) for (let x = 0; x < 65536; x++) { F.add(c * 65536 + x); mF.add(c * 65536 + x); }
+        const kB = []; for (let c = 0; c < 14; c++) kB.push(kindOf(B, c));
+        let d = checkSet(B, mB, rng(21), U) || checkSet(A, mA, rng(22), U) || checkSet(F, mF, rng(23), U) ||
+            checkPair(A, mA, B, mB) || checkPair(B, mB, A, mA) || checkPair(F, mF, B, mB) || checkPair(B, mB, F, mF) ||
+            checkPair(A, mA, F, mF) || checkPair(F, mF, A, mA);
+        const wantK = '1 2 3 4 5 6 7 1 2 3 4 5 5 7';                                                   // FULL minus V -> 2 small runs
+        if (!d && kB.join(' ') !== wantK) d = 'B kinds ' + kB.join(' ') + ' (want ' + wantK + ')';
+        if (!d && (kindOf(A, 0) !== 7 || kindOf(F, 0) !== 6)) d = 'A / F kinds ' + kindOf(A, 0) + ' / ' + kindOf(F, 0);
+        if (d) failures++;
+        log((d ? 'FAIL ' : 'ok   ') + 'best SINGLE/FULL x kinds'.padEnd(26) + (d ? ' ' + d : ' (B: ' + kB.join(' ') + ')'));
+    }
     }
 
     const secs = { SCEN: sec_SCEN, R: sec_R, C: sec_C, T: sec_T, V: sec_V, D: sec_D, E: sec_E, B: sec_B };
@@ -1742,15 +1915,18 @@ function plain(v) {
 }
 
 /**
- * The A-3 snapshot: sha256 of the bytes of EVERY own property of `set` that is a typed array (enumerated, so a
- * new array added by G2 is covered), plus { size, _sTop, _lTop, _conv }. Equal snapshots (deepEqual) = unchanged.
+ * The A-3 snapshot: sha256 of the bytes of EVERY own property of `set` that is a typed array, plus EVERY other own
+ * property (the scalars: `_size`, `_sTop`, `_lTop`, `_pTop`, ... enumerated, never named by hand, so a field added
+ * later is covered), plus `size`. Equal snapshots (deepEqual) = unchanged.
  */
 export function ownedSnapshot(set) {
     const typed = {};
+    const scalars = {};
     for (const key of Object.keys(set).sort()) {
         if (ArrayBuffer.isView(set[key])) typed[key] = plain(set[key]);
+        else scalars[key] = set[key] !== null && typeof set[key] === 'object' ? canon(set[key]) : set[key];
     }
-    return { typed, size: set.size, _sTop: plain(set._sTop), _lTop: plain(set._lTop), _conv: plain(set._conv) };
+    return { typed, scalars, size: set.size };
 }
 
 function snapshotText(s) {

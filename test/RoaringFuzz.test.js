@@ -14,6 +14,9 @@
  * Asserted: 0 FAIL rows; coverage floors >= 100 (R scenarios: kinds 1..7, pool0 exempt for kinds 1 and 5;
  * C scenarios: kinds 1..4; both: bitmapsWithZeroWord), re-checked here independently of the harness.
  *
+ * G3-B2a: the harness now also checks the four set ops (checkPair) at every check point and in the restored targeted
+ * cases (bitmap x bitmap, va kind-pair, SINGLE x every kind, kind x kind).
+ *
  * Seed: printed; override with LOGLOGN_SEED (fail-closed parse, test/helpers/seed.mjs). The budget:
  * SEEDS_BY (per R / C scenario, ops 4000) below; 16 x 4000 for the scenarios without floors.
  */

@@ -1205,6 +1205,12 @@ pools at 2^32: direct 3,036,204 B, paged with every page 3,040,558 B (byteLength
 2026-11-04). Q-2 one class + `paged`; Q-3 half-open fail-closed `addRange`; Q-4 positional, universe required;
 Q-5 no iterator in R1, `dump()` with kind names.
 
+**Planner note (2026-11-04).** R1 drops the drafts' 24 B `_q` instrumentation counters: shipped byteLength =
+8,460 + 11 C + 130 maxSmall + 8,456 (maxLarge + 1) + 2 maxLarge (direct), every value in this section 24 lower
+(read counts unchanged: rdX already excludes `_q`). The Q-1 crossover's strict `<` is visible only at a tie: U =
+184,942,592 (C = 2,822), pools (0, 1), maxPages 10, pb8 gives 31,042 = 31,042 -> direct (computed; a planner
+derivation, re-checked by the G2 gate).
+
 ---
 
 ## 13. Research intake (2026-10-22) -- inverse Ackermann, compositions, exotic candidates

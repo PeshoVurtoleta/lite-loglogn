@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04 (section 10); planners next
+        R0 RoaringSet research + measurement  <-- done 2026-11-04 (section 10); planned, coders next
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED; R0 research + measurement done 2026-11-04, handshake and PROPOSAL ruled; planners next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED; R0 research + measurement done 2026-11-04, handshake and PROPOSAL ruled; planned (SPEC), coder bursts next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1237,7 +1237,14 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   Q-4 positional (universe, maxSmall = 1024, maxLarge = 256, maxPages = all, pageBits = 8), universe required in
   [1, 2^32], no KNOBS. Q-5 R1 has no iterator / rank / select; `dump()` ships; R2: buildRank + rank / select,
   successorInto, vb2 size classes, deleteRange, forEach.
-- Next: the RoaringSet planners (one per group, 7 groups), then the coder bursts, then Demo.
+- Planners done (2026-11-04): 7 group plans and one SPEC (`.handoff/SPEC-roaringset.md`, CURRENT C-1..C-20).
+  `_q` is dropped, so every byteLength is 24 B lower than the drafts' (2^32 default 3,036,180 B). runOptimize lands
+  with the engine core; the paged hooks land with it too, so paging leaves the hot bodies byte-identical. Timing is
+  REPORTED by a new `npm run witness:roar` (outside verify). Rulings: TurboFan / non-inlined lanes REPORTED only;
+  no addRange count rows in R1; README timing only from this cycle's run; paged timing at w 32 only; addRange
+  "allocates nothing for bounds < 2^30".
+- Next: the coder bursts (G1 engine core -> G2 paging -> G3 set ops + addRange -> G4 shrink, with the torture,
+  docs and perf batches in parallel), then Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

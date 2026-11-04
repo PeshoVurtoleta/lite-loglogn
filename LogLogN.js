@@ -2036,6 +2036,19 @@ function throwROther(other, u) {
 }
 
 /**
+ * Cold. Throws RangeError for a bad addRange bound (lo or hi not a number, not an integer, or not
+ * 0 <= lo <= hi <= U), before anything of the set is read. Kept out of the range body (string concat stays cold).
+ * @param {*} lo
+ * @param {*} hi
+ * @param {number} u this set's universe
+ */
+function throwRRange(lo, hi, u) {
+    throw new RangeError('[lite-loglogn] RoaringSet addRange bounds must be integers with 0 <= lo <= hi <= ' + u +
+        '; got lo ' + (typeof lo === 'number' ? String(lo) : typeof lo) +
+        ', hi ' + (typeof hi === 'number' ? String(hi) : typeof hi));
+}
+
+/**
  * RoaringSet -- a compressed ordered set over a FIXED universe [0, U),
  * 1 <= U <= 2^32, Roaring-style: the key space splits into 2^16-key chunks,
  * each held by the smallest fitting container (kind ids in `_kind`):
@@ -3771,6 +3784,234 @@ export class RoaringSet {
             }
         }
         return count;
+    }
+
+    /**
+     * Cold. The addRange head (G3-B3a entry; addRange takes it over): checks the bounds of [lo, hi) and runs the
+     * read-only precount, writing nothing. A bad bound (not a number, not an integer, not 0 <= lo <= hi <= U)
+     * throws RangeError before anything of the set is read; lo === hi returns before any shift (lo = 2^32
+     * would wrap to chunk 0). cF / a / cL / b below are the only lo / hi arithmetic: no helper receives lo or
+     * hi, only a chunk index and 16-bit offsets. Throws the page or container pool RangeError a write of
+     * [lo, hi) would hit, with the set unchanged. Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes
+     * at a non-inlined call site (as has).
+     * @param {number} lo first key
+     * @param {number} hi one past the last key
+     * @returns {this}
+     */
+    _rangePlan(lo, hi) {
+        if (typeof lo !== 'number' || typeof hi !== 'number' || !Number.isInteger(lo) || !Number.isInteger(hi) ||
+            !(lo >= 0) || !(lo <= hi) || !(hi <= this._u)) throwRRange(lo, hi, this._u);
+        if (lo === hi) return this;
+        const cF = lo >>> 16;
+        const a = lo & 65535;
+        const cL = (hi - 1) >>> 16;
+        const b = (hi - 1) & 65535;
+        this._rangePre(cF, a, cL, b);
+        return this;
+    }
+
+    /**
+     * Cold, read-only (S-4): throws the RangeError a range write over chunks cF..cL (local span [a, 65535] in
+     * cF, [0, b] in cL; [a, b] when cF === cL) would hit, before any write. Absent metadata pages first; then
+     * the container pools in the write pass's order (covered chunks ascending, then cF, then cL). sA / lA
+     * mirror _sTop / _lTop; _conv is build scratch and is never counted. A covered chunk (local span all of
+     * [0, 65535]) becomes FULL and returns its old slot. A partial chunk whose _rangeKind changes slot class
+     * (small {1, 5}, large {2, 3, 4}, none {0, 6, 7}) takes one -- small: free by _rangeKind's choice; large:
+     * may throw -- and then returns its old slot.
+     */
+    _rangePre(cF, a, cL, b) {
+        const need = this._pagesNeeded(cF, cL);
+        if (need > this._pTop) {
+            throw new RangeError('[lite-loglogn] RoaringSet addRange metadata page pool exhausted (needs ' + need +
+                (need === 1 ? ' new page, ' : ' new pages, ') + this._pTop + ' free of maxPages ' + this._maxP +
+                '); increase maxPages at construction');
+        }
+        const kind = this._kind;
+        let sA = this._sTop;
+        let lA = this._lTop;
+        const pF = a !== 0 || (cF === cL && b !== 65535);
+        const pL = cL !== cF && b !== 65535;
+        const e = pL ? cL - 1 : cL;
+        for (let c = pF ? cF + 1 : cF; c <= e; c++) {
+            const k = kind[this._mi(c)];
+            if (k === 1 || k === 5) sA++;
+            else if (k === 2 || k === 3 || k === 4) lA++;
+        }
+        for (let end = 0; end < 2; end++) {
+            if (end === 0 ? !pF : !pL) continue;
+            const m = this._mi(end === 0 ? cF : cL);
+            const k0 = kind[m];
+            const k1 = this._rangeKind(m, k0, end === 0 ? a : 0, end === 0 && cF !== cL ? 65535 : b, sA);
+            const c0 = k0 === 1 || k0 === 5 ? 1 : k0 === 2 || k0 === 3 || k0 === 4 ? 2 : 0;
+            const c1 = k1 === 1 || k1 === 5 ? 1 : k1 === 2 || k1 === 3 || k1 === 4 ? 2 : 0;
+            if (c1 === c0) continue;
+            if (c1 === 1) {
+                sA--;
+            } else if (c1 === 2) {
+                if (lA === 0) {
+                    throwRPool(sA === 0 ? 'small/large' : 'large', sA === 0 ? this._maxS + this._maxL : this._maxL);
+                }
+                lA--;
+            }
+            if (c0 === 1) sA++;
+            else if (c0 === 2) lA++;
+        }
+    }
+
+    /**
+     * Cold, pure (S-3). The kind (Smi 1..7) partial chunk row m (old kind k0) ends in after a range write of
+     * the local span [a, b], sA = the small slots free at that point of the precount: the kind the add loop
+     * over [a, b] ends in (K'), then runOptimize's rule on K'. s = a small slot is free OR the chunk already
+     * holds one. n = 65536 or k0 FULL -> FULL; n = 1 -> SINGLE.
+     */
+    _rangeKind(m, k0, a, b, sA) {
+        if (k0 === 6) return 6;
+        const n = this._rangeScanN(m, k0, a, b);
+        if (n === 65536) return 6;
+        if (n === 1) return 7;
+        const s = sA !== 0 || k0 === 1 || k0 === 5;
+        let k = 3;
+        if (k0 === 0 || k0 === 7 || k0 === 1) {
+            k = n <= 64 ? (k0 === 1 || s ? 1 : 2) : n <= 4096 ? 2 : 3;
+        } else if (k0 === 2) {
+            k = n <= 4096 ? 2 : 3;
+        } else if (k0 === 5) {
+            // a 33rd run (the range's first key isolated, no merge after) spills the small runs to a slab
+            k = this._runs[m] === 31 && this._rangeNewRun(m, k0, a) === 1 &&
+                this._rangeScanR(m, k0, a, b) === 33 ? 4 : 5;
+        } else if (k0 === 4) {
+            // a 2,049th run makes a bitmap, back to an array below 4,096 keys
+            if (this._runs[m] === 2047 && this._rangeNewRun(m, k0, a) === 1) {
+                k = n <= 4096 ? 2 : 3;
+            } else {
+                k = 4;
+            }
+        }
+        if (k === 2 || k === 3) {
+            const r = this._rangeScanR(m, k0, a, b);
+            if (k === 2 ? (r << 1) < n : r <= 2047) return r <= 32 && s ? 5 : 4;
+            return k;
+        }
+        if (k === 4) {
+            const r = this._rangeScanR(m, k0, a, b);
+            if (r <= 32 && s) return 5;
+            return n < (r << 1) ? 2 : 4;
+        }
+        return k;
+    }
+
+    /** Cold, read-only. |E u [a, b]| (Smi <= 65,536) for row m of kind k (E = its keys; 0 <= a <= b <= 65535). */
+    _rangeScanN(m, k, a, b) {
+        const w = b - a + 1;
+        if (k === 0) return w;
+        if (k === 6) return 65536;
+        const slot = this._slot[m];
+        if (k === 7) return slot >= a && slot <= b ? w : w + 1;
+        const n0 = this._card[m] + 1;
+        if (k === 1 || k === 2) {
+            const u16 = k === 1 ? this._sData : this._lU16;
+            const base = k === 1 ? slot << 6 : slot << 12;
+            return n0 + w - (this._lb16(u16, base, n0, b + 1) - this._lb16(u16, base, n0, a));
+        }
+        let inI = 0;
+        if (k === 3) {
+            const u32 = this._lU32;
+            const wBase = slot << 11;
+            const wa = a >>> 5;
+            const wb = b >>> 5;
+            for (let i = wa; i <= wb; i++) {
+                let mk = -1;
+                if (i === wa) mk &= -1 << (a & 31);
+                if (i === wb) mk &= -1 >>> (31 - (b & 31));
+                inI += popcnt32(u32[wBase + i] & mk);
+            }
+            return n0 + w - inI;
+        }
+        const u16 = k === 5 ? this._sData : this._lU16;
+        const base = k === 5 ? slot << 6 : slot << 12;
+        const nRuns = this._runs[m] + 1;
+        for (let r = this._lbRun(u16, base, nRuns, a); r < nRuns; r++) {
+            const s0 = u16[base + (r << 1)];
+            if (s0 > b) break;
+            const e0 = s0 + u16[base + (r << 1) + 1];
+            inI += (e0 < b ? e0 : b) - (s0 > a ? s0 : a) + 1;
+        }
+        return n0 + w - inI;
+    }
+
+    /**
+     * Cold, read-only. Runs of E u [a, b] (Smi <= 32,768) for row m of kind k: every run of E meeting
+     * [a - 1, b + 1] merges with the span into one run; a bitmap counts run starts with the span OR-ed in.
+     */
+    _rangeScanR(m, k, a, b) {
+        if (k === 0 || k === 6) return 1;
+        const slot = this._slot[m];
+        const a1 = a === 0 ? 0 : a - 1;
+        const b1 = b === 65535 ? 65535 : b + 1;
+        if (k === 7) return slot >= a1 && slot <= b1 ? 1 : 2;
+        if (k === 3) {
+            const u32 = this._lU32;
+            const wBase = slot << 11;
+            const wa = a >>> 5;
+            const wb = b >>> 5;
+            let runs = 0;
+            let prev = 0;
+            for (let i = 0; i < 2048; i++) {
+                let v = u32[wBase + i];
+                if (i >= wa && i <= wb) {
+                    let mk = -1;
+                    if (i === wa) mk &= -1 << (a & 31);
+                    if (i === wb) mk &= -1 >>> (31 - (b & 31));
+                    v |= mk;
+                }
+                runs += popcnt32(v & ~((v << 1) | (prev >>> 31)));
+                prev = v;
+            }
+            return runs;
+        }
+        if (k === 1 || k === 2) {
+            const u16 = k === 1 ? this._sData : this._lU16;
+            const base = k === 1 ? slot << 6 : slot << 12;
+            const n0 = this._card[m] + 1;
+            let r0 = 1;
+            for (let i = 1; i < n0; i++) if (u16[base + i] !== u16[base + i - 1] + 1) r0++;
+            // t = runs of E inside [a1, b1] = the runs of E meeting it
+            const j0 = this._lb16(u16, base, n0, a1);
+            const j1 = this._lb16(u16, base, n0, b1 + 1);
+            let t = j1 > j0 ? 1 : 0;
+            for (let i = j0 + 1; i < j1; i++) if (u16[base + i] !== u16[base + i - 1] + 1) t++;
+            return r0 - t + 1;
+        }
+        const u16 = k === 5 ? this._sData : this._lU16;
+        const base = k === 5 ? slot << 6 : slot << 12;
+        const nRuns = this._runs[m] + 1;
+        let t = 0;
+        for (let r = this._lbRun(u16, base, nRuns, a1); r < nRuns && u16[base + (r << 1)] <= b1; r++) t++;
+        return nRuns - t + 1;
+    }
+
+    /** Cold, read-only. 1 iff the span's first key a starts an isolated run in row m of kind k (a, a +- 1 not in E). */
+    _rangeNewRun(m, k, a) {
+        if (k === 0) return 1;
+        if (k === 6) return 0;
+        if (this._chunkHasLo(m, k, a) !== 0) return 0;
+        if (a !== 0 && this._chunkHasLo(m, k, a - 1) !== 0) return 0;
+        return a === 65535 || this._chunkHasLo(m, k, a + 1) === 0 ? 1 : 0;
+    }
+
+    /** Cold. Guarded small-slot pop for the range write pass (pool RangeError; unreachable after _rangePre). */
+    _rangeTakeS() {
+        if (this._sTop === 0) throwRPool('small', this._maxS);
+        return this._sFree[--this._sTop];
+    }
+
+    /** Cold. Guarded large-slot pop for the range write pass (pool RangeError; unreachable after _rangePre). */
+    _rangeTakeL() {
+        if (this._lTop === 0) {
+            const both = this._sTop === 0;
+            throwRPool(both ? 'small/large' : 'large', both ? this._maxS + this._maxL : this._maxL);
+        }
+        return this._lFree[--this._lTop];
     }
 
     /** Cold, allocating. A fresh snapshot ({ universe, size, paged, chunks }) independent of later mutation. */

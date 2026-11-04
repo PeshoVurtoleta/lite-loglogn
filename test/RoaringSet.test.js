@@ -37,14 +37,18 @@ test('RoaringSet A-3 snapshot oracle has teeth: it sees a one-byte change in any
     for (let x = 0; x < 100; x++) s.add(x * 5);
     const before = ownedSnapshot(s);
     assert.ok(Object.keys(before.typed).length >= 8, 'enumerates the owned typed arrays: ' + Object.keys(before.typed).join(','));
+    const skipped = [];
     for (const key of Object.keys(before.typed)) {
         const a = s[key];
+        if (a.length === 0) { skipped.push(key); continue; } // a direct set's _dir / _pLive / _pFree are zero-length (C-5)
         const old = a[0];
         a[0] = (old + 1) & 0xFF;
         assert.notDeepEqual(ownedSnapshot(s), before, 'a change in ' + key + ' must change the snapshot');
         a[0] = old;
         assert.deepEqual(ownedSnapshot(s), before);
     }
+    // exactly the three page arrays of a direct set may be empty: an owned array empty by mistake cannot hide
+    assert.deepEqual(skipped.sort(), ['_dir', '_pFree', '_pLive'], 'zero-length owned arrays skipped: ' + skipped.join(','));
     const sizeBefore = s.size;
     s.add(1);
     assert.equal(s.size, sizeBefore + 1);

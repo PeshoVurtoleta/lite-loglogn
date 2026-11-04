@@ -2027,10 +2027,16 @@ function popcnt32(x) {
  * only from runOptimize() (add never re-encodes).
  *
  * SPACE is fixed at construction: every pool is preallocated and NEVER grows.
- * Per-chunk metadata is read through a row m = `_mi(c)` (direct table: the row
- * is the chunk). byteLength = 8,460 + 11 C + 130 maxSmall +
- * 8,456 (maxLarge + 1) + 2 maxLarge, C = ceil(U / 65536) (U = 2^32, default
- * pools: 3,036,180).
+ * The chunk table is DIRECT (11 B per chunk) or PAGED (a directory plus pooled
+ * 2^pageBits-row pages, 11 B per row, page 0 a shared zero page), chosen once
+ * at construction; `paged` reports it. Per-chunk metadata is read through a
+ * row m = `_mi(c)` (direct: the row is the chunk; paged: `_dir` maps the
+ * chunk's page). byteLength (direct) =
+ * 8,460 + 11 C + 130 maxSmall + 8,456 (maxLarge + 1) + 2 maxLarge, C =
+ * ceil(U / 65536); paged replaces 11 C by 11 (maxPages + 1) 2^pageBits +
+ * 2 ceil(C / 2^pageBits) + 4 maxPages + 2. Examples (U = 2^32): default pools,
+ * direct 3,036,180; maxSmall 0 / maxLarge 1, direct 746,270, paged maxPages 1
+ * 31,524.
  *
  * Hot methods (has / add / delete / successor / predecessor / min / max)
  * allocate 0 bytes for keys < 2^30; a returned key >= 2^31 (>= 2^30 on a
@@ -2048,8 +2054,14 @@ export class RoaringSet {
      * @param {number} universe integer in [1, 2^32] (required)
      * @param {number} [maxSmall=1024] small-slot pool, integer in [0, 65535]
      * @param {number} [maxLarge=256] large-slot pool, integer in [1, 65534] (plus one spare slab)
+     * @param {number} [maxPages] metadata page pool, integer in [1, ceil(C / 2^pageBits)]; default (undefined): all pages
+     * @param {number} [pageBits=8] chunks per metadata page = 2^pageBits, integer in [1, 15]
+     *
+     * Layout (fixed here): PAGED iff 11 (maxPages + 1) 2^pageBits + 2 ceil(C / 2^pageBits) + 4 maxPages + 2 <
+     * 11 C (the paged metadata is strictly smaller than the direct table), else DIRECT. The default (all pages) is
+     * direct at every universe. Both layouts own the same fields in the same order (one hidden class).
      */
-    constructor(universe, maxSmall = 1024, maxLarge = 256) {
+    constructor(universe, maxSmall = 1024, maxLarge = 256, maxPages = undefined, pageBits = 8) {
         if (typeof universe !== 'number' || !Number.isInteger(universe) ||
             universe < 1 || universe > 4294967296) {
             throw new RangeError('[lite-loglogn] RoaringSet universe must be an integer in [1, 2^32]; got ' +
@@ -2065,19 +2077,43 @@ export class RoaringSet {
             throw new RangeError('[lite-loglogn] RoaringSet maxLarge must be an integer in [1, 65534]; got ' +
                 (typeof maxLarge === 'number' ? String(maxLarge) : typeof maxLarge));
         }
+        if (typeof pageBits !== 'number' || !Number.isInteger(pageBits) || pageBits < 1 || pageBits > 15) {
+            throw new RangeError('[lite-loglogn] RoaringSet pageBits must be an integer in [1, 15]; got ' +
+                (typeof pageBits === 'number' ? String(pageBits) : typeof pageBits));
+        }
         const chunks = Math.ceil(universe / 65536);
+        const dirLen = (chunks + (1 << pageBits) - 1) >>> pageBits;
+        if (maxPages === undefined) maxPages = dirLen;
+        if (typeof maxPages !== 'number' || !Number.isInteger(maxPages) || maxPages < 1 || maxPages > dirLen) {
+            throw new RangeError('[lite-loglogn] RoaringSet maxPages must be an integer in [1, ' + dirLen +
+                '] for this universe and pageBits; got ' +
+                (typeof maxPages === 'number' ? String(maxPages) : typeof maxPages));
+        }
+        // layout decision (C-5): paged only when its metadata bytes are strictly below the direct table's
+        const paged = 11 * (maxPages + 1) * (1 << pageBits) + 2 * dirLen + 4 * maxPages + 2 < 11 * chunks;
+        // paged: rows of pooled pages of 2^pageBits chunks, page 0 the never-written ZERO page (an absent page
+        // reads kind 0); direct: the row is the chunk, the page arrays are empty and _pSh 0 marks the layout
+        const rows = paged ? (maxPages + 1) << pageBits : chunks;
         this._u = universe;
         this._chunks = chunks;
         this._maxS = maxSmall;
         this._maxL = maxLarge;
         this._size = 0;
         this._top = new Uint32Array(2115);
-        this._kind = new Uint8Array(chunks);
-        this._slot = new Uint16Array(chunks);
-        this._card = new Uint16Array(chunks);
-        this._runs = new Uint16Array(chunks);
-        this._cMin = new Uint16Array(chunks);
-        this._cMax = new Uint16Array(chunks);
+        this._pSh = paged ? pageBits : 0;
+        this._pMask = paged ? (1 << pageBits) - 1 : 0;
+        this._maxP = paged ? maxPages : 0;
+        this._dir = new Uint16Array(paged ? dirLen : 0);
+        this._pLive = new Uint16Array(paged ? maxPages + 1 : 0);
+        this._pFree = new Uint16Array(paged ? maxPages : 0);
+        this._pTop = paged ? maxPages : 0;
+        for (let i = 0; i < this._pTop; i++) this._pFree[i] = maxPages - i;
+        this._kind = new Uint8Array(rows);
+        this._slot = new Uint16Array(rows);
+        this._card = new Uint16Array(rows);
+        this._runs = new Uint16Array(rows);
+        this._cMin = new Uint16Array(rows);
+        this._cMax = new Uint16Array(rows);
         this._sData = new Uint16Array(maxSmall * 64);
         this._sFree = new Uint16Array(maxSmall);
         this._sTop = maxSmall;
@@ -2095,27 +2131,38 @@ export class RoaringSet {
 
     get size() { return this._size; }
     get universe() { return this._u; }
-    /** True iff the chunk table is paged (fixed at construction). This build: always the direct table. */
-    get paged() { return false; }
-    /** Bytes of every typed array owned (the class comment's formula). */
+    /** True iff the chunk metadata is paged (fixed at construction by the constructor's layout rule). */
+    get paged() { return this._pSh !== 0; }
+    /**
+     * Bytes of every typed array owned: direct 8,460 + 11 C + 130 maxSmall + 8,456 (maxLarge + 1) + 2 maxLarge;
+     * paged replaces 11 C by 11 (maxPages + 1) 2^pageBits + 2 ceil(C / 2^pageBits) + 4 maxPages + 2.
+     */
     get byteLength() {
         return this._top.byteLength + this._kind.byteLength + this._slot.byteLength +
             this._card.byteLength + this._runs.byteLength +
             this._cMin.byteLength + this._cMax.byteLength + this._sData.byteLength +
             this._sFree.byteLength + this._lU16.byteLength + this._bSum.byteLength +
-            this._lFree.byteLength;
+            this._lFree.byteLength +
+            this._dir.byteLength + this._pLive.byteLength + this._pFree.byteLength;
     }
 
-    /** Hot helper. Metadata row of chunk c. Direct table: the row is the chunk. */
+    /**
+     * Hot helper. Metadata row of chunk c. Direct (_pSh 0): the row is the chunk. Paged: one directory read; an
+     * absent page maps to the zero page, whose rows read kind 0.
+     */
     _mi(c) {
-        return c;
+        const sh = this._pSh;
+        return sh === 0 ? c : (this._dir[c >>> sh] << sh) | (c & this._pMask);
     }
 
     /**
      * Cold-ish. First key `lo` of the empty chunk c (row m) -> SINGLE: no container
-     * pool, both headers, the top pyramid, the size. Cannot throw.
+     * pool, both headers, the top pyramid, the size. Paged: the chunk's page is mapped
+     * first (_pageAcquire; the only pool a new chunk needs), so an empty page pool
+     * throws before any write and the zero page is never written. Direct: cannot throw.
      */
     _addChunk(c, m, lo) {
+        if (this._pSh !== 0) m = this._pageAcquire(c);
         this._kind[m] = 7;
         this._slot[m] = lo;
         this._card[m] = 0;
@@ -2125,8 +2172,70 @@ export class RoaringSet {
         this._size++;
     }
 
-    /** Cold-ish. Chunk c just emptied (kind 0, top bit cleared). Direct table: nothing to release. */
+    /**
+     * Cold. Paged only. Maps chunk c's page when absent (LIFO pop; throws the page-pool
+     * RangeError BEFORE any write when the pool is empty), counts
+     * c as a live chunk of it and returns c's row. The caller makes c non-empty.
+     */
+    _pageAcquire(c) {
+        const sh = this._pSh;
+        const d = c >>> sh;
+        let pg = this._dir[d];
+        if (pg === 0) {
+            if (this._pTop === 0) {
+                throw new RangeError('[lite-loglogn] RoaringSet metadata page pool exhausted (maxPages ' + this._maxP +
+                    '); increase maxPages at construction');
+            }
+            pg = this._pFree[--this._pTop];
+            this._dir[d] = pg;
+        }
+        this._pLive[pg]++;
+        return (pg << sh) | (c & this._pMask);
+    }
+
+    /**
+     * Cold. Pages a write to chunks c0..c1 (inclusive, c0 <= c1) would map: the absent
+     * pages among them (0 when direct). Read-only, for a fail-closed precount.
+     */
+    _pagesNeeded(c0, c1) {
+        const sh = this._pSh;
+        if (sh === 0) return 0;
+        const dir = this._dir;
+        const e = c1 >>> sh;
+        let n = 0;
+        for (let d = c0 >>> sh; d <= e; d++) if (dir[d] === 0) n++;
+        return n;
+    }
+
+    /**
+     * Cold-ish. Chunk c just emptied (kind 0, top bit cleared). Direct: nothing to release.
+     * Paged: when c was its page's last live chunk, the page is reset (_pageZero) and
+     * pushed back on the LIFO pool, so a free page equals a fresh one.
+     */
     _pageRelease(c) {
+        const sh = this._pSh;
+        if (sh === 0) return;
+        const d = c >>> sh;
+        const pg = this._dir[d];
+        const live = this._pLive[pg] - 1;
+        this._pLive[pg] = live;
+        if (live !== 0) return;
+        this._dir[d] = 0;
+        this._pageZero(pg);
+        this._pFree[this._pTop++] = pg;
+    }
+
+    /**
+     * Cold. Page pg's rows back to 0 in the fields an emptied row leaves stale (_slot:
+     * a SINGLE's key; the _cMin / _cMax headers); _kind / _card / _runs are already 0 on
+     * an empty row. 3 x 2^pageBits writes.
+     */
+    _pageZero(pg) {
+        const b = pg << this._pSh;
+        const e = b + (1 << this._pSh);
+        this._slot.fill(0, b, e);
+        this._cMin.fill(0, b, e);
+        this._cMax.fill(0, b, e);
     }
 
     _topSet(c) {
@@ -2682,7 +2791,11 @@ export class RoaringSet {
         return ((c << 16) | this._chunkMax(this._mi(c))) >>> 0;
     }
 
-    /** Cold. Removes every key; pools, free-list order and the spare slab equal a fresh instance's. */
+    /**
+     * Cold. Removes every key; pools, free-list order and the spare slab equal a fresh instance's. Paged: every
+     * mapped page (found through _dir, never through row contents) is reset and the page pool refilled in the
+     * constructor's order.
+     */
     clear() {
         for (let c = this._nextChunk(0); c >= 0; c = this._nextChunk(c + 1)) {
             const m = this._mi(c);
@@ -2696,6 +2809,16 @@ export class RoaringSet {
             this._cMax[m] = 0;
         }
         this._top.fill(0);
+        if (this._pSh !== 0) {
+            // also clears the stale rows of chunks that emptied earlier on a still-mapped page
+            const dir = this._dir;
+            for (let d = 0; d < dir.length; d++) if (dir[d] !== 0) this._pageZero(dir[d]);
+            dir.fill(0);
+            this._pLive.fill(0);
+            const mP = this._maxP;
+            for (let i = 0; i < mP; i++) this._pFree[i] = mP - i;
+            this._pTop = mP;
+        }
         this._size = 0;
         // same free-list order and spare slab as a fresh instance (deterministic slot reuse)
         const mS = this._maxS;

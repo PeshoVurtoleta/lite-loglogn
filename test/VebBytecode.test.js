@@ -7,7 +7,8 @@
  * --print-bytecode-filter=<name>` on a driver that imports ../LogLogN.js and
  * exercises ONLY vEBTree (U = 2^16, 2^24 + 1, 2^28, 200: leaf, depth-1 and
  * depth-2 paths). Each printed header is attributed by its first source position
- * to the vEB region (`// --- vEBTree (0.5.0)` to EOF); EXACTLY ONE header per
+ * to the vEB region (`// --- vEBTree (0.5.0)` to the next `// --- ` banner, or
+ * EOF if none -- RoaringSet follows it since 0.6.0); EXACTLY ONE header per
  * name must lie there and none outside it (fail closed, never a skip).
  *
  * Policy:
@@ -77,11 +78,12 @@ process.stdout.write('veb-bytecode-driver done acc=' + (acc >>> 0) + '\\n');
 
 // --- helpers (pure; unit-tested below) ------------------------------------------
 
-/** [start, end) = marker to EOF, or null (marker missing / doubled). */
+/** [start, end) = marker to the next "\n// --- " banner (or EOF if none), or null (marker missing / doubled). */
 function regionOf(text, marker) {
     const a = text.indexOf(marker);
     if (a < 0 || text.indexOf(marker, a + 1) >= 0) return null;
-    return [a, text.length];
+    const b = text.indexOf('\n// --- ', a + 1);
+    return [a, b < 0 ? text.length : b];
 }
 
 /** Every header as { name, len, pos }; null if ANY header lacks a length or a position. */
@@ -251,5 +253,7 @@ test('G2-7 control: parser, pin and budget fail closed', T, () => {
     assert.deepEqual(pinMismatch({ has: 218 }, { has: 218 }), []);
     assert.equal(regionOf('x', V_MARKER), null);
     assert.equal(regionOf(V_MARKER + V_MARKER, V_MARKER), null);
-    assert.deepEqual(regionOf('a' + V_MARKER + ' b', V_MARKER), [1, 1 + V_MARKER.length + 2], 'marker -> EOF');
+    assert.deepEqual(regionOf('a' + V_MARKER + ' b', V_MARKER), [1, 1 + V_MARKER.length + 2], 'marker -> EOF (no next banner)');
+    assert.deepEqual(regionOf('a' + V_MARKER + ' b\n// --- Next (0.6.0)\nc', V_MARKER), [1, 1 + V_MARKER.length + 2],
+        'marker -> the next banner (exclusive, at its leading newline)');
 });

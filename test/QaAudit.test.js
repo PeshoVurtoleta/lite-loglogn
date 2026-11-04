@@ -5,7 +5,8 @@
  * must hold, independent of any one member:
  *   - the VERSION trinity (LogLogN.js const === package.json === llms.txt), the
  *     version check of record (no test pins a version literal);
- *   - the frozen export surface (exactly StratifiedBitset + VERSION + XFastTrie + YFastTrie + vEBTree);
+ *   - the frozen export surface (exactly RoaringSet + StratifiedBitset + VERSION + XFastTrie + YFastTrie +
+ *     vEBTree);
  *   - the six-file pack discipline (files[] exact; repo-only dirs absent);
  *   - no "Karadjov" anywhere in the shipped source / docs;
  *   - ASCII-only source in LogLogN.js (this family needs NO Unicode exception --
@@ -24,7 +25,7 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as LogLogNModule from '../LogLogN.js';
-import { VERSION, StratifiedBitset, XFastTrie, YFastTrie, vEBTree } from '../LogLogN.js';
+import { VERSION, RoaringSet, StratifiedBitset, XFastTrie, YFastTrie, vEBTree } from '../LogLogN.js';
 import { startFn, expectFn, KILL_MS } from './_worker-run.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -41,14 +42,16 @@ test('VERSION trinity: LogLogN.js const, package.json, and llms.txt agree byte-f
     assert.equal(m[1], VERSION, 'llms.txt Version header !== LogLogN.js VERSION const');
 });
 
-// --- frozen export surface: StratifiedBitset + VERSION + XFastTrie + YFastTrie + vEBTree
+// --- frozen export surface: RoaringSet + StratifiedBitset + VERSION + XFastTrie + YFastTrie + vEBTree
 
-test('LogLogN.js exports exactly StratifiedBitset, VERSION, XFastTrie, YFastTrie and vEBTree -- nothing else has leaked in', () => {
+test('LogLogN.js exports exactly RoaringSet, StratifiedBitset, VERSION, XFastTrie, YFastTrie and vEBTree -- nothing else has leaked in', () => {
     const exportedNames = Object.keys(LogLogNModule).sort();
-    assert.deepEqual(exportedNames, ['StratifiedBitset', 'VERSION', 'XFastTrie', 'YFastTrie', 'vEBTree'],
-        'LogLogN.js export surface drifted from the frozen surface (StratifiedBitset, VERSION, XFastTrie, YFastTrie, vEBTree)');
+    assert.deepEqual(exportedNames, ['RoaringSet', 'StratifiedBitset', 'VERSION', 'XFastTrie', 'YFastTrie', 'vEBTree'],
+        'LogLogN.js export surface drifted from the frozen surface (RoaringSet, StratifiedBitset, VERSION, XFastTrie, YFastTrie, vEBTree)');
     assert.equal(typeof VERSION, 'string');
     assert.equal(typeof LogLogNModule.StratifiedBitset, 'function');
+    assert.equal(typeof LogLogNModule.RoaringSet, 'function');
+    assert.equal(LogLogNModule.RoaringSet, RoaringSet);
 });
 
 // --- six-file pack discipline (L-08 / decisions/0003) -----------------------

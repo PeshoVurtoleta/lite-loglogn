@@ -87,6 +87,7 @@ export const VERSION = '0.5.0';
 // XFastTrie        (v0.3.0)         -- O(log log U) query over pointer-free LevelTables
 // YFastTrie        (v0.4.0)         -- the O(n)-space fix over x-fast representatives
 // vEBTree          (v0.5.0)         -- flattened van Emde Boas, worst-case O(log log U)
+// RoaringSet       (v0.6.0)         -- Roaring-container compressed 32-bit set
 
 // --- StratifiedBitset (0.2.0) ------------------------------------------------
 
@@ -1974,5 +1975,1301 @@ export class vEBTree {
         this._t.fill(0);
         this._init();
         this._size = 0;
+    }
+}
+
+// --- RoaringSet (0.6.0) ------------------------------------------------------
+
+/** Hysteresis: a large-slot array returns to a small slot when a delete leaves <= 32 keys (promote stays at 65). */
+const DEMOTE_SMALL = 32;
+/** Hysteresis: a bitmap becomes an array when a delete leaves 2,048 keys (promote stays at 4,097). */
+const DEMOTE_BITMAP = 2048;
+
+/**
+ * Cold. Throws RangeError when a container pool is exhausted on add(),
+ * delete() or a conversion, before any write. Kept out of hot bodies so the
+ * string concat never bloats their bytecode.
+ * @param {string} pool
+ * @param {number} cap
+ */
+function throwRPool(pool, cap) {
+    throw new RangeError('[lite-loglogn] RoaringSet ' + pool +
+        ' container pool exhausted (capacity ' + cap + '); increase pool capacity at construction');
+}
+
+/**
+ * Cold. Population count of a 32-bit word (SWAR, lite-fastbit32 / lite-o1 parity).
+ * @param {number} x
+ * @returns {number}
+ */
+function popcnt32(x) {
+    x = x - ((x >>> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >>> 2) & 0x33333333);
+    return Math.imul((x + (x >>> 4)) & 0x0F0F0F0F, 0x01010101) >>> 24;
+}
+
+/**
+ * RoaringSet -- a compressed ordered set over a FIXED universe [0, U),
+ * 1 <= U <= 2^32, Roaring-style: the key space splits into 2^16-key chunks,
+ * each held by the smallest fitting container (kind ids in `_kind`):
+ * 7 SINGLE (1 key, its low 16 bits in `_slot`, 0 B), 1 small array (2..64
+ * keys, a 128 B small slot), 2 array (up to 4,096 keys, an 8 KB large slot),
+ * 3 bitmap (8 KB + a 66-word summary), 4 runs (an 8 KB large slot, <= 2,048
+ * runs as (start, len - 1) pairs), 5 small runs (<= 32 runs in a small slot),
+ * 6 FULL (all 65,536 keys, 0 B). Promote / demote use hysteresis: a small
+ * array moves to a large slot at its 65th key, a large-slot array returns to a
+ * small slot when a delete leaves <= DEMOTE_SMALL keys and a small slot is
+ * free; an array becomes a bitmap at its 4,097th key, a bitmap becomes an
+ * array when a delete leaves DEMOTE_BITMAP keys. A three-level top pyramid
+ * over the chunks (`_top`, 2,115 words) answers next / previous live chunk;
+ * per-chunk [min, max] headers (`_cMin` / `_cMax`) answer min / max and
+ * cross-chunk successor / predecessor without a container search. Runs come
+ * only from runOptimize() (add never re-encodes).
+ *
+ * SPACE is fixed at construction: every pool is preallocated and NEVER grows.
+ * Per-chunk metadata is read through a row m = `_mi(c)` (direct table: the row
+ * is the chunk). byteLength = 8,460 + 11 C + 130 maxSmall +
+ * 8,456 (maxLarge + 1) + 2 maxLarge, C = ceil(U / 65536) (U = 2^32, default
+ * pools: 3,036,180).
+ *
+ * Hot methods (has / add / delete / successor / predecessor / min / max)
+ * allocate 0 bytes for keys < 2^30; a returned key >= 2^31 (>= 2^30 on a
+ * pointer-compressed engine) may box as a HeapNumber when the call is not
+ * inlined. successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A
+ * bad key (not a number, not an integer in [0, U)) touches nothing: has /
+ * delete -> false, successor / predecessor -> undefined, add -> RangeError.
+ * Pool exhaustion throws RangeError BEFORE any write (set unchanged), so add
+ * AND delete can throw on a valid key (a delete from a FULL chunk takes a small
+ * slot, else a large one; splitting a small-runs run past 32 runs takes a large
+ * slot).
+ */
+export class RoaringSet {
+    /**
+     * @param {number} universe integer in [1, 2^32] (required)
+     * @param {number} [maxSmall=1024] small-slot pool, integer in [0, 65535]
+     * @param {number} [maxLarge=256] large-slot pool, integer in [1, 65534] (plus one spare slab)
+     */
+    constructor(universe, maxSmall = 1024, maxLarge = 256) {
+        if (typeof universe !== 'number' || !Number.isInteger(universe) ||
+            universe < 1 || universe > 4294967296) {
+            throw new RangeError('[lite-loglogn] RoaringSet universe must be an integer in [1, 2^32]; got ' +
+                (typeof universe === 'number' ? String(universe) : typeof universe));
+        }
+        if (typeof maxSmall !== 'number' || !Number.isInteger(maxSmall) ||
+            maxSmall < 0 || maxSmall > 65535) {
+            throw new RangeError('[lite-loglogn] RoaringSet maxSmall must be an integer in [0, 65535]; got ' +
+                (typeof maxSmall === 'number' ? String(maxSmall) : typeof maxSmall));
+        }
+        if (typeof maxLarge !== 'number' || !Number.isInteger(maxLarge) ||
+            maxLarge < 1 || maxLarge > 65534) {
+            throw new RangeError('[lite-loglogn] RoaringSet maxLarge must be an integer in [1, 65534]; got ' +
+                (typeof maxLarge === 'number' ? String(maxLarge) : typeof maxLarge));
+        }
+        const chunks = Math.ceil(universe / 65536);
+        this._u = universe;
+        this._chunks = chunks;
+        this._maxS = maxSmall;
+        this._maxL = maxLarge;
+        this._size = 0;
+        this._top = new Uint32Array(2115);
+        this._kind = new Uint8Array(chunks);
+        this._slot = new Uint16Array(chunks);
+        this._card = new Uint16Array(chunks);
+        this._runs = new Uint16Array(chunks);
+        this._cMin = new Uint16Array(chunks);
+        this._cMax = new Uint16Array(chunks);
+        this._sData = new Uint16Array(maxSmall * 64);
+        this._sFree = new Uint16Array(maxSmall);
+        this._sTop = maxSmall;
+        for (let i = 0; i < maxSmall; i++) this._sFree[i] = maxSmall - 1 - i;
+        const totalLarge = maxLarge + 1;
+        const slabBuf = new ArrayBuffer(totalLarge * 8192);
+        this._lU16 = new Uint16Array(slabBuf);
+        this._lU32 = new Uint32Array(slabBuf);
+        this._bSum = new Uint32Array(totalLarge * 66);
+        this._lFree = new Uint16Array(maxLarge);
+        this._lTop = maxLarge;
+        for (let i = 0; i < maxLarge; i++) this._lFree[i] = maxLarge - 1 - i;
+        this._conv = maxLarge;
+    }
+
+    get size() { return this._size; }
+    get universe() { return this._u; }
+    /** True iff the chunk table is paged (fixed at construction). This build: always the direct table. */
+    get paged() { return false; }
+    /** Bytes of every typed array owned (the class comment's formula). */
+    get byteLength() {
+        return this._top.byteLength + this._kind.byteLength + this._slot.byteLength +
+            this._card.byteLength + this._runs.byteLength +
+            this._cMin.byteLength + this._cMax.byteLength + this._sData.byteLength +
+            this._sFree.byteLength + this._lU16.byteLength + this._bSum.byteLength +
+            this._lFree.byteLength;
+    }
+
+    /** Hot helper. Metadata row of chunk c. Direct table: the row is the chunk. */
+    _mi(c) {
+        return c;
+    }
+
+    /**
+     * Cold-ish. First key `lo` of the empty chunk c (row m) -> SINGLE: no container
+     * pool, both headers, the top pyramid, the size. Cannot throw.
+     */
+    _addChunk(c, m, lo) {
+        this._kind[m] = 7;
+        this._slot[m] = lo;
+        this._card[m] = 0;
+        this._cMin[m] = lo;
+        this._cMax[m] = lo;
+        this._topSet(c);
+        this._size++;
+    }
+
+    /** Cold-ish. Chunk c just emptied (kind 0, top bit cleared). Direct table: nothing to release. */
+    _pageRelease(c) {
+    }
+
+    _topSet(c) {
+        const t = this._top;
+        let p = c >>> 5;
+        let m = 1 << (c & 31);
+        let v = t[p];
+        if ((v & m) !== 0) return;
+        t[p] = v | m;
+        if (v !== 0) return;
+        let i = p;
+        p = 2048 + (i >>> 5);
+        m = 1 << (i & 31);
+        v = t[p];
+        t[p] = v | m;
+        if (v !== 0) return;
+        i >>>= 5;
+        p = 2112 + (i >>> 5);
+        m = 1 << (i & 31);
+        v = t[p];
+        t[p] = v | m;
+        if (v !== 0) return;
+        t[2114] |= 1 << (i >>> 5);
+    }
+
+    _topClear(c) {
+        const t = this._top;
+        let p = c >>> 5;
+        const m = 1 << (c & 31);
+        let v = t[p];
+        if ((v & m) === 0) return;
+        v &= ~m;
+        t[p] = v;
+        if (v !== 0) return;
+        let i = p;
+        p = 2048 + (i >>> 5);
+        v = t[p] & ~(1 << (i & 31));
+        t[p] = v;
+        if (v !== 0) return;
+        i >>>= 5;
+        p = 2112 + (i >>> 5);
+        v = t[p] & ~(1 << (i & 31));
+        t[p] = v;
+        if (v !== 0) return;
+        t[2114] &= ~(1 << (i >>> 5));
+    }
+
+    _nextChunk(c) {
+        if (c >= this._chunks) return -1;
+        const t = this._top;
+        let p = c >>> 5;
+        let v = t[p] & (-1 << (c & 31));
+        if (v !== 0) return (p << 5) | (31 - Math.clz32(v & -v));
+        let i = p + 1;
+        if (i >= 2048) return -1;
+        p = i >>> 5;
+        v = t[2048 + p] & (-1 << (i & 31));
+        if (v !== 0) {
+            i = (p << 5) | (31 - Math.clz32(v & -v));
+            v = t[i];
+            return (i << 5) | (31 - Math.clz32(v & -v));
+        }
+        i = p + 1;
+        if (i >= 64) return -1;
+        p = i >>> 5;
+        v = t[2112 + p] & (-1 << (i & 31));
+        if (v === 0) {
+            if (p === 0 && (t[2114] & 2) !== 0) {
+                v = t[2113];
+                p = 1;
+            } else {
+                return -1;
+            }
+        }
+        i = (p << 5) | (31 - Math.clz32(v & -v));
+        v = t[2048 + i];
+        i = (i << 5) | (31 - Math.clz32(v & -v));
+        v = t[i];
+        return (i << 5) | (31 - Math.clz32(v & -v));
+    }
+
+    _prevChunk(c) {
+        if (c < 0) return -1;
+        const t = this._top;
+        let p = c >>> 5;
+        let v = t[p] & ~(-2 << (c & 31));
+        if (v !== 0) return (p << 5) | (31 - Math.clz32(v));
+        if (p === 0) return -1;
+        let i = p - 1;
+        p = i >>> 5;
+        v = t[2048 + p] & ~(-2 << (i & 31));
+        if (v !== 0) {
+            i = (p << 5) | (31 - Math.clz32(v));
+            v = t[i] | 0;
+            return (i << 5) | (31 - Math.clz32(v));
+        }
+        if (p === 0) return -1;
+        i = p - 1;
+        p = i >>> 5;
+        v = t[2112 + p] & ~(-2 << (i & 31));
+        if (v === 0) {
+            if (p === 1 && (t[2114] & 1) !== 0) {
+                v = t[2112] | 0;
+                p = 0;
+            } else {
+                return -1;
+            }
+        }
+        i = (p << 5) | (31 - Math.clz32(v));
+        v = t[2048 + i] | 0;
+        i = (i << 5) | (31 - Math.clz32(v));
+        v = t[i] | 0;
+        return (i << 5) | (31 - Math.clz32(v));
+    }
+
+    /** Hot helper. Smallest non-empty chunk; the set must be non-empty. 4 top-pyramid reads. */
+    _firstChunk() {
+        const t = this._top;
+        const v3 = t[2114];
+        let i = 31 - Math.clz32(v3 & -v3);
+        let v = t[2112 + i];
+        i = (i << 5) | (31 - Math.clz32(v & -v));
+        v = t[2048 + i];
+        i = (i << 5) | (31 - Math.clz32(v & -v));
+        v = t[i];
+        return (i << 5) | (31 - Math.clz32(v & -v));
+    }
+
+    /** Hot helper. Largest non-empty chunk; the set must be non-empty. 4 top-pyramid reads. */
+    _lastChunk() {
+        const t = this._top;
+        let i = 31 - Math.clz32(t[2114] | 0);
+        let v = t[2112 + i] | 0;
+        i = (i << 5) | (31 - Math.clz32(v));
+        v = t[2048 + i] | 0;
+        i = (i << 5) | (31 - Math.clz32(v));
+        v = t[i] | 0;
+        return (i << 5) | (31 - Math.clz32(v));
+    }
+
+    _lb16(arr, base, len, lo) {
+        let l = 0;
+        let h = len;
+        while (l < h) {
+            const m = (l + h) >>> 1;
+            if (arr[base + m] < lo) l = m + 1;
+            else h = m;
+        }
+        return l;
+    }
+
+    _lbRun(u16, base, nRuns, lo) {
+        let l = 0;
+        let h = nRuns;
+        while (l < h) {
+            const m = (l + h) >>> 1;
+            const idx = base + (m << 1);
+            if (u16[idx] + u16[idx + 1] < lo) l = m + 1;
+            else h = m;
+        }
+        return l;
+    }
+
+    _bmpSet(slot, lo) {
+        const wBase = slot << 11;
+        const sBase = slot * 66;
+        const wIdx = lo >>> 5;
+        const mask = 1 << (lo & 31);
+        const u32 = this._lU32;
+        const old = u32[wBase + wIdx];
+        if ((old & mask) !== 0) return false;
+        u32[wBase + wIdx] = old | mask;
+        if (old === 0) {
+            const sum = this._bSum;
+            const s1Idx = wIdx >>> 5;
+            const s1Old = sum[sBase + s1Idx];
+            sum[sBase + s1Idx] = s1Old | (1 << (wIdx & 31));
+            if (s1Old === 0) {
+                sum[sBase + 64 + (s1Idx >>> 5)] |= 1 << (s1Idx & 31);
+            }
+        }
+        return true;
+    }
+
+    _bmpClear(slot, lo) {
+        const wBase = slot << 11;
+        const sBase = slot * 66;
+        const wIdx = lo >>> 5;
+        const mask = 1 << (lo & 31);
+        const u32 = this._lU32;
+        const old = u32[wBase + wIdx];
+        if ((old & mask) === 0) return false;
+        const next = old & ~mask;
+        u32[wBase + wIdx] = next;
+        if (next === 0) {
+            const sum = this._bSum;
+            const s1Idx = wIdx >>> 5;
+            const s1Next = sum[sBase + s1Idx] & ~(1 << (wIdx & 31));
+            sum[sBase + s1Idx] = s1Next;
+            if (s1Next === 0) {
+                sum[sBase + 64 + (s1Idx >>> 5)] &= ~(1 << (s1Idx & 31));
+            }
+        }
+        return true;
+    }
+
+    _bmpNextGEQ(slot, lo) {
+        const wBase = slot << 11;
+        const sBase = slot * 66;
+        const u32 = this._lU32;
+        const sum = this._bSum;
+        let wIdx = lo >>> 5;
+        let v = u32[wBase + wIdx] & (-1 << (lo & 31));
+        if (v !== 0) return (wIdx << 5) | (31 - Math.clz32(v & -v));
+        let i = wIdx + 1;
+        if (i >= 2048) return -1;
+        let s1Idx = i >>> 5;
+        v = sum[sBase + s1Idx] & (-1 << (i & 31));
+        if (v === 0) {
+            const s2Idx = s1Idx + 1;
+            if (s2Idx >= 64) return -1;
+            const l2p = s2Idx >>> 5;
+            let l2v = sum[sBase + 64 + l2p] & (-1 << (s2Idx & 31));
+            if (l2v === 0) {
+                if (l2p !== 0) return -1;
+                l2v = sum[sBase + 65];
+                if (l2v === 0) return -1;
+                s1Idx = 32 + (31 - Math.clz32(l2v & -l2v));
+            } else {
+                s1Idx = (l2p << 5) | (31 - Math.clz32(l2v & -l2v));
+            }
+            v = sum[sBase + s1Idx];
+        }
+        wIdx = (s1Idx << 5) | (31 - Math.clz32(v & -v));
+        v = u32[wBase + wIdx];
+        return (wIdx << 5) | (31 - Math.clz32(v & -v));
+    }
+
+    _bmpPrevLEQ(slot, lo) {
+        const wBase = slot << 11;
+        const sBase = slot * 66;
+        const u32 = this._lU32;
+        const sum = this._bSum;
+        let wIdx = lo >>> 5;
+        let v = u32[wBase + wIdx] & ~(-2 << (lo & 31));
+        if (v !== 0) return (wIdx << 5) | (31 - Math.clz32(v));
+        if (wIdx === 0) return -1;
+        let i = wIdx - 1;
+        let s1Idx = i >>> 5;
+        v = sum[sBase + s1Idx] & ~(-2 << (i & 31));
+        if (v === 0) {
+            if (s1Idx === 0) return -1;
+            const s2Idx = s1Idx - 1;
+            const l2p = s2Idx >>> 5;
+            let l2v = sum[sBase + 64 + l2p] & ~(-2 << (s2Idx & 31));
+            if (l2v === 0) {
+                if (l2p !== 1) return -1;
+                l2v = sum[sBase + 64] | 0;
+                if (l2v === 0) return -1;
+                s1Idx = 31 - Math.clz32(l2v);
+            } else {
+                s1Idx = (l2p << 5) | (31 - Math.clz32(l2v));
+            }
+            v = sum[sBase + s1Idx] | 0;
+        }
+        wIdx = (s1Idx << 5) | (31 - Math.clz32(v));
+        v = u32[wBase + wIdx] | 0;
+        return (wIdx << 5) | (31 - Math.clz32(v));
+    }
+
+    /** Hot helper. Min header of row m: 1 read on every kind (the chunk must be non-empty). */
+    _chunkMin(m) {
+        return this._cMin[m];
+    }
+
+    /** Hot helper. Max header of row m: 1 read on every kind (the chunk must be non-empty). */
+    _chunkMax(m) {
+        return this._cMax[m];
+    }
+
+    has(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        const c = x >>> 16;
+        const m = this._mi(c);
+        const k = this._kind[m];
+        if (k === 0) return false;
+        if (k === 6) return true;
+        const lo = x & 0xFFFF;
+        const slot = this._slot[m];
+        if (k === 7) return slot === lo;
+        if (k === 1) {
+            const len = this._card[m] + 1;
+            const base = slot << 6;
+            const j = this._lb16(this._sData, base, len, lo);
+            return j < len && this._sData[base + j] === lo;
+        }
+        if (k === 2) {
+            const len = this._card[m] + 1;
+            const base = slot << 12;
+            const j = this._lb16(this._lU16, base, len, lo);
+            return j < len && this._lU16[base + j] === lo;
+        }
+        if (k === 3) {
+            return (this._lU32[(slot << 11) + (lo >>> 5)] & (1 << (lo & 31))) !== 0;
+        }
+        const nRuns = this._runs[m] + 1;
+        const u16 = k === 5 ? this._sData : this._lU16;
+        const base = k === 5 ? slot << 6 : slot << 12;
+        const r = this._lbRun(u16, base, nRuns, lo);
+        return r < nRuns && u16[base + (r << 1)] <= lo;
+    }
+
+    add(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) throwKey(x, this._u);
+        const c = x >>> 16;
+        const m = this._mi(c);
+        const lo = x & 0xFFFF;
+        const k = this._kind[m];
+        if (k === 0) {
+            // a new chunk is a SINGLE (0 B, no pool slot) with both headers (_addChunk)
+            this._addChunk(c, m, lo);
+            return this;
+        }
+        const slot = this._slot[m];
+        if (k === 7) {
+            if (slot === lo) return this;
+            this._promoteSingle(m, slot, lo);
+            this._size++;
+            return this;
+        }
+        if (k === 1) {
+            const len = this._card[m] + 1;
+            const base = slot << 6;
+            const sData = this._sData;
+            const j = this._lb16(sData, base, len, lo);
+            if (j < len && sData[base + j] === lo) return this;
+            if (len < 64) {
+                sData.copyWithin(base + j + 1, base + j, base + len);
+                sData[base + j] = lo;
+                this._card[m] = len;
+                if (j === 0) this._cMin[m] = lo;
+                else if (j === len) this._cMax[m] = lo;
+                this._size++;
+                return this;
+            }
+            this._promoteSmallToArray(m, slot, j, lo);
+            this._size++;
+            return this;
+        }
+        if (k === 2) {
+            const len = this._card[m] + 1;
+            const base = slot << 12;
+            const lU16 = this._lU16;
+            const j = this._lb16(lU16, base, len, lo);
+            if (j < len && lU16[base + j] === lo) return this;
+            if (len < 4096) {
+                lU16.copyWithin(base + j + 1, base + j, base + len);
+                lU16[base + j] = lo;
+                this._card[m] = len;
+                if (j === 0) this._cMin[m] = lo;
+                else if (j === len) this._cMax[m] = lo;
+                this._size++;
+                return this;
+            }
+            this._promoteArrayToBitmap(m, slot, lo);
+            this._size++;
+            return this;
+        }
+        if (k === 3) {
+            if (this._bmpSet(slot, lo)) {
+                if (lo < this._cMin[m]) this._cMin[m] = lo;
+                else if (lo > this._cMax[m]) this._cMax[m] = lo;
+                if (++this._card[m] === 65535) this._toFull(m, 3, slot);
+                this._size++;
+            }
+            return this;
+        }
+        this._addRun(m, slot, lo, k);
+        return this;
+    }
+
+    delete(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;
+        const c = x >>> 16;
+        const m = this._mi(c);
+        const k = this._kind[m];
+        if (k === 0) return false;
+        const lo = x & 0xFFFF;
+        const slot = this._slot[m];
+        if (k === 7) {
+            // the last key of a chunk (headers left stale, as every emptied chunk's)
+            if (slot !== lo) return false;
+            this._kind[m] = 0;
+            this._topClear(c);
+            this._pageRelease(c);
+            this._size--;
+            return true;
+        }
+        if (k === 1) {
+            const len = this._card[m] + 1;
+            const base = slot << 6;
+            const sData = this._sData;
+            const j = this._lb16(sData, base, len, lo);
+            if (j >= len || sData[base + j] !== lo) return false;
+            if (len === 2) {
+                this._toSingle(m, 1, slot, sData[base + 1 - j]);
+            } else {
+                sData.copyWithin(base + j, base + j + 1, base + len);
+                this._card[m] = len - 2;
+                if (j === 0) this._cMin[m] = sData[base];
+                else if (j === len - 1) this._cMax[m] = sData[base + len - 2];
+            }
+            this._size--;
+            return true;
+        }
+        if (k === 2) {
+            const len = this._card[m] + 1;
+            const base = slot << 12;
+            const lU16 = this._lU16;
+            const j = this._lb16(lU16, base, len, lo);
+            if (j >= len || lU16[base + j] !== lo) return false;
+            if (len === 2) {
+                this._toSingle(m, 2, slot, lU16[base + 1 - j]);
+            } else if (len - 1 <= DEMOTE_SMALL && this._sTop > 0) {
+                this._demoteArrayToSmall(m, slot, j, len);
+            } else {
+                lU16.copyWithin(base + j, base + j + 1, base + len);
+                this._card[m] = len - 2;
+                if (j === 0) this._cMin[m] = lU16[base];
+                else if (j === len - 1) this._cMax[m] = lU16[base + len - 2];
+            }
+            this._size--;
+            return true;
+        }
+        if (k === 3) {
+            if (!this._bmpClear(slot, lo)) return false;
+            // a bitmap holds >= 2,049 keys here, so a removed min / max always has a successor / predecessor
+            if (lo === this._cMin[m]) this._cMin[m] = this._bmpNextGEQ(slot, lo);
+            else if (lo === this._cMax[m]) this._cMax[m] = this._bmpPrevLEQ(slot, lo);
+            const newCard = this._card[m] - 1;
+            if (newCard < DEMOTE_BITMAP) {
+                this._demoteBitmapToArray(m, slot);
+            } else {
+                this._card[m] = newCard;
+            }
+            this._size--;
+            return true;
+        }
+        return this._deleteRun(m, slot, lo, k);
+    }
+
+    successor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        if (this._size === 0 || x + 1 >= this._u) return undefined;
+        const q = x + 1;
+        let c = q >>> 16;
+        const m = this._mi(c);
+        const lo = q & 0xFFFF;
+        const k = this._kind[m];
+        // lo > max skips the in-chunk search; lo <= min answers from the header. A SINGLE (min == max) never
+        // gets past these two tests, so it needs no branch below; inside (min, max] every search hits.
+        if (k !== 0 && lo <= this._cMax[m]) {
+            const mn = this._cMin[m];
+            if (lo <= mn) return ((c << 16) | mn) >>> 0;
+            if (k === 6) return ((c << 16) | lo) >>> 0;
+            const slot = this._slot[m];
+            if (k === 1) {
+                const len = this._card[m] + 1;
+                const base = slot << 6;
+                const j = this._lb16(this._sData, base, len, lo);
+                if (j < len) return ((c << 16) | this._sData[base + j]) >>> 0;
+            } else if (k === 2) {
+                const len = this._card[m] + 1;
+                const base = slot << 12;
+                const j = this._lb16(this._lU16, base, len, lo);
+                if (j < len) return ((c << 16) | this._lU16[base + j]) >>> 0;
+            } else if (k === 3) {
+                const b = this._bmpNextGEQ(slot, lo);
+                if (b >= 0) return ((c << 16) | b) >>> 0;
+            } else {
+                const nRuns = this._runs[m] + 1;
+                const u16 = k === 5 ? this._sData : this._lU16;
+                const base = k === 5 ? slot << 6 : slot << 12;
+                const r = this._lbRun(u16, base, nRuns, lo);
+                if (r < nRuns) {
+                    const start = u16[base + (r << 1)];
+                    return ((c << 16) | (start > lo ? start : lo)) >>> 0;
+                }
+            }
+        }
+        c = this._nextChunk(c + 1);
+        if (c < 0) return undefined;
+        return ((c << 16) | this._chunkMin(this._mi(c))) >>> 0;
+    }
+
+    predecessor(x) {
+        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return undefined;
+        if (this._size === 0 || x === 0) return undefined;
+        const q = x - 1;
+        let c = q >>> 16;
+        const m = this._mi(c);
+        const lo = q & 0xFFFF;
+        const k = this._kind[m];
+        // lo < min skips the in-chunk search; lo >= max answers from the header (SINGLE: as in successor)
+        if (k !== 0 && lo >= this._cMin[m]) {
+            const mx = this._cMax[m];
+            if (lo >= mx) return ((c << 16) | mx) >>> 0;
+            if (k === 6) return ((c << 16) | lo) >>> 0;
+            const slot = this._slot[m];
+            if (k === 1) {
+                const len = this._card[m] + 1;
+                const base = slot << 6;
+                const j = this._lb16(this._sData, base, len, lo);
+                if (j < len && this._sData[base + j] === lo) return ((c << 16) | lo) >>> 0;
+                if (j > 0) return ((c << 16) | this._sData[base + j - 1]) >>> 0;
+            } else if (k === 2) {
+                const len = this._card[m] + 1;
+                const base = slot << 12;
+                const j = this._lb16(this._lU16, base, len, lo);
+                if (j < len && this._lU16[base + j] === lo) return ((c << 16) | lo) >>> 0;
+                if (j > 0) return ((c << 16) | this._lU16[base + j - 1]) >>> 0;
+            } else if (k === 3) {
+                const b = this._bmpPrevLEQ(slot, lo);
+                if (b >= 0) return ((c << 16) | b) >>> 0;
+            } else {
+                const nRuns = this._runs[m] + 1;
+                const u16 = k === 5 ? this._sData : this._lU16;
+                const base = k === 5 ? slot << 6 : slot << 12;
+                const r = this._lbRun(u16, base, nRuns, lo);
+                if (r < nRuns && u16[base + (r << 1)] <= lo) return ((c << 16) | lo) >>> 0;
+                if (r > 0) {
+                    const idx = base + ((r - 1) << 1);
+                    return ((c << 16) | (u16[idx] + u16[idx + 1])) >>> 0;
+                }
+            }
+        }
+        c = this._prevChunk(c - 1);
+        if (c < 0) return undefined;
+        return ((c << 16) | this._chunkMax(this._mi(c))) >>> 0;
+    }
+
+    min() {
+        // empty -> undefined; else the first live chunk and its min header
+        if (this._size === 0) return undefined;
+        const c = this._firstChunk();
+        return ((c << 16) | this._chunkMin(this._mi(c))) >>> 0;
+    }
+
+    max() {
+        // empty -> undefined; else the last live chunk and its max header
+        if (this._size === 0) return undefined;
+        const c = this._lastChunk();
+        return ((c << 16) | this._chunkMax(this._mi(c))) >>> 0;
+    }
+
+    /** Cold. Removes every key; pools, free-list order and the spare slab equal a fresh instance's. */
+    clear() {
+        for (let c = this._nextChunk(0); c >= 0; c = this._nextChunk(c + 1)) {
+            const m = this._mi(c);
+            const k = this._kind[m];
+            if (k === 1 || k === 5) this._sFree[this._sTop++] = this._slot[m];
+            else if (k !== 6 && k !== 7) this._lFree[this._lTop++] = this._slot[m];
+            this._kind[m] = 0;
+            this._card[m] = 0;
+            this._runs[m] = 0;
+            this._cMin[m] = 0;
+            this._cMax[m] = 0;
+        }
+        this._top.fill(0);
+        this._size = 0;
+        // same free-list order and spare slab as a fresh instance (deterministic slot reuse)
+        const mS = this._maxS;
+        const mL = this._maxL;
+        for (let i = 0; i < mS; i++) this._sFree[i] = mS - 1 - i;
+        this._sTop = mS;
+        for (let i = 0; i < mL; i++) this._lFree[i] = mL - 1 - i;
+        this._lTop = mL;
+        this._conv = mL;
+    }
+
+    /** Cold-ish. SINGLE (`old`) + a new key `lo` -> a 2-key small array, else a 2-key full array; fails closed first. */
+    _promoteSingle(m, old, lo) {
+        const a = old < lo ? old : lo;
+        const b = old < lo ? lo : old;
+        if (this._sTop > 0) {
+            const s = this._sFree[--this._sTop];
+            this._sData[s << 6] = a;
+            this._sData[(s << 6) + 1] = b;
+            this._kind[m] = 1;
+            this._slot[m] = s;
+        } else if (this._lTop > 0) {
+            const s = this._lFree[--this._lTop];
+            this._lU16[s << 12] = a;
+            this._lU16[(s << 12) + 1] = b;
+            this._kind[m] = 2;
+            this._slot[m] = s;
+        } else {
+            throwRPool('small/large', this._maxS + this._maxL);
+        }
+        this._card[m] = 1;
+        this._cMin[m] = a;
+        this._cMax[m] = b;
+    }
+
+    /** Cold-ish. Chunk of kind k (1, 2, 4 or 5) in `slot` left with the one key `keep` -> SINGLE; frees the slot. */
+    _toSingle(m, k, slot, keep) {
+        if (k === 1 || k === 5) this._sFree[this._sTop++] = slot;
+        else this._lFree[this._lTop++] = slot;
+        this._kind[m] = 7;
+        this._slot[m] = keep;
+        this._card[m] = 0;
+        this._runs[m] = 0;
+        this._cMin[m] = keep;
+        this._cMax[m] = keep;
+    }
+
+    /** Cold-ish. Small array (64 keys in `slot`) + `lo` at rank j -> full array; fails closed first. */
+    _promoteSmallToArray(m, slot, j, lo) {
+        if (this._lTop === 0) throwRPool('large', this._maxL);
+        const sData = this._sData;
+        const base = slot << 6;
+        const lSlot = this._lFree[--this._lTop];
+        const lBase = lSlot << 12;
+        const lU16 = this._lU16;
+        for (let i = 0; i < j; i++) lU16[lBase + i] = sData[base + i];
+        lU16[lBase + j] = lo;
+        for (let i = j; i < 64; i++) lU16[lBase + i + 1] = sData[base + i];
+        this._sFree[this._sTop++] = slot;
+        this._kind[m] = 2;
+        this._slot[m] = lSlot;
+        this._card[m] = 64;
+        if (j === 0) this._cMin[m] = lo;
+        else if (j === 64) this._cMax[m] = lo;
+    }
+
+    /** Cold-ish. Full array of `len` keys minus the key at rank j -> a small array (caller checked the pool). */
+    _demoteArrayToSmall(m, slot, j, len) {
+        const lU16 = this._lU16;
+        const base = slot << 12;
+        const sSlot = this._sFree[--this._sTop];
+        const sBase = sSlot << 6;
+        const sData = this._sData;
+        for (let i = 0; i < j; i++) sData[sBase + i] = lU16[base + i];
+        for (let i = j + 1; i < len; i++) sData[sBase + i - 1] = lU16[base + i];
+        this._lFree[this._lTop++] = slot;
+        this._kind[m] = 1;
+        this._slot[m] = sSlot;
+        this._card[m] = len - 2;
+        if (j === 0) this._cMin[m] = sData[sBase];
+        else if (j === len - 1) this._cMax[m] = sData[sBase + len - 2];
+    }
+
+    _promoteArrayToBitmap(m, slot, lo) {
+        const dst = this._conv;
+        const u16 = this._lU16;
+        const u32 = this._lU32;
+        const sum = this._bSum;
+        const srcBase = slot << 12;
+        const dstBase = dst << 11;
+        const sBase = dst * 66;
+        u32.fill(0, dstBase, dstBase + 2048);
+        sum.fill(0, sBase, sBase + 66);
+        // sorted keys -> non-decreasing word index; word, L1 and L2 accumulate in registers
+        let w = u16[srcBase] >>> 5;
+        let acc = 0;
+        let s1 = w >>> 5;
+        let m1 = 0;
+        let l2a = 0;
+        let l2b = 0;
+        for (let i = 0; i < 4096; i++) {
+            const v = u16[srcBase + i];
+            const vw = v >>> 5;
+            if (vw !== w) {
+                u32[dstBase + w] = acc;
+                m1 |= 1 << (w & 31);
+                acc = 0;
+                w = vw;
+                const vs1 = vw >>> 5;
+                if (vs1 !== s1) {
+                    sum[sBase + s1] = m1;
+                    if (s1 < 32) l2a |= 1 << s1;
+                    else l2b |= 1 << (s1 - 32);
+                    m1 = 0;
+                    s1 = vs1;
+                }
+            }
+            acc |= 1 << (v & 31);
+        }
+        u32[dstBase + w] = acc;
+        m1 |= 1 << (w & 31);
+        sum[sBase + s1] = m1;
+        if (s1 < 32) l2a |= 1 << s1;
+        else l2b |= 1 << (s1 - 32);
+        sum[sBase + 64] = l2a;
+        sum[sBase + 65] = l2b;
+        // the new key: same 0 -> nonzero summary transitions as _bmpSet
+        const lw = lo >>> 5;
+        const old = u32[dstBase + lw];
+        u32[dstBase + lw] = old | (1 << (lo & 31));
+        if (old === 0) {
+            const ls1 = lw >>> 5;
+            const s1Old = sum[sBase + ls1];
+            sum[sBase + ls1] = s1Old | (1 << (lw & 31));
+            if (s1Old === 0) {
+                sum[sBase + 64 + (ls1 >>> 5)] |= 1 << (ls1 & 31);
+            }
+        }
+        this._slot[m] = dst;
+        this._conv = slot;
+        this._kind[m] = 3;
+        this._card[m] = 4096;
+        if (lo < this._cMin[m]) this._cMin[m] = lo;
+        else if (lo > this._cMax[m]) this._cMax[m] = lo;
+    }
+
+    _demoteBitmapToArray(m, slot) {
+        const dst = this._conv;
+        const u16 = this._lU16;
+        const u32 = this._lU32;
+        const sum = this._bSum;
+        const dstBase = dst << 12;
+        const srcBase = slot << 11;
+        const sBase = slot * 66;
+        let out = 0;
+        for (let s1 = 0; s1 < 64; s1++) {
+            for (let bits = sum[sBase + s1]; bits !== 0; bits &= bits - 1) {
+                const b = 31 - Math.clz32(bits & -bits);
+                const w = (s1 << 5) | b;
+                const baseVal = w << 5;
+                for (let d = u32[srcBase + w]; d !== 0; d &= d - 1) {
+                    u16[dstBase + out++] = baseVal | (31 - Math.clz32(d & -d));
+                }
+            }
+        }
+        this._slot[m] = dst;
+        this._conv = slot;
+        this._kind[m] = 2;
+        this._card[m] = out - 1; // spill paths demote with fewer than 4096 keys
+    }
+
+    _promoteRunToBitmap(m, slot) {
+        const dst = this._conv;
+        const u16 = this._lU16;
+        const u32 = this._lU32;
+        const sum = this._bSum;
+        const srcBase = slot << 12;
+        const dstBase = dst << 11;
+        const sBase = dst * 66;
+        const nRuns = this._runs[m] + 1;
+        u32.fill(0, dstBase, dstBase + 2048);
+        sum.fill(0, sBase, sBase + 66);
+        // sorted disjoint runs -> non-decreasing touched words; L1 / L2 accumulate in registers
+        let s1 = -1;
+        let m1 = 0;
+        let l2a = 0;
+        let l2b = 0;
+        for (let r = 0; r < nRuns; r++) {
+            const start = u16[srcBase + (r << 1)];
+            const end = start + u16[srcBase + (r << 1) + 1];
+            const wStart = start >>> 5;
+            const wEnd = end >>> 5;
+            if (wStart === wEnd) {
+                u32[dstBase + wStart] |= (-1 << (start & 31)) & (-1 >>> (31 - (end & 31)));
+            } else {
+                u32[dstBase + wStart] |= -1 << (start & 31);
+                for (let w = wStart + 1; w < wEnd; w++) u32[dstBase + w] = 0xFFFFFFFF;
+                u32[dstBase + wEnd] |= -1 >>> (31 - (end & 31));
+            }
+            for (let a = wStart; a <= wEnd;) {
+                const as1 = a >>> 5;
+                const lastW = (as1 << 5) | 31;
+                const b = lastW < wEnd ? lastW : wEnd;
+                if (as1 !== s1) {
+                    if (s1 >= 0) {
+                        sum[sBase + s1] = m1;
+                        if (s1 < 32) l2a |= 1 << s1;
+                        else l2b |= 1 << (s1 - 32);
+                    }
+                    s1 = as1;
+                    m1 = 0;
+                }
+                m1 |= (-1 << (a & 31)) & (-1 >>> (31 - (b & 31)));
+                a = b + 1;
+            }
+        }
+        sum[sBase + s1] = m1;
+        if (s1 < 32) l2a |= 1 << s1;
+        else l2b |= 1 << (s1 - 32);
+        sum[sBase + 64] = l2a;
+        sum[sBase + 65] = l2b;
+        this._slot[m] = dst;
+        this._conv = slot;
+        this._kind[m] = 3;
+        this._runs[m] = 0;
+    }
+
+    runOptimize() {
+        const u16 = this._lU16;
+        const u32 = this._lU32;
+        for (let c = this._nextChunk(0); c >= 0; c = this._nextChunk(c + 1)) {
+            const m = this._mi(c);
+            const k = this._kind[m];
+            const slot = this._slot[m];
+            const card = this._card[m] + 1;
+            if (card === 65536) {
+                if (k !== 6) this._toFull(m, k, slot);
+            } else if (k === 2) {
+                const srcBase = slot << 12;
+                let runs = 1;
+                for (let i = 1; i < card; i++) {
+                    if (u16[srcBase + i] !== u16[srcBase + i - 1] + 1) runs++;
+                }
+                if ((runs << 1) < card && runs <= 2048) {
+                    const toSmall = runs <= 32 && this._sTop > 0;
+                    const dst = toSmall ? this._sFree[--this._sTop] : this._conv;
+                    const out = toSmall ? this._sData : u16;
+                    const dstBase = toSmall ? dst << 6 : dst << 12;
+                    let rOut = 0;
+                    let start = u16[srcBase];
+                    let prev = start;
+                    for (let i = 1; i < card; i++) {
+                        const v = u16[srcBase + i];
+                        if (v !== prev + 1) {
+                            out[dstBase + (rOut << 1)] = start;
+                            out[dstBase + (rOut << 1) + 1] = prev - start;
+                            rOut++;
+                            start = v;
+                        }
+                        prev = v;
+                    }
+                    out[dstBase + (rOut << 1)] = start;
+                    out[dstBase + (rOut << 1) + 1] = prev - start;
+                    rOut++;
+                    this._slot[m] = dst;
+                    if (toSmall) {
+                        this._lFree[this._lTop++] = slot;
+                        this._kind[m] = 5;
+                    } else {
+                        this._conv = slot;
+                        this._kind[m] = 4;
+                    }
+                    this._runs[m] = rOut - 1;
+                }
+            } else if (k === 3) {
+                const wBase = slot << 11;
+                let runs = 0;
+                let prev = 0;
+                for (let w = 0; w < 2048; w++) {
+                    const v = u32[wBase + w];
+                    runs += popcnt32(v & ~((v << 1) | (prev >>> 31)));
+                    prev = v;
+                }
+                if (runs > 0 && runs <= 2047) {
+                    const toSmall = runs <= 32 && this._sTop > 0;
+                    const dst = toSmall ? this._sFree[--this._sTop] : this._conv;
+                    const out = toSmall ? this._sData : u16;
+                    const b16 = toSmall ? dst << 6 : dst << 12;
+                    let rOut = 0;
+                    let inRun = false;
+                    let rStart = 0;
+                    for (let w = 0; w < 2048; w++) {
+                        const v = u32[wBase + w];
+                        if (v === 0) {
+                            if (inRun) {
+                                out[b16 + (rOut << 1)] = rStart;
+                                out[b16 + (rOut << 1) + 1] = (w << 5) - 1 - rStart;
+                                rOut++;
+                                inRun = false;
+                            }
+                            continue;
+                        }
+                        if (v === 0xFFFFFFFF) {
+                            if (!inRun) { rStart = w << 5; inRun = true; }
+                            continue;
+                        }
+                        for (let b = 0; b < 32; b++) {
+                            const set = ((v >>> b) & 1) !== 0;
+                            if (set && !inRun) { rStart = (w << 5) | b; inRun = true; }
+                            else if (!set && inRun) {
+                                out[b16 + (rOut << 1)] = rStart;
+                                out[b16 + (rOut << 1) + 1] = ((w << 5) | b) - 1 - rStart;
+                                rOut++;
+                                inRun = false;
+                            }
+                        }
+                    }
+                    if (inRun) {
+                        out[b16 + (rOut << 1)] = rStart;
+                        out[b16 + (rOut << 1) + 1] = 65535 - rStart;
+                        rOut++;
+                    }
+                    this._slot[m] = dst;
+                    if (toSmall) {
+                        this._lFree[this._lTop++] = slot;
+                        this._kind[m] = 5;
+                    } else {
+                        this._conv = slot;
+                        this._kind[m] = 4;
+                    }
+                    this._runs[m] = rOut - 1;
+                }
+            } else if (k === 4) {
+                // 2 B per key vs 4 B per run; runs <= 2048 keeps card < 4096 here
+                const nRuns = this._runs[m] + 1;
+                if (nRuns <= 32 && this._sTop > 0) {
+                    this._demoteRunToSmall(m, slot, nRuns);
+                } else if ((card << 1) < (nRuns << 2)) {
+                    const srcBase = slot << 12;
+                    const dst = this._conv;
+                    const dstBase = dst << 12;
+                    let out = 0;
+                    for (let r = 0; r < nRuns; r++) {
+                        const start = u16[srcBase + (r << 1)];
+                        const end = start + u16[srcBase + (r << 1) + 1];
+                        for (let v = start; v <= end; v++) u16[dstBase + out++] = v;
+                    }
+                    this._slot[m] = dst;
+                    this._conv = slot;
+                    this._kind[m] = 2;
+                    this._runs[m] = 0;
+                }
+            }
+        }
+        return this;
+    }
+
+    /**
+     * Run add for kind 4 (slab) and kind 5 (small slot); kind 6 already holds every key. A new key at rank 0
+     * (nRuns) is the new min (max); the header write sits AFTER the branch chain so the small-run spill (which can
+     * throw on an empty large pool) stays fail-closed, and the spill re-enters through the kind 4 call.
+     */
+    _addRun(m, slot, lo, k) {
+        if (k === 6) return;
+        const small = k === 5;
+        const u16 = small ? this._sData : this._lU16;
+        const base = small ? slot << 6 : slot << 12;
+        const nRuns = this._runs[m] + 1;
+        const r = this._lbRun(u16, base, nRuns, lo);
+        if (r < nRuns && u16[base + (r << 1)] <= lo) return;
+        const prevAdj = r > 0 && (u16[base + ((r - 1) << 1)] + u16[base + ((r - 1) << 1) + 1] + 1 === lo);
+        const nextAdj = r < nRuns && (u16[base + (r << 1)] - 1 === lo);
+        if (prevAdj && nextAdj) {
+            const pIdx = base + ((r - 1) << 1);
+            const nIdx = base + (r << 1);
+            u16[pIdx + 1] = (u16[nIdx] + u16[nIdx + 1]) - u16[pIdx];
+            u16.copyWithin(nIdx, nIdx + 2, base + (nRuns << 1));
+            this._runs[m] = nRuns - 2;
+            this._size++;
+            if (++this._card[m] === 65535) this._toFull(m, k, slot);
+            else if (!small && nRuns <= 33 && this._sTop > 0) this._demoteRunToSmall(m, slot, nRuns - 1);
+        } else if (prevAdj) {
+            u16[base + ((r - 1) << 1) + 1]++;
+            this._size++;
+            if (++this._card[m] === 65535) this._toFull(m, k, slot);
+        } else if (nextAdj) {
+            const nIdx = base + (r << 1);
+            u16[nIdx]--;
+            u16[nIdx + 1]++;
+            this._size++;
+            if (++this._card[m] === 65535) this._toFull(m, k, slot);
+        } else if (nRuns < (small ? 32 : 2048)) {
+            const ins = base + (r << 1);
+            u16.copyWithin(ins + 2, ins, base + (nRuns << 1));
+            u16[ins] = lo;
+            u16[ins + 1] = 0;
+            this._runs[m] = nRuns;
+            this._card[m]++;
+            this._size++;
+        } else if (small) {
+            this._promoteSmallRunToRun(m, slot, nRuns);
+            this._addRun(m, this._slot[m], lo, 4);
+            return;
+        } else {
+            this._promoteRunToBitmap(m, slot);
+            const newSlot = this._slot[m];
+            this._bmpSet(newSlot, lo);
+            const newCard = this._card[m] + 1;
+            this._card[m] = newCard;
+            if (newCard < 4096) this._demoteBitmapToArray(m, newSlot);
+            this._size++;
+        }
+        if (r === 0) this._cMin[m] = lo;
+        else if (r === nRuns) this._cMax[m] = lo;
+    }
+
+    /**
+     * Run delete for kind 4 (slab) and kind 5 (small slot); kind 6 goes to the cold _deleteFull. 2 keys -> 1
+     * makes a SINGLE (so no run container ever empties here). Removing the min (max) re-derives it by rank;
+     * a split / spill deletes an interior key, headers untouched.
+     */
+    _deleteRun(m, slot, lo, k) {
+        if (k === 6) return this._deleteFull(m, lo);
+        const small = k === 5;
+        const u16 = small ? this._sData : this._lU16;
+        const base = small ? slot << 6 : slot << 12;
+        const nRuns = this._runs[m] + 1;
+        const r = this._lbRun(u16, base, nRuns, lo);
+        if (r >= nRuns) return false;
+        const idx = base + (r << 1);
+        const start = u16[idx];
+        if (start > lo) return false;
+        const len = u16[idx + 1];
+        const end = start + len;
+        if (this._card[m] === 1) {
+            // 2 keys -> 1: one 2-key run (keep its other end) or two 1-key runs (keep the other one's start)
+            this._toSingle(m, k, slot, nRuns === 1 ? (lo === start ? end : start) : u16[base + ((1 - r) << 1)]);
+        } else if (len === 0) {
+            u16.copyWithin(idx, idx + 2, base + (nRuns << 1));
+            this._runs[m] = nRuns - 2;
+            this._card[m]--;
+            if (r === 0) this._cMin[m] = u16[base];
+            else if (r === nRuns - 1) {
+                const pIdx = base + ((nRuns - 2) << 1);
+                this._cMax[m] = u16[pIdx] + u16[pIdx + 1];
+            }
+            if (!small && nRuns <= 33 && this._sTop > 0) this._demoteRunToSmall(m, slot, nRuns - 1);
+        } else if (lo === start) {
+            u16[idx] = start + 1;
+            u16[idx + 1] = len - 1;
+            this._card[m]--;
+            if (r === 0) this._cMin[m] = start + 1;
+        } else if (lo === end) {
+            u16[idx + 1] = len - 1;
+            this._card[m]--;
+            if (r === nRuns - 1) this._cMax[m] = end - 1;
+        } else if (nRuns < (small ? 32 : 2048)) {
+            u16.copyWithin(idx + 4, idx + 2, base + (nRuns << 1));
+            u16[idx + 1] = lo - 1 - start;
+            u16[idx + 2] = lo + 1;
+            u16[idx + 3] = end - (lo + 1);
+            this._runs[m] = nRuns;
+            this._card[m]--;
+        } else if (small) {
+            this._promoteSmallRunToRun(m, slot, nRuns);
+            return this._deleteRun(m, this._slot[m], lo, 4);
+        } else {
+            this._promoteRunToBitmap(m, slot);
+            const newSlot = this._slot[m];
+            this._bmpClear(newSlot, lo);
+            const newCard = this._card[m] - 1;
+            this._card[m] = newCard;
+            if (newCard <= 4095) this._demoteBitmapToArray(m, newSlot);
+        }
+        this._size--;
+        return true;
+    }
+
+    /**
+     * Cold. A container now holding all 65,536 keys -> FULL (kind 6); its slot returns to its pool. The headers
+     * are already [0, 65535] (every caller keeps them exact), so none is written here.
+     */
+    _toFull(m, k, slot) {
+        if (k === 5) this._sFree[this._sTop++] = slot;
+        else this._lFree[this._lTop++] = slot;
+        this._kind[m] = 6;
+        this._slot[m] = 0;
+        this._card[m] = 65535;
+        this._runs[m] = 0;
+    }
+
+    /**
+     * Cold. FULL minus `lo` -> 1 run (lo 0 / 65535) or 2 runs, in a small slot (kind 5), else a slab (kind 4).
+     * Fails closed (throws before any write) with both pools empty.
+     */
+    _deleteFull(m, lo) {
+        let u16;
+        let s;
+        let base;
+        if (this._sTop > 0) {
+            s = this._sFree[--this._sTop];
+            u16 = this._sData;
+            base = s << 6;
+            this._kind[m] = 5;
+        } else if (this._lTop > 0) {
+            s = this._lFree[--this._lTop];
+            u16 = this._lU16;
+            base = s << 12;
+            this._kind[m] = 4;
+        } else {
+            throwRPool('small/large', this._maxS + this._maxL);
+        }
+        if (lo === 0 || lo === 65535) {
+            u16[base] = lo === 0 ? 1 : 0;
+            u16[base + 1] = 65534;
+            this._runs[m] = 0;
+        } else {
+            u16[base] = 0;
+            u16[base + 1] = lo - 1;
+            u16[base + 2] = lo + 1;
+            u16[base + 3] = 65534 - lo;
+            this._runs[m] = 1;
+        }
+        this._slot[m] = s;
+        this._card[m] = 65534;
+        if (lo === 0) this._cMin[m] = 1;
+        else if (lo === 65535) this._cMax[m] = 65534;
+        this._size--;
+        return true;
+    }
+
+    /** Cold. A run slab of n <= 32 runs -> small runs (kind 5); the caller checked the small pool. */
+    _demoteRunToSmall(m, slot, n) {
+        const lU16 = this._lU16;
+        const base = slot << 12;
+        const sSlot = this._sFree[--this._sTop];
+        const sBase = sSlot << 6;
+        const sData = this._sData;
+        const n2 = n << 1;
+        for (let i = 0; i < n2; i++) sData[sBase + i] = lU16[base + i];
+        this._lFree[this._lTop++] = slot;
+        this._kind[m] = 5;
+        this._slot[m] = sSlot;
+    }
+
+    /** Cold. Small runs (n = 32 runs in `slot`) -> a run slab (kind 4) before a 33rd run; fails closed first. */
+    _promoteSmallRunToRun(m, slot, n) {
+        if (this._lTop === 0) throwRPool('large', this._maxL);
+        const sData = this._sData;
+        const base = slot << 6;
+        const lSlot = this._lFree[--this._lTop];
+        const lBase = lSlot << 12;
+        const lU16 = this._lU16;
+        const n2 = n << 1;
+        for (let i = 0; i < n2; i++) lU16[lBase + i] = sData[base + i];
+        this._sFree[this._sTop++] = slot;
+        this._kind[m] = 4;
+        this._slot[m] = lSlot;
+    }
+
+    /** Cold, allocating. A fresh snapshot ({ universe, size, paged, chunks }) independent of later mutation. */
+    dump() {
+        const names = ['empty', 'small', 'array', 'bitmap', 'runs', 'smallRuns', 'full', 'single'];
+        const chunks = [];
+        for (let c = this._nextChunk(0); c >= 0; c = this._nextChunk(c + 1)) {
+            const m = this._mi(c);
+            const k = this._kind[m];
+            chunks.push({
+                chunk: c,
+                kind: names[k],
+                count: this._card[m] + 1,
+                runs: k === 4 || k === 5 ? this._runs[m] + 1 : 0
+            });
+        }
+        return { universe: this._u, size: this._size, paged: this.paged, chunks };
     }
 }

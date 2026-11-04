@@ -380,13 +380,19 @@ test('XFastTrieOracle: LOGLOGN_SEED parse fails closed (F8)', () => {
     // wiring: every env read in test/ goes through parseSeed (fail-open reverts are caught)
     const ENV = 'process.env.' + 'LOGLOGN_SEED';
     const dir = new URL('.', import.meta.url);
+    // the consumers, named: an unlisted 8th (or a dropped one) fails, not just the count.
+    const CONSUMERS = ['FastBit32Cross.test.js', 'Oracle.test.js', 'RoaringFuzz.test.js', 'SiblingOracle.test.js',
+        'VebFuzz.test.js', 'XFastTrieOracle.test.js', 'YFastTrieOracle.test.js'];
     let wired = 0;
+    const found = [];
     for (const f of readdirSync(dir)) {
         if (!/\.m?js$/.test(f)) continue;
         const s = readFileSync(new URL(f, dir), 'utf8');
         const n = s.split(ENV).length - 1, ok = s.split('parseSeed(' + ENV + ', ').length - 1;
         assert.equal(n, ok, f);
         wired += ok;
+        if (ok > 0) found.push(f);
     }
-    assert.equal(wired, 6, 'six parseSeed consumers');
+    assert.deepEqual(found.sort(), CONSUMERS, 'the parseSeed consumers drifted from the named list');
+    assert.equal(wired, 7, 'seven parseSeed consumers');
 });

@@ -1,6 +1,6 @@
 /**
- * @zakkster/lite-loglogn -- RoaringSet torture lanes in a Worker (0.6.0 G5-B1a,
- * PLAN-roaringset-G5 tasks 1-2, SPEC C-10 / C-11 / C-20 / C-21). Not a test
+ * @zakkster/lite-loglogn -- RoaringSet torture lanes in a Worker (0.6.0 G5-B1a / B1b,
+ * PLAN-roaringset-G5 tasks 1-4, SPEC C-10 / C-11 / C-20 / C-21). Not a test
  * file: the npm glob `test/*.test.js` never matches it. Inert when merely
  * imported (torture.mjs imports the constants and startRoaringTorture); a job
  * runs only as a node:worker_threads Worker (workerData.roaringTorture === true).
@@ -53,20 +53,67 @@
  * count of steps whose source equals an earlier step's must be 0; its control
  * CR-dupSrc plants two closures of ONE literal (makeStep) and must count 1.
  *
- * Families (job.families, any non-empty subset, one Worker per job): ops 28 +
+ * Families (job.families, a non-empty subset, one Worker per job): ops 28 +
  * gap 3 + conv 6 + clear 1 = 38 gated lanes (FAMILY_LANES); hi = the 5 hi-key
  * lanes at U = 2^32 (keys and results >= 2^31), CONTROLS as torture's CV7:
  * hi.successor / predecessor / min / max must read transient excess >=
  * NS_MAX_EXCESS with every result >= 2^31 (share 1.0), hi.has must stay <
- * NS_MAX_EXCESS (has() inlines; the CR-has mutant of B1b flips it).
+ * NS_MAX_EXCESS (has() inlines; the CR-has mutant flips it); every hi lane also
+ * carries the work check. hi runs in its OWN job (families ['hi'], optionally
+ * + 'retention'): after conv / clear in the same Worker every hi window read a
+ * scavenge (G5-B1a r2: all 4 hi box controls null, fail closed). Observed
+ * (G5-B1b MIXED-probe, fe4984e1; mechanism unproven): in the mixed job new_space
+ * is committed at 2,097,152 B (hi-only jobs: 16,777,216-27,525,120 B), and one
+ * hi.successor window allocates 2,097,152 B (32 B x NS_K), min / max 1 MB: every
+ * window scavenges and is discarded. A mixed job is therefore an error. 'retention' = PLAN-G5 task 4 (below), no gated lanes.
+ *
+ * Controls (result.controls[], each { name, family, lanes, value, want,
+ * flipped, detail }; a control that does not flip FAILS the job):
+ *   CR-dupSrc  two closures of one literal: dupSources === 1 (every job);
+ *   CR-limit   the pass / box predicates at the limit: nsPass(1023) && !nsPass
+ *              (1024) && nsBox(1024) && !nsBox(1023), null / NaN fail both
+ *              (a '<=' for '<' mutant flips it; every job);
+ *   CR-paged   the job's first lane family rebuilt through buildLanes with the
+ *              INVERTED wantPaged: every lane must read pagedOk false (a build
+ *              that stops checking the layout flips it; lane jobs);
+ *   CR-gcKick  the first lane's step + one globalThis.gc() at op 8,192 through
+ *              gcLane: major >= 1, not ok, kicks === 1 (GC visibility inside a
+ *              Worker; lane jobs);
+ *   CR-box.<f> per lane family, on the family's first lane at the lane gate's
+ *              settings: + one retained [i] per call -> round(retained) >= 1
+ *              B/call, AND + a fresh [i] every 8th call into a heap slot (dies
+ *              young) -> excess >= NS_MAX_EXCESS;
+ *   engine mutants, data: URLs of the engine under test (job.src, else
+ *   ../LogLogN.js read by the Worker), each anchor count-checked (count !== 1,
+ *   a misplaced anchor or a '__cr' name already in the source = BAD: the control
+ *   FAILS, fail closed), the targeted lanes rebuilt from the mutant module and
+ *   measured on the named channel only:
+ *   CR-has.<f> (ops / gap / hi) has() stores [c, lo] in a module binding: every
+ *              has lane of the family (small / array / bitmap / runs, gap.has,
+ *              hi.has) reads excess >= NS_MAX_EXCESS;
+ *   CR-conv    add() allocates a scratch Uint32Array(64) per array -> bitmap
+ *              promote (into a module binding): conv.4096<->4097 excess >=
+ *              NS_MAX_EXCESS (16 promotes per NS_K window by construction);
+ *   CR-abConv  the same scratch retained in a module-level hold: the
+ *              conv.4096<->4097 'deep' arrayBuffers growth > 0;
+ *   CR-retain  (retention jobs) the churn with every instance + dump also held:
+ *              tracker.size() >= 1 after the drain.
+ *
+ * Retention (job family 'retention', layout = job.paged): RET_CYCLES 4,096
+ * cycles, each builds RoaringSet(2^20, 2, 1[, maxPages, pageBits]), runs every
+ * public op, takes dump(), and tracks BOTH (8,192 tracked) with a module-level
+ * no-op cleanup and a string tag (neither captures the target); the churn has
+ * its own frame. Gate: tracked 8,192, every instance's paged === wantPaged,
+ * tracker.size() 0 after the drain and after one more gc, collected 8,192,
+ * findings 0, leaks 0 (result.retention: layout, paged, cycles, tracked, size, after ===
+ * sizeAfterGc, collected, findings, findingKinds, warnings, leaks, pagedMismatch, dumpBad, ok,
+ * ms). result.retention is null in a job without the family;
+ * a retention job with a null or failing retention FAILS.
  *
  * Layout knob: job.paged === null builds every set with the 3-argument
  * constructor (direct, wantPaged false); job.paged = { maxPages, pageBits }
  * passes them as arguments 4 / 5 (wantPaged true). On the G1 build every set is
  * direct, so a paged job FAILS every lane (the mismatch control).
- *
- * Retention (PLAN-G5 task 4) lands in G5-B1b: result.retention is null here and
- * a caller treats null as FAIL. Seam: runRetention() below.
  *
  * Parent side: startRoaringTorture(job, label, ms) spawns ONE Worker with a
  * kill timer and NEVER rejects: it resolves { result, error }; error is a
@@ -76,6 +123,7 @@
  */
 
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { readFileSync } from 'node:fs';
 
 // Method constants: NS_K / NS_W / NS_MAX_EXCESS are torture.mjs's (the caller
 // checks ===); the rest are alloc-harness r2's per-lane budgets.
@@ -84,9 +132,13 @@ export const NS_W = 17;
 export const NS_MAX_EXCESS = (16 * NS_K) / 1024;
 // Ceiling on a lane's empty-fn baseline (B per NS_K-op window), torture's own constant and predicate
 // (test/torture.mjs, frozen .handoff/frozen/g5/torture.4d9c29a.e9dd09e7.mjs :126-137): a baseline that
-// boxes or drifts up would calibrate a real box away. Measured G1 Worker bases 1,784-1,832.
+// boxes or drifts up would calibrate a real box away. Measured G1 Worker bases 1,784-1,832 (e0f18ff8,
+// .handoff/evidence/g5-b1a/driver-r2-run3.log, 38 lanes, PRELIMINARY host load1 39.7).
 export const NS_BASE_MAX = 4 * NS_MAX_EXCESS;
 function nsBaseOk(b) { return Number.isInteger(b) && b >= 0 && b <= NS_BASE_MAX; }
+/** The transient pass / box predicates, the ONLY comparisons with NS_MAX_EXCESS (CR-limit pins both). */
+export function nsPass(x) { return typeof x === 'number' && x < NS_MAX_EXCESS; }
+export function nsBox(x) { return typeof x === 'number' && x >= NS_MAX_EXCESS; }
 export const MA_ITER = 65536;
 export const MA_BATCHES = 4;
 export const GC_OPS = 400000;
@@ -96,11 +148,13 @@ export const WARM_CALLS = 131072;
 // Per-job kill timer: 4.5x the slowest G1 job measured (direct-ops 6.4-13.4 s over 3 runs, load1 9.5-16.7,
 // PRELIMINARY host; .handoff/evidence/roaring-g5-b1a.md). A hang or a stuck job is a FAIL, never a wait.
 export const KILL_MS = 60000;
+/** Retention churn cycles per job (each tracks the instance AND its dump(): 2 x RET_CYCLES tracked). */
+export const RET_CYCLES = 4096;
 /** Gated lane count per family (fail closed: a family that builds fewer is an error). */
 export const FAMILY_LANES = Object.freeze({ ops: 28, gap: 3, conv: 6, clear: 1 });
 /** hi-key control lanes (family 'hi'). */
 export const HI_OPS = Object.freeze(['has', 'successor', 'predecessor', 'min', 'max']);
-const FAMILY_ORDER = ['ops', 'gap', 'conv', 'clear', 'hi'];
+const FAMILY_ORDER = ['ops', 'gap', 'conv', 'clear', 'hi', 'retention'];
 const JOB_KEYS = ['src', 'families', 'paged'];
 const TF_BIT = 32;
 const HI_MIN = 2147483648;
@@ -217,6 +271,9 @@ function checkJob(job) {
         if (!FAMILY_ORDER.includes(f)) throw new TypeError('unknown family ' + String(f) + ' (known: ' + FAMILY_ORDER.join(', ') + ')');
     }
     if (new Set(job.families).size !== job.families.length) throw new TypeError('job.families has a duplicate');
+    if (job.families.includes('hi') && job.families.some((f) => f !== 'hi' && f !== 'retention')) {
+        throw new TypeError('family hi runs in its own job (families [hi] or [hi, retention]; see the header)');
+    }
     const pg = job.paged;
     if (pg !== null && (typeof pg !== 'object' || !Number.isInteger(pg.maxPages) || !Number.isInteger(pg.pageBits) ||
         Object.keys(pg).length !== 2)) {
@@ -255,10 +312,13 @@ function kindsOf(set, chunks) {
     return chunks.map((c) => (by.has(c) ? by.get(c) : 'empty'));
 }
 
-/** Builds the lanes of the job's families. Cold. */
-function buildLanes(RoaringSet, job, SINK, BODY) {
+/** The layout check of every build site (lanes, hi, retention): CR-paged pins it. */
+function pagedMatch(set, want) { return set.paged === want; }
+
+/** Builds the lanes of the job's families. invert (CR-paged only) flips wantPaged. Cold. */
+function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
     const pg = job.paged;
-    const wantPaged = pg !== null;
+    const wantPaged = (pg !== null) !== invert;
     const mkSet = pg === null ? (U, s, l) => new RoaringSet(U, s, l) : (U, s, l) => new RoaringSet(U, s, l, pg.maxPages, pg.pageBits);
     const build = (U, maxS, maxL, parts) => {
         const s = mkSet(U, maxS, maxL);
@@ -279,7 +339,7 @@ function buildLanes(RoaringSet, job, SINK, BODY) {
         const work = group.startsWith('ops-') || group === 'gap' ? name.slice(name.lastIndexOf('.') + 1) : null;
         if (work !== null && !WORK_OPS.includes(work)) throw new Error('lane ' + name + ': no work oracle for ' + work);
         lanes.push({ name, group, w, set, other: null, sc, chunks, edges, work, step: stepFor(name, set, null, sc),
-            size0: set.size, kinds0: kindsOf(set, chunks).join(','), pagedOk: set.paged === wantPaged });
+            size0: set.size, kinds0: kindsOf(set, chunks).join(','), pagedOk: pagedMatch(set, wantPaged) });
     };
     const fam = new Set(job.families);
 
@@ -465,8 +525,8 @@ function buildLanes(RoaringSet, job, SINK, BODY) {
         for (const op of HI_OPS) {
             const set = mk();
             const name = 'hi.' + op;
-            hi.push({ name, op, set, sc: sc[op], chunks, step: stepFor(name, set, null, sc[op]), size0: set.size,
-                pagedOk: set.paged === wantPaged });
+            hi.push({ name, op, work: op, set, sc: sc[op], chunks, step: stepFor(name, set, null, sc[op]), size0: set.size,
+                pagedOk: pagedMatch(set, wantPaged) });
         }
     }
     for (const f of Object.keys(FAMILY_LANES)) {
@@ -496,6 +556,12 @@ function makeMeasure(lib) {
     function newSpaceUsed() {
         const a = getHeapSpaceStatistics();
         for (let j = 0; j < a.length; j++) if (a[j].space_name === 'new_space') return a[j].space_used_size;
+        return -1;
+    }
+    // cold diagnostic: the new space's committed size (hi windows box ~2 MB each)
+    function newSpaceSize() {
+        const a = getHeapSpaceStatistics();
+        for (let j = 0; j < a.length; j++) if (a[j].space_name === 'new_space') return a[j].space_size;
         return -1;
     }
     function nsLane(fn, opt) {
@@ -542,6 +608,39 @@ function makeMeasure(lib) {
         const rep = checkNoGc(s, { maxMajor: 0 });
         g.stop();
         return { major: s.gc.major, minor: s.gc.minor, maxMs: s.gc.maxMs, ok: rep.ok === true };
+    }
+    function abLane(fn, w) {
+        const ops = Math.max(10000, (MO_OPS / w) | 0);
+        const mo = measureOps(fn, { ops, warmup: Math.max(2500, (MO_WARM / w) | 0), stabilize: 'deep' });
+        const ab = mo.summary.arrayBuffers;
+        const rep = checkNoGc(mo.summary, { maxArrayBuffersGrowth: 0 });
+        return { ops, growth: ab.growthBytes, settled: ab.settled === true,
+            ok: rep.verdict === 'pass' && ab.settled === true && ab.growthBytes === 0 };
+    }
+    // CR-box, two shapes (G5-B1b r2), at the lane gate's settings. Retained channel: the lane's step + one
+    // retained [i] per call (torture C1 / harness ctl-box shape). Transient channel: the step + a fresh [i]
+    // every 8th call into a heap slot (never a local), overwritten so it dies young: an all-surviving box can
+    // be pretenured out of new space and read clean (r1 flake: excess -32), and an every-call box (2 MB per
+    // window) scavenges a 2 MB new space every window (null). Cold.
+    function boxControl(step, w) {
+        const hold = [];
+        const fn = function box(i) { step(i); hold.push([i]); };
+        const ma = measureAllocs(fn, { iterations: Math.max(4096, (MA_ITER / w) | 0), batches: MA_BATCHES });
+        hold.length = 0;
+        const slot = [null];
+        const fnT = function boxT(i) { step(i); if ((i & 7) === 0) slot[0] = [i]; };
+        const ns = nsExcess(fnT, null);
+        slot[0] = null;
+        const retained = ma.bytesPerCall;
+        const excess = ns === null ? null : ns.excess;
+        return { retained, excess, flipped: retained !== null && Math.round(retained) >= 1 && nsBox(excess) };
+    }
+    // CR-gcKick: the step + ONE globalThis.gc() (a full GC) at op 8,192 inside gcLane's window. Cold.
+    async function gcKickControl(step) {
+        const kick = new Int32Array(1);
+        const fn = function gcKick(i) { step(i); if (i === 8192) { kick[0]++; globalThis.gc(); } };
+        const g = await gcLane(fn, 25000);
+        return { major: g.major, minor: g.minor, ok: g.ok, kicks: kick[0], flipped: !g.ok && g.major >= 1 && kick[0] === 1 };
     }
     function finishCycle(l) {
         let guard = 0;
@@ -608,7 +707,8 @@ function makeMeasure(lib) {
             : 'hits ' + hits + '/' + L + (l.work === 'successor' || l.work === 'predecessor' ? (varied ? ', varied' : ', CONSTANT') : '');
         if (got !== want) return { ok: false, reason: 'SINK delta ' + got + ' != oracle ' + l.work + ' ' + want + ' (' + info + ')' };
         const informative = l.work === 'add' ? hi > s0 : l.work === 'delete' ? lo < s0
-            : L === 1 ? hits === 1 : l.work === 'has' ? hits > 0 && hits < L : hits > 0 && varied;
+            : L === 1 ? hits === 1 : l.work === 'has' ? hits > 0 && hits < L
+                : hits > 0 && varied && want !== 0 && want !== ((7 * L) | 0);
         if (!informative) return { ok: false, reason: 'uninformative cycle (' + info + ')' };
         return { ok: true, reason: info };
     }
@@ -634,16 +734,12 @@ function makeMeasure(lib) {
             res.nsWin0 = ns === null ? null : ns.first;
             res.nsValid = ns === null ? null : ns.valid;
             res.transientBpo = ns === null ? null : Math.max(0, ns.excess) / NS_K;
-            res.transientOk = ns !== null && ns.excess < NS_MAX_EXCESS;
+            res.transientOk = ns !== null && nsPass(ns.excess);
             const gcOps = Math.max(25000, (GC_OPS / l.w) | 0);
             const g = await gcLane(l.step, gcOps);
             res.gcOps = gcOps; res.gcMajor = g.major; res.gcMinor = g.minor; res.gcMaxMs = g.maxMs; res.gcOk = g.ok;
-            const moOps = Math.max(10000, (MO_OPS / l.w) | 0);
-            const mo = measureOps(l.step, { ops: moOps, warmup: Math.max(2500, (MO_WARM / l.w) | 0), stabilize: 'deep' });
-            const ab = mo.summary.arrayBuffers;
-            const abRep = checkNoGc(mo.summary, { maxArrayBuffersGrowth: 0 });
-            res.abOps = moOps; res.abGrowth = ab.growthBytes; res.abSettled = ab.settled === true;
-            res.abOk = abRep.verdict === 'pass' && ab.settled === true && ab.growthBytes === 0;
+            const ab = abLane(l.step, l.w);
+            res.abOps = ab.ops; res.abGrowth = ab.growth; res.abSettled = ab.settled; res.abOk = ab.ok;
             res.restoreOk = finishCycle(l);
             if (l.work === null) {
                 res.workOk = null;
@@ -663,7 +759,7 @@ function makeMeasure(lib) {
                 res.edgesOk = e.missing.length === 0 && e.back;
             }
             res.ok = res.pagedOk && res.retainedOk && res.transientOk && res.gcOk && res.abOk && res.restoreOk && res.kindsOk &&
-                res.edgesOk !== false && res.workOk !== false && res.optOk !== false;
+                res.edgesOk !== false && (l.work === null ? res.workOk === null : res.workOk === true) && res.optOk !== false;
         } catch (e) {
             res.error = String(e && e.message || e);
             res.ok = false;
@@ -674,7 +770,7 @@ function makeMeasure(lib) {
     // hi controls: transient channel only (CV7's shape), same per-lane baseline.
     function measureHi(l) {
         const t0 = performance.now();
-        const res = { name: l.name, op: l.op, pagedOk: l.pagedOk };
+        const res = { name: l.name, op: l.op, pagedOk: l.pagedOk, newSpaceSize: newSpaceSize() };
         try {
             const opt = optStatus === null ? null : { before: 0, after: 0 };
             const ns = nsExcess(l.step, opt);
@@ -686,14 +782,18 @@ function makeMeasure(lib) {
             res.transientBpo = ns === null ? null : Math.max(0, ns.excess) / NS_K;
             res.optOk = opt === null ? null : (opt.before & TF_BIT) !== 0 && (opt.after & TF_BIT) !== 0;
             res.restoreOk = finishCycle(l);
+            const wk = workCheck(l);
+            res.workOk = wk.ok;
+            res.workInfo = wk.reason;
         } catch (e) {
             res.error = String(e && e.message || e);
             res.nsExcess = null;
+            res.workOk = false;
         }
         res.ms = Math.round(performance.now() - t0);
         return res;
     }
-    return { nsLane, emptyFn, measure, measureHi };
+    return { nsLane, emptyFn, nsExcess, abLane, boxControl, gcKickControl, measure, measureHi };
 }
 
 // A rejected baseline (null transient) prints the base it read: ' BASE-REJECTED <B> > NS_BASE_MAX'. Cold.
@@ -739,9 +839,118 @@ export function attributionLine(hi) {
         (sh === null ? 'n/a' : sh.predecessor.toFixed(3)) + ' x result = ' + pred(sh === null ? 0 : sh.predecessor) + ')';
 }
 
-/** Retention (PLAN-G5 task 4): lands in G5-B1b. null = not run (the caller FAILS on null). */
-function runRetention() {
-    return null;
+// ---- engine mutants (data: URLs; anchors count-checked, fail closed) -------------------
+
+const CR_CLASS = 'export class RoaringSet {\n';
+// has(): its header and the first 8 body lines (RoaringSet-only text: _mi / _kind; a second has(x) in the
+// class cannot be a pure insertion). Inject AFTER: the lo line is the last anchor line.
+const CR_HAS_ANCHOR = "    has(x) {\n        if (typeof x !== 'number' || (x >>> 0) !== x || x >= this._u) return false;\n" +
+    '        const c = x >>> 16;\n        const m = this._mi(c);\n        const k = this._kind[m];\n' +
+    '        if (k === 0) return false;\n        if (k === 6) return true;\n        const lo = x & 0xFFFF;\n';
+// add()'s array -> bitmap promote call site (hot body; must sit inside RoaringSet's add()). Inject BEFORE.
+const CR_CONV_ANCHOR = '            this._promoteArrayToBitmap(m, slot, lo);\n            this._size++;\n';
+const CR_ADD_HEAD = '\n    add(x) {\n';
+const CR_DEL_HEAD = '\n    delete(x) {\n';
+const CR_TAIL = '\nlet __crHas = null;\nlet __crConv = null;\nconst __crHold = [];\n';
+export const CR_MUTANTS = Object.freeze({
+    'CR-has': { anchor: CR_HAS_ANCHOR, at: 'has', inject: '        __crHas = [c, lo];\n' },
+    'CR-conv': { anchor: CR_CONV_ANCHOR, at: 'add', inject: '            __crConv = new Uint32Array(64);\n' },
+    'CR-abConv': { anchor: CR_CONV_ANCHOR, at: 'add', inject: '            __crHold.push(new Uint32Array(64));\n' },
+});
+
+/** The mutant source { n, src } or { n, src: null, bad } (bad = why the control cannot run). Cold. */
+export function crSource(base, name) {
+    const m = CR_MUTANTS[name];
+    const cnt = (a) => base.split(a).length - 1;
+    const n = cnt(m.anchor);
+    if (n !== 1) return { n, src: null, bad: 'BAD anchor count ' + n + ' (want exactly 1)' };
+    if (cnt(CR_CLASS) !== 1) return { n, src: null, bad: 'BAD class anchor count ' + cnt(CR_CLASS) };
+    if (cnt('__cr') !== 0) return { n, src: null, bad: 'BAD the source already names __cr' };
+    const cls = base.indexOf(CR_CLASS);
+    const at = base.indexOf(m.anchor);
+    if (m.at === 'has' && !(at > cls)) return { n, src: null, bad: 'BAD has anchor at ' + at + ' before the class (' + cls + ')' };
+    if (m.at === 'add') {
+        const addAt = base.indexOf(CR_ADD_HEAD, cls);
+        const delAt = addAt < 0 ? -1 : base.indexOf(CR_DEL_HEAD, addAt);
+        if (!(addAt > cls && at > addAt && delAt > at)) {
+            return { n, src: null, bad: 'BAD anchor at ' + at + ' not inside RoaringSet add() (' + addAt + '..' + delAt + ')' };
+        }
+    }
+    const cut = m.at === 'has' ? at + m.anchor.length : at;
+    return { n, src: base.slice(0, cut) + m.inject + base.slice(cut) + CR_TAIL, bad: null };
+}
+
+// ---- retention (PLAN-G5 task 4; torture T2 shape) ----------------------------------------
+
+// Module-level no-op cleanup + string tags: neither closes over a tracked target (held-value contract).
+const retNoop = () => {};
+function retTracker(createLeakTracker, name, box) {
+    return createLeakTracker({
+        name,
+        onLeak: () => { box.collected++; },
+        onError: (e) => { box.leaks.push(String(e)); },
+        onWarning: (w) => { box.warns.push(w.kind + ':' + w.reason); },
+    });
+}
+// Own frame (torn down before the drain): conservative stack scanning would pin the last instance.
+function retChurn(RoaringSet, pg, wantPaged, tracker, held) {
+    let tracked = 0, mismatch = 0, dumpBad = 0;
+    for (let i = 0; i < RET_CYCLES; i++) {
+        const s = pg === null ? new RoaringSet(1 << 20, 2, 1) : new RoaringSet(1 << 20, 2, 1, pg.maxPages, pg.pageBits);
+        if (!pagedMatch(s, wantPaged)) mismatch++;
+        const a = i & 0xFFFF;
+        for (let k = 0; k < 70; k++) s.add((a + k * 7) & 0xFFFF);      // small -> array (65th key, large slot)
+        s.add(65536 + a);                                               // a SINGLE in chunk 1
+        s.has(a); s.successor(a); s.predecessor(0xFFFF - a); s.min(); s.max(); s.runOptimize(); s.delete(a);
+        const d = s.dump();
+        if (d.size !== 70 || d.chunks.length !== 2) dumpBad++;
+        tracker.track(s, retNoop, 'roaringset', { audit: true });
+        tracker.track(d, retNoop, 'roaringset.dump', { audit: true });
+        tracked += 2;
+        if (held !== null) held.push(s, d);
+    }
+    return { tracked, mismatch, dumpBad };
+}
+async function retDrain(tracker) {
+    let live = tracker.size();
+    for (let g = 0; g < 20 && live > 0; g++) { globalThis.gc(); await settle(25); live = tracker.size(); }
+    return live;
+}
+/** Retention + its CR-retain control. Cold. */
+async function runRetention(RoaringSet, job, wantPaged) {
+    const t0 = performance.now();
+    const { createLeakTracker } = await import('@zakkster/lite-leak');
+    const box = { collected: 0, leaks: [], warns: [] };
+    const tracker = retTracker(createLeakTracker, 'roaring-retention', box);
+    const ch = retChurn(RoaringSet, job.paged, wantPaged, tracker, null);
+    const live = await retDrain(tracker);
+    const findings = tracker.audit();
+    globalThis.gc();
+    await settle(25);
+    const after = tracker.size();
+    const want = 2 * RET_CYCLES;
+    const r = { layout: wantPaged ? 'paged' : 'direct', paged: job.paged === null ? null : { maxPages: job.paged.maxPages, pageBits: job.paged.pageBits },
+        cycles: RET_CYCLES, tracked: ch.tracked, size: live, after, sizeAfterGc: after, collected: box.collected, findings: findings.length,
+        findingKinds: findings.map((x) => x.kind + ':' + x.reason), warnings: box.warns.length, leaks: box.leaks.length,
+        pagedMismatch: ch.mismatch, dumpBad: ch.dumpBad };
+    r.ok = r.tracked === want && live === 0 && after === 0 && box.collected === want && findings.length === 0 &&
+        box.leaks.length === 0 && ch.mismatch === 0 && ch.dumpBad === 0;
+    // CR-retain: the same churn, every instance + dump also held past the drain
+    const boxC = { collected: 0, leaks: [], warns: [] };
+    const trackerC = retTracker(createLeakTracker, 'roaring-retention-control', boxC);
+    const held = [];
+    retChurn(RoaringSet, job.paged, wantPaged, trackerC, held);
+    const liveC = await retDrain(trackerC);
+    held.length = 0;
+    const ctl = { name: 'CR-retain', family: 'retention', lanes: [], value: liveC, want: 'size >= 1 after the drain (all held)',
+        flipped: Number.isInteger(liveC) && liveC >= 1, detail: 'size ' + liveC + '/' + want + ' held' };
+    r.ms = Math.round(performance.now() - t0);
+    return { retention: r, control: ctl };
+}
+
+function ctlLine(c) {
+    return 'control ' + c.name.padEnd(23) + ' value=' + (typeof c.value === 'object' && c.value !== null ? JSON.stringify(c.value) : String(c.value)) +
+        ' want ' + c.want + (c.detail ? ' (' + c.detail + ')' : '') + ' | ' + (c.flipped ? 'flipped' : 'DID NOT FLIP: FAIL');
 }
 
 async function runJob(job) {
@@ -784,7 +993,7 @@ async function runJob(job) {
     const probeSc = script([[OP_HAS, 0]]);
     const probe = new mod.RoaringSet(1 << 16, 1, 1);
     const plantDup = dupSources([makeStep(probe, null, probeSc.ops, probeSc.keys, SINK), makeStep(probe, null, probeSc.ops, probeSc.keys, SINK)]);
-    const controls = [{ name: 'CR-dupSrc', value: plantDup, want: 'exactly 1', flipped: plantDup === 1 }];
+    const controls = [{ name: 'CR-dupSrc', family: null, lanes: [], value: plantDup, want: 'exactly 1', flipped: plantDup === 1, detail: '' }];
 
     const lib = { measureAllocs, measureOps, GcProfiler, checkNoGc, getHeapSpaceStatistics, GCProfiler, optStatus, SINK };
     const M = makeMeasure(lib);
@@ -803,10 +1012,93 @@ async function runJob(job) {
         for (const r of hl) {
             const boxes = r.op !== 'has';
             r.want = boxes ? 'excess >= ' + NS_MAX_EXCESS : 'excess < ' + NS_MAX_EXCESS;
-            r.ok = !r.error && r.pagedOk && r.restoreOk === true && r.nsExcess !== null && r.optOk !== false &&
-                (boxes ? r.nsExcess >= NS_MAX_EXCESS && shareOk : r.nsExcess < NS_MAX_EXCESS);
+            r.ok = !r.error && r.pagedOk && r.restoreOk === true && r.workOk === true && r.optOk !== false &&
+                (boxes ? nsBox(r.nsExcess) && shareOk : nsPass(r.nsExcess));
         }
         hiRes = { lanes: hl, share, shareOk, ok: hl.every((r) => r.ok) };
+    }
+
+    // ---- controls (run last: their closures must not pollute the measured lanes' feedback) ----
+    const fam = new Set(job.families);
+    const laneFams = job.families.filter((f) => f !== 'retention');
+    // CR-limit: the predicates at the limit (W2: a '<=' / '>' mutant of either flips it)
+    const lim = nsPass(NS_MAX_EXCESS - 1) && !nsPass(NS_MAX_EXCESS) && nsBox(NS_MAX_EXCESS) && !nsBox(NS_MAX_EXCESS - 1) &&
+        !nsPass(null) && !nsPass(NaN) && !nsBox(null) && !nsBox(NaN);
+    controls.push({ name: 'CR-limit', family: null, lanes: [], value: lim, want: 'true (nsPass 1023, !nsPass 1024, nsBox 1024, !nsBox 1023, null / NaN neither)',
+        flipped: lim === true, detail: '' });
+    if (laneFams.length > 0) {
+        // CR-paged: the first lane family rebuilt with the INVERTED wantPaged (W3: a build that stops checking flips it)
+        const inv = buildLanes(mod.RoaringSet, { src: job.src, families: [laneFams[0]], paged: job.paged }, SINK, BODY, true);
+        const invAll = inv.lanes.concat(inv.hi);
+        const nOk = invAll.filter((l) => l.pagedOk !== false).length;
+        controls.push({ name: 'CR-paged', family: laneFams[0], lanes: invAll.map((l) => l.name), value: nOk,
+            want: '0 of ' + invAll.length + ' lanes pagedOk under the inverted layout', flipped: invAll.length > 0 && nOk === 0,
+            detail: 'wantPaged ' + inv.wantPaged + ', built paged ' + (invAll.length > 0 ? invAll[0].set.paged : 'n/a') });
+        // CR-box per lane family
+        for (const f of laneFams) {
+            const l = f === 'hi' ? hi[0] : lanes.find((x) => familyOf(x) === f);
+            const b = M.boxControl(l.step, l.w === undefined ? 1 : l.w);
+            controls.push({ name: 'CR-box.' + f, family: f, lanes: [l.name], value: { retained: b.retained, excess: b.excess },
+                want: 'round(retained) >= 1 B/call and excess >= ' + NS_MAX_EXCESS, flipped: b.flipped,
+                detail: 'retained ' + fmtN(b.retained, 1) + ' B/call, excess ' + fmtN(b.excess, 0) + ' B/' + NS_K });
+        }
+        // CR-gcKick on the job's first lane
+        const kl = lanes.length > 0 ? lanes[0] : hi[0];
+        const k = await M.gcKickControl(kl.step);
+        controls.push({ name: 'CR-gcKick', family: familyOf(kl.group === undefined ? { group: 'hi' } : kl), lanes: [kl.name],
+            value: k.major, want: 'major >= 1, gc not ok, kicks 1', flipped: k.flipped,
+            detail: 'major ' + k.major + ' minor ' + k.minor + ' kicks ' + k.kicks + ' ok ' + k.ok });
+    }
+    // engine mutants of the engine under test, each rebuilt and measured on its channel only
+    const MUT = [];
+    if (fam.has('ops')) MUT.push({ name: 'CR-has', fam: 'ops', targets: ['small.has', 'array.has', 'bitmap.has', 'runs.has'], ch: 'transient' });
+    if (fam.has('gap')) MUT.push({ name: 'CR-has', fam: 'gap', targets: ['gap.has'], ch: 'transient' });
+    if (fam.has('hi')) MUT.push({ name: 'CR-has', fam: 'hi', targets: ['hi.has'], ch: 'transient' });
+    if (fam.has('conv')) {
+        MUT.push({ name: 'CR-conv', fam: 'conv', targets: ['conv.4096<->4097'], ch: 'transient' });
+        MUT.push({ name: 'CR-abConv', fam: 'conv', targets: ['conv.4096<->4097'], ch: 'ab' });
+    }
+    if (MUT.length > 0) {
+        const base = job.src !== null ? job.src : readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
+        for (const m of MUT) {
+            const c = { name: m.name + (m.name === 'CR-has' ? '.' + m.fam : ''), family: m.fam, lanes: m.targets.slice(), value: null,
+                want: m.ch === 'ab' ? 'arrayBuffers growth > 0 on every target' : 'excess >= ' + NS_MAX_EXCESS + ' on every target',
+                flipped: false, detail: '', anchorCount: null };
+            const ms = crSource(base, m.name);
+            c.anchorCount = ms.n;
+            if (ms.src === null) { c.detail = ms.bad; controls.push(c); continue; }
+            let mm = null;
+            try {
+                mm = await import('data:text/javascript;base64,' + Buffer.from(ms.src, 'utf8').toString('base64'));
+            } catch (e) {
+                c.detail = 'BAD mutant import: ' + String(e && e.message || e);
+            }
+            if (mm !== null && typeof mm.RoaringSet !== 'function') { c.detail = 'BAD mutant has no RoaringSet export'; mm = null; }
+            if (mm === null) { controls.push(c); continue; }
+            const b = buildLanes(mm.RoaringSet, { src: null, families: [m.fam], paged: job.paged }, SINK, BODY);
+            const all = b.lanes.concat(b.hi);
+            const vals = [];
+            for (const name of m.targets) {
+                const l = all.find((x) => x.name === name);
+                if (l === undefined) { vals.push(null); continue; }
+                const w = l.w === undefined ? 1 : l.w;
+                const n = Math.max(8192, (WARM_CALLS / w) | 0);
+                for (let i = 0; i < n; i++) l.step(i);
+                if (m.ch === 'transient') { const ns = M.nsExcess(l.step, null); vals.push(ns === null ? null : ns.excess); }
+                else vals.push(M.abLane(l.step, w).growth);
+            }
+            c.value = vals.length === 1 ? vals[0] : vals;
+            c.flipped = vals.length === m.targets.length &&
+                (m.ch === 'ab' ? vals.every((v) => Number.isInteger(v) && v > 0) : vals.every(nsBox));
+            c.detail = 'anchor count ' + ms.n + '; ' + m.ch + ' ' + vals.map((v) => fmtN(v, 0)).join(' / ');
+            controls.push(c);
+        }
+    }
+    let retention = null;
+    if (fam.has('retention')) {
+        const rr = await runRetention(mod.RoaringSet, job, wantPaged);
+        retention = rr.retention;
+        controls.push(rr.control);
     }
 
     const lines = results.map(laneLine);
@@ -814,7 +1106,8 @@ async function runJob(job) {
         for (const r of hiRes.lanes) {
             lines.push('control ' + r.name.padEnd(23) + ' transient excess=' + fmtN(r.nsExcess, 0) + ' B/' + NS_K +
                 ' (' + fmtN(r.transientBpo, 3) + ' B/op, win0 ' + fmtN(r.nsWin0, 0) + ', valid ' + fmtN(r.nsValid, 0) +
-                ', base ' + fmtN(r.nsBase, 0) + ')' + baseNote(r) + ' want ' + r.want + ' paged=' + (r.pagedOk ? 'ok' : 'MISMATCH') +
+                ', base ' + fmtN(r.nsBase, 0) + ', newSpace ' + r.newSpaceSize + ')' + baseNote(r) + ' want ' + r.want +
+                ' paged=' + (r.pagedOk ? 'ok' : 'MISMATCH') + ' work=' + (r.workOk ? 'ok' : 'FAIL') + ' (' + r.workInfo + ')' +
                 ' opt=' + (r.optOk === null ? 'UNCHECKED' : r.optOk ? 'TF' : 'NOT-TURBOFAN') + ' ' + r.ms + ' ms' +
                 (r.error ? ' ERROR ' + r.error : '') + ' | ' + (r.ok ? 'ok' : 'FAIL'));
         }
@@ -824,12 +1117,19 @@ async function runJob(job) {
     }
     lines.push('selfcheck dupSrc=' + dupSrc + '/0 control CR-dupSrc=' + plantDup + ' (want 1) | ' +
         (dupSrc === 0 && plantDup === 1 ? 'ok' : 'FAIL'));
+    for (const c of controls) if (c.name !== 'CR-dupSrc') lines.push(ctlLine(c));
+    if (retention !== null) {
+        const r = retention;
+        lines.push('retention ' + r.layout + ' cycles=' + r.cycles + ' tracked=' + r.tracked + ' size=' + r.size + '/0 after=' + r.after +
+            ' collected=' + r.collected + '/' + r.tracked + ' findings=' + r.findings + ' warnings=' + r.warnings + ' leaks=' + r.leaks +
+            ' pagedMismatch=' + r.pagedMismatch + ' dumpBad=' + r.dumpBad + ' ' + r.ms + ' ms | ' + (r.ok ? 'ok' : 'FAIL'));
+    }
 
-    const retention = runRetention();   // B1b: a null retention goes into fail for the job that owns retention (r1 nit)
     const fail = results.filter((r) => !r.ok).map((r) => r.name);
     if (hiRes !== null) for (const r of hiRes.lanes) if (!r.ok) fail.push(r.name);
     if (dupSrc !== 0) fail.push('selfcheck dupSrc');
     for (const c of controls) if (!c.flipped) fail.push('control ' + c.name);
+    if (fam.has('retention') && (retention === null || retention.ok !== true)) fail.push('retention');
     return {
         NS_K, NS_W, NS_MAX_EXCESS,
         families: job.families.slice(), wantPaged, tf: optStatus === null ? 'UNCHECKED' : 'CHECKED',

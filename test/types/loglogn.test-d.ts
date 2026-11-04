@@ -1,13 +1,12 @@
 /**
  * @zakkster/lite-loglogn -- ambient type tests (tsc -p test/types/tsconfig.json).
  *
- * Exports: `VERSION` and the classes `StratifiedBitset`, `XFastTrie`, `YFastTrie` and
- * `vEBTree` (the first three with a dump snapshot interface). Each member session appends a type-level assertion block for its
- * class here. ASCII-only.
+ * Exports: `VERSION` and the classes `StratifiedBitset`, `XFastTrie`, `YFastTrie`, `vEBTree` and `RoaringSet`
+ * (the first three, and RoaringSet, with a dump snapshot interface). Each member session appends a type-level assertion block here. ASCII-only.
  */
 
-import { VERSION, StratifiedBitset, XFastTrie, YFastTrie, vEBTree } from '../../LogLogN.js';
-import type { StratifiedBitsetDump, XFastTrieDump, YFastTrieDump } from '../../LogLogN.js';
+import { VERSION, StratifiedBitset, XFastTrie, YFastTrie, vEBTree, RoaringSet } from '../../LogLogN.js';
+import type { StratifiedBitsetDump, XFastTrieDump, YFastTrieDump, RoaringSetDump, RoaringSetChunkDump } from '../../LogLogN.js';
 
 // VERSION is a string.
 const v: string = VERSION;
@@ -431,3 +430,164 @@ void vsb;
 // @ts-expect-error -- a vEBTree is not a YFastTrie (no capacity, no dump).
 const vyf: YFastTrie = vb;
 void vyf;
+
+// --- RoaringSet ---------------------------------------------------------------
+
+// Positional ctor: 1..5 numeric args.
+const r1 = new RoaringSet(1 << 20);
+const r2 = new RoaringSet(1 << 20, 16);
+const r3 = new RoaringSet(1 << 20, 16, 4);
+const r4 = new RoaringSet(1 << 20, 16, 4, 2);
+const r5 = new RoaringSet(1 << 20, 16, 4, 2, 8);
+const rs: RoaringSet = r1;
+void r2; void r3; void r4; void r5; void rs;
+// @ts-expect-error -- universe is required.
+new RoaringSet();
+// @ts-expect-error -- at most 5 arguments.
+new RoaringSet(1 << 20, 16, 4, 2, 8, 1);
+// @ts-expect-error -- universe is a number, not a string.
+new RoaringSet('1024');
+// @ts-expect-error -- maxSmall is a number, not a string.
+new RoaringSet(1024, '16');
+// @ts-expect-error -- maxLarge is a number, not a string.
+new RoaringSet(1024, 16, '4');
+// @ts-expect-error -- maxPages is a number, not a string.
+new RoaringSet(1024, 16, 4, '2');
+// @ts-expect-error -- pageBits is a number, not a string.
+new RoaringSet(1024, 16, 4, 2, '8');
+
+// Readonly accessors are numbers / boolean.
+const rsz: number = r1.size;
+const run: number = r1.universe;
+const rpg: boolean = r1.paged;
+const rbl: number = r1.byteLength;
+void rsz; void run; void rpg; void rbl;
+// @ts-expect-error -- size is readonly.
+r1.size = 1;
+// @ts-expect-error -- universe is readonly.
+r1.universe = 1;
+// @ts-expect-error -- paged is readonly.
+r1.paged = true;
+// @ts-expect-error -- byteLength is readonly.
+r1.byteLength = 1;
+// @ts-expect-error -- paged is a boolean, not a number.
+const rpn: number = r1.paged;
+void rpn;
+
+// Query shapes.
+const rh: boolean = r1.has(5);
+const rd: boolean = r1.delete(5);
+const rsu: number | undefined = r1.successor(5);
+const rpr: number | undefined = r1.predecessor(5);
+const rmin: number | undefined = r1.min();
+const rmax: number | undefined = r1.max();
+void rh; void rd; void rsu; void rpr; void rmin; void rmax;
+// @ts-expect-error -- successor may be undefined: not assignable to number without narrowing.
+const rsn: number = r1.successor(1);
+void rsn;
+// @ts-expect-error -- min may be undefined.
+const rmn: number = r1.min();
+void rmn;
+// @ts-expect-error -- has takes a number.
+r1.has('5');
+// @ts-expect-error -- delete returns boolean, not this.
+const rdt: RoaringSet = r1.delete(1);
+void rdt;
+
+// add / addRange / runOptimize return this (chainable); clear returns void.
+const ra: RoaringSet = r1.add(1);
+const rar: RoaringSet = r1.addRange(0, 10);
+const rro: RoaringSet = r1.runOptimize();
+const rch: RoaringSet = r1.add(1).addRange(2, 5).runOptimize();
+const rcl: void = r1.clear();
+void ra; void rar; void rro; void rch; void rcl;
+// A subclass keeps its type through the chainable calls (teeth for the `this` returns).
+class RSub extends RoaringSet { readonly tag = 1; }
+const rsub: RSub = new RSub(1 << 20).add(1).addRange(0, 2).runOptimize();
+void rsub;
+// @ts-expect-error -- add returns this, not boolean.
+const rab: boolean = r1.add(5);
+void rab;
+// @ts-expect-error -- addRange needs two bounds.
+r1.addRange(1);
+// @ts-expect-error -- clear returns void.
+const rcn: RoaringSet = r1.clear();
+void rcn;
+
+// Set ops take a RoaringSet and return boolean / number; a vEBTree is rejected.
+const rix: boolean = r1.intersects(r2);
+const ris: number = r1.intersectionSize(r2);
+const rus: number = r1.unionSize(r2);
+const rds: number = r1.differenceSize(r2);
+void rix; void ris; void rus; void rds;
+// @ts-expect-error -- intersects rejects a vEBTree.
+r1.intersects(vb);
+// @ts-expect-error -- intersectionSize rejects a vEBTree.
+r1.intersectionSize(vb);
+// @ts-expect-error -- unionSize rejects a vEBTree.
+r1.unionSize(vb);
+// @ts-expect-error -- differenceSize rejects a vEBTree.
+r1.differenceSize(vb);
+
+// dump: kind is exactly the literal union, chunks is readonly.
+const rdump: RoaringSetDump = r1.dump();
+const rdu: number = rdump.universe;
+const rdz: number = rdump.size;
+const rdp: boolean = rdump.paged;
+void rdu; void rdz; void rdp;
+const rcd: RoaringSetChunkDump = { chunk: 0, kind: 'single', count: 1, runs: 0 };
+const rkinds: RoaringSetChunkDump['kind'][] = ['single', 'small', 'array', 'bitmap', 'runs', 'smallRuns', 'full'];
+void rcd; void rkinds;
+// Every literal is in the union, and the union has no other member (exhaustive switch).
+function rkindId(k: RoaringSetChunkDump['kind']): number {
+  switch (k) {
+    case 'single': return 0;
+    case 'small': return 1;
+    case 'array': return 2;
+    case 'bitmap': return 3;
+    case 'runs': return 4;
+    case 'smallRuns': return 5;
+    case 'full': return 6;
+    default: { const never: never = k; return never; }
+  }
+}
+void rkindId;
+// @ts-expect-error -- 'sparse' is not a container kind.
+const rbad: RoaringSetChunkDump['kind'] = 'sparse';
+void rbad;
+const rwide: string = 'array';
+// @ts-expect-error -- kind is a literal union: a plain string is not assignable.
+const rnarrow: RoaringSetChunkDump['kind'] = rwide;
+void rnarrow;
+// @ts-expect-error -- chunks is readonly: no push.
+rdump.chunks.push(rcd);
+// @ts-expect-error -- chunks is a readonly property.
+rdump.chunks = [];
+// @ts-expect-error -- chunk entries are readonly.
+rdump.chunks[0].count = 1;
+// @ts-expect-error -- kind is readonly.
+rcd.kind = 'full';
+// @ts-expect-error -- dump fields are readonly.
+rdump.size = 1;
+
+// No forEach, iterator, rank, select, successorInto or static KNOBS.
+// @ts-expect-error -- no forEach.
+r1.forEach(() => {});
+// @ts-expect-error -- not iterable.
+for (const k of r1) void k;
+// @ts-expect-error -- no rank.
+r1.rank(5);
+// @ts-expect-error -- no select.
+r1.select(5);
+// @ts-expect-error -- no successorInto.
+r1.successorInto(5, new Float64Array(1));
+// @ts-expect-error -- no static KNOBS.
+void RoaringSet.KNOBS;
+
+// Distinct from vEBTree in both directions.
+// @ts-expect-error -- a RoaringSet is not a vEBTree (no bits).
+const rvb: vEBTree = r1;
+void rvb;
+// @ts-expect-error -- a vEBTree is not a RoaringSet (no paged, addRange, runOptimize, set ops, dump).
+const rvr: RoaringSet = vb;
+void rvr;

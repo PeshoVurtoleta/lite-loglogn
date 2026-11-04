@@ -2,7 +2,7 @@
  * @zakkster/lite-loglogn -- ambient type surface.
  *
  * Hand-written to mirror EXACTLY the runtime exports of LogLogN.js: `VERSION`
- * and the classes `StratifiedBitset`, `XFastTrie`, `YFastTrie` and `vEBTree`. The three-place version sync
+ * and the classes `StratifiedBitset`, `XFastTrie`, `YFastTrie`, `vEBTree` and `RoaringSet` (with the chunk and dump snapshot interfaces `RoaringSetChunkDump`, `RoaringSetDump`). The three-place version sync
  * (package.json / LogLogN.js VERSION / llms.txt) is gated by test/QaAudit.test.js. One ambient declaration
  * block per member is appended below as each member ships. ASCII-only.
  *
@@ -336,4 +336,158 @@ export class vEBTree {
 
     /** Cold. Removes every key and restores the constructed (empty) state. */
     clear(): void;
+}
+
+/** One live chunk in `RoaringSet#dump()`. */
+export interface RoaringSetChunkDump {
+    /** Chunk index c = key >>> 16. */
+    readonly chunk: number;
+    /** Container kind (names, not the internal kind ids). */
+    readonly kind: 'single' | 'small' | 'array' | 'bitmap' | 'runs' | 'smallRuns' | 'full';
+    /** Keys in the chunk, 1..65536. */
+    readonly count: number;
+    /** Runs held for 'runs' / 'smallRuns', else 0. */
+    readonly runs: number;
+}
+
+/** The snapshot returned by `RoaringSet#dump()`. */
+export interface RoaringSetDump {
+    readonly universe: number;
+    readonly size: number;
+    readonly paged: boolean;
+    /** Live chunks, ascending. */
+    readonly chunks: readonly RoaringSetChunkDump[];
+}
+
+/**
+ * RoaringSet -- a compressed ordered set over a FIXED universe [0, U), 1 <= U <= 2^32,
+ * Roaring-style: the key space splits into 2^16-key chunks, each held by the
+ * smallest fitting container -- SINGLE (1 key, 0 B), small array (2..64 keys,
+ * 128 B small slot), array (up to 4,096 keys, 8 KB large slot), bitmap (8 KB +
+ * a 66-word summary), runs (8 KB large slot), small runs (<= 32 runs, 128 B small
+ * slot), FULL (all 65,536 keys, 0 B). Promote / demote use hysteresis (a small
+ * array moves to a large slot at its 65th key; a large-slot array returns to a
+ * small slot when a delete leaves <= 32 keys and a small slot is free; an
+ * array promotes to a
+ * bitmap at its 4,097th key, a bitmap demotes when a delete leaves 2,048). A
+ * three-level top pyramid over the chunks (2,115 words) answers next / previous
+ * live chunk; per-chunk [min, max] headers answer min / max and cross-chunk
+ * successor / predecessor without a container search.
+ *
+ * SPACE is fixed at construction: every pool is preallocated and NEVER grows.
+ * The chunk table is DIRECT (11 B per chunk) or PAGED (a directory plus pooled
+ * 2^pageBits-row pages, 11 B per row, page 0 a shared zero page), chosen once
+ * at construction; `paged` reports it. byteLength (direct) =
+ * 8,460 + 11 C + 130 maxSmall + 8,456 (maxLarge + 1) + 2 maxLarge, C =
+ * ceil(U / 65536); paged replaces 11 C by 11 (maxPages + 1) 2^pageBits +
+ * 2 ceil(C / 2^pageBits) + 4 maxPages + 2. Examples (U = 2^32): default pools,
+ * direct 3,036,180; maxSmall 0 / maxLarge 1, direct 746,270, paged maxPages 1
+ * 31,524.
+ *
+ * Bounds (worst typed-array reads found by search (sweep + hill-climb; ADR 0010,
+ * gated by RoaringCount.test.js, reported as LOWER bounds)):
+ * has / successor / predecessor search 8 / 8 / 9 in a 64-key small array,
+ * 14 / 14 / 15 in a 4,096-key array, 25 / 25 / 27 halfwords in a 2,048-run list,
+ * 1 / 6 / 6 words in a bitmap; the next / previous live chunk <= 7 top words;
+ * min / max 5 reads (6 paged). A conversion is O(container): the worst single
+ * op is a run-split spill delete (8,288 reads) and the 4,097th array add (4,117
+ * reads, 2,184 writes, 2,114 moves).
+ *
+ * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
+ * (not a number, not an integer in [0, U)) touches nothing: has / delete ->
+ * false, successor / predecessor -> undefined, add -> RangeError. Absent =
+ * `undefined`. Pool exhaustion throws RangeError BEFORE any write (set
+ * unchanged), so `add` AND `delete` can throw on a valid key (a delete may need
+ * a slot: deleting from a FULL chunk, or splitting a small-runs run past 32 runs).
+ *
+ * Hot methods allocate 0 bytes for keys < 2^30. A returned key >= 2^31 on Node
+ * (>= 2^30 on Chrome / Electron, pointer-compressed) boxes as a HeapNumber when
+ * the returning call is not inlined. On V8 14.6 (Node v26.8.2) successor /
+ * predecessor are over the 460 B inlining limit (bytecode 621 / 759 B direct,
+ * 647 / 785 B paged before the P-5 shrink; ADR 0010), and the measured cost on keys in [2^31, 2^32) is
+ * successor ~32, predecessor ~32, min ~16, max ~16 B per call; has 0 from an
+ * inlined call site, ~16 B per call from a non-inlined one (the argument boxes;
+ * ADR 0010). The ~x figures are REPORTED (failing lanes, run-to-run jitter). That
+ * trace is scoped to that V8. For clustered data, see runOptimize / addRange.
+ */
+export class RoaringSet {
+    /**
+     * Positional arguments.
+     * @param universe integer in [1, 2^32]; otherwise throws RangeError
+     *   `[lite-loglogn] RoaringSet universe must be an integer in [1, 2^32]; got ...`.
+     * @param maxSmall small-slot pool (128 B data + 2 B free-list entry each), integer in [0, 65535]; default 1024.
+     * @param maxLarge large-slot pool (8 KB + 264 B each, plus one spare slab), integer in [1, 65534]; default 256.
+     * @param maxPages metadata pages, integer in [1, ceil(C / 2^pageBits)]; default (undefined) = all pages.
+     *   The layout is paged iff the paged table is smaller than the direct one at these knobs.
+     * @param pageBits rows per page = 2^pageBits, integer in [1, 15]; default 8.
+     *   Every bad knob throws RangeError `[lite-loglogn] RoaringSet <knob> must be ...; got ...`.
+     */
+    constructor(universe: number, maxSmall?: number, maxLarge?: number, maxPages?: number, pageBits?: number);
+
+    /** Number of keys present. */
+    readonly size: number;
+    /** The fixed universe U (keys are integers in [0, U)). */
+    readonly universe: number;
+    /** True iff the chunk table is paged (fixed at construction). */
+    readonly paged: boolean;
+    /** Bytes of every typed array owned (the class comment's formula). */
+    readonly byteLength: number;
+
+    /** True iff x is present. A bad key returns false. */
+    has(x: number): boolean;
+    /**
+     * Idempotent. Throws RangeError on a bad key, or `[lite-loglogn] RoaringSet <pool> container pool
+     * exhausted (capacity N); ...` / `... metadata page pool exhausted (maxPages N) ...` when the key needs a
+     * slot or page the pools no longer hold -- each with no state changed. Returns this.
+     */
+    add(x: number): this;
+    /**
+     * Adds every key in [lo, hi), 0 <= lo <= hi <= U (integers); lo === hi adds nothing. The set
+     * equals that of `add(x)` for each x in [lo, hi); each touched chunk ends in the container kind
+     * `runOptimize()` would choose for the final key set at the post-call pool state (fully covered chunks
+     * become FULL, 0 B). Precounts the
+     * slots and pages it needs and throws RangeError before any write if the pools cannot hold them (set
+     * unchanged); a bad bound throws RangeError with nothing touched. Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a non-inlined call site (as has). Returns this.
+     */
+    addRange(lo: number, hi: number): this;
+    /**
+     * True if x was present. A bad key returns false. Can throw RangeError (pool exhausted, set unchanged)
+     * on a present key: a delete from a FULL chunk takes a small slot, else a large one, and throws only
+     * when both pools are empty; a delete splitting a small-runs run past 32 runs needs a large slot.
+     */
+    delete(x: number): boolean;
+    /** Smallest key strictly greater than x, or undefined. */
+    successor(x: number): number | undefined;
+    /** Largest key strictly less than x, or undefined. */
+    predecessor(x: number): number | undefined;
+    /** Smallest key, or undefined if empty. */
+    min(): number | undefined;
+    /** Largest key, or undefined if empty. */
+    max(): number | undefined;
+
+    /**
+     * Cold, O(live chunks). A 65,536-key chunk becomes FULL; an array with fewer runs than half its keys,
+     * or a bitmap with <= 2,047 runs, becomes runs (small runs when <= 32 runs and a small slot is free);
+     * a runs slab of <= 32 runs moves to a small slot, else becomes an array when smaller. Other
+     * containers are kept. Never throws; allocates nothing (when the small pool is empty a
+     * small-runs candidate stays in a large slot). Returns this. See the class comment for the cadence.
+     */
+    runOptimize(): this;
+
+    /**
+     * Counting set ops, cold, O(chunks both sets hold). `other` must be a RoaringSet of the same
+     * universe (either layout, a direct x paged pair included; any pageBits): otherwise
+     * TypeError (not a RoaringSet) or RangeError (universe mismatch). Allocate nothing for counts < 2^30;
+     * a count >= 2^31 on Node (>= 2^30 pointer-compressed) returns boxed (EXPECTED, not measured).
+     * Neither set changes.
+     */
+    intersects(other: RoaringSet): boolean;
+    intersectionSize(other: RoaringSet): number;
+    unionSize(other: RoaringSet): number;
+    differenceSize(other: RoaringSet): number;
+
+    /** Cold. Removes every key and restores the constructed (empty) state. Allocates nothing. */
+    clear(): void;
+    /** Cold, allocating. A fresh snapshot independent of later mutation. */
+    dump(): RoaringSetDump;
 }

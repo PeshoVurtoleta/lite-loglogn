@@ -343,6 +343,9 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
+        R0 RoaringSet research + measurement  <-- 1+ sessions, research copies only (section 10)
+                 |
+                 v
               Demo  (once 3-4 members exist)
                  |
                  v
@@ -364,6 +367,15 @@ Blockers, precisely:
 - **YFastTrie depends on XFastTrie** (it wraps an x-fast trie over O(n/w) representatives).
 - **Demo and Benchmark-ADOPT wait until 3-4 members exist** so the witness comparison
   and the space dial have range.
+- **Research handshake (maintainer, 2026-11-04).** The next unit is R0, RoaringSet research +
+  measurement (section 10), and it comes BEFORE Demo. After Demo, the same step becomes a standing
+  routine before every new member.
+  - **Form:** one or more research + measurement sessions. They build the best-version draft in a
+    research copy and compare it with the sibling members. They measure counts, space, allocation,
+    bytecode and REPORTED timings, and end with a decision sheet.
+  - **Handshake:** the maintainer agrees on that draft before the member's planner runs.
+  - **Limits:** nothing enters LogLogN.js during research. The quiet-lock and provenance rules apply
+    to every timing.
 
 ---
 
@@ -909,8 +921,8 @@ byte-identical. Order and space bound stated up front on each:
 - **RoaringSet** (v0.7.0) -- the PRACTICAL space-adaptive set: partition the 32-bit universe
   into 2^16 chunks, each stored as whichever container is smallest (sorted Uint16 / bitset /
   run-length). The real-world workhorse; the adaptivity is the teaching beat. `has` is
-  bounded O(log), not O(1): array containers are binary-searched, at most 12 probes over
-  4,096 entries (amended 2026-10-20). `successor` is O(log); with the summary pyramid of
+  bounded O(log), not O(1): array containers are binary-searched, at most 13 probes plus one
+  confirm read (14 reads) over 4,096 entries (corrected 2026-11-04, RESEARCH.md 12.11). `successor` is O(log); with the summary pyramid of
   section 10 it is a bounded walk. Design notes: section 10 here and RESEARCH.md section 12.
 - **Sibling dependency rule (maintainer, 2026-10-22).** lite-o1, lite-logn, lite-adaptive,
   lite-filter and lite-sketch are finished packages meant to improve every module. Use them at
@@ -1076,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED, not scheduled]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [PROPOSED; R0 research + measurement scheduled before Demo, 2026-11-04]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1161,6 +1173,50 @@ which fits this family's bounded-in-U theme (section 2).
   cost model, count gate, torture lanes and the 14.8 sweep re-run on three columns. After 0.5.0; not scheduled.
   Related, feature-on-request only: `clearRange` / `addRange` (no allocation, no path stack needed).
 
+**Amendments (2026-11-04, the first full draft; RESEARCH.md 12.11 / 12.12):**
+- **A full draft exists and is reviewed** (maintainer-written). The research copy is in `.handoff/research/roaring/`: the original, the fixed copy and a differential fuzz.
+  - Two bugs are fixed there: the bitmap -> array demotion count, and the bitmap x bitmap summary.
+  - Five improvements are applied there too.
+  - Nothing is in LogLogN.js.
+- **The draft settles four decisions by construction.** They remain the maintainer's calls, and R0 measures each against its alternative:
+  - D-R1 (b): a direct chunk table, 458,752 B of metadata at 2^32 with the set empty (2,774,060 B total `byteLength` with the default pools);
+  - D-R2: yes;
+  - D-R3: fixed pools with no growth;
+  - D-R4: runs in R1, plus `runOptimize`.
+- **Bounds corrected (computed).**
+  - full array 14 reads (13 probes + 1 confirm); runs 13; small array 8;
+  - bitmap successor <= 6 words; top next-chunk <= 7 words; min / max 4 after the fix.
+  - EXPECTED until R0's count gate.
+- **Candidate changes for R0** to prototype and measure (12.12 ranking):
+  - (1) run containers of <= 32 runs in the 128 B small pool, plus a full-chunk form;
+  - (2) a singleton kind (the low 16 bits in `_slot`, 0 B of pool) and smaller small-array size classes;
+  - (3) the two-level 11 / 11 paged chunk table;
+  - (4) per-chunk [min, max] headers (the S-H1 trade);
+  - (5) promote / demote hysteresis (demote near 32 keys);
+  - (6) the bitmap summary built while the keys are set.
+- **Inputs for R2:**
+  - a rank count per 1,024 bits;
+  - in-word select by lookup table (RESEARCH.md 14.7);
+  - the cross-chunk prefix as a Fenwick tree (a tax on every add) or a cold `buildRank()` (freezes the set): maintainer call;
+  - writing set ops with lazy cardinality (a dirty bitset beside `_card`).
+- **Input for R3 / R4:** a private snapshot is a copy of the six typed arrays. The portable format stays R3.
+- **Open:**
+  - the version slot: the draft says 0.7.0; the v0.6.0 slot is free (section 7);
+  - the ADR number: the draft cites decisions/0010, which does not exist yet.
+
+**R0 -- research + measurement, before Demo (maintainer, 2026-11-04).** One or more sessions. Work only in research copies under `.handoff/research/roaring/`: no LogLogN.js edit, no planner. Every measured number goes to RESEARCH.md section 12 with provenance (date, host, load, Node, run count). Timings go through `quiet-lock` and are REPORTED.
+1. **Count gate prototype** (the VebCount Proxy technique) on the fixed draft: exact worst reads per op and container kind. It replaces every EXPECTED bound above.
+2. **Space tables** (`byteLength`):
+   - layouts: direct vs paged chunk table, each with and without the singleton / small-run kinds;
+   - sizes: n = 0 / 1e3 / 1e6, sparse / clustered / dense keys, at U = 2^20 and 2^32;
+   - beside StratifiedBitset, the PagedBitset sketch, lite-o1 BitSet (U <= 2^25) and YFastTrie.
+3. **Allocation:** 0 B/op on a warm pool for every op and for the conversion lane, using the torture method (lite-gc-profiler + lite-leak). Include the must-fail controls listed under Gates below.
+4. **Bytecode sizes** of the hot bodies, with the LiteUtils inlining / bytecode budget scripts (copied, never imported).
+5. **REPORTED timings** on the RESEARCH.md 14.8 shapes: the RoaringSet variants vs StratifiedBitset, vEBTree, YFastTrie and lite-o1 BitSet, interleaved A/B.
+6. **Each candidate change** above as its own variant copy, fuzzed with `roaring-fuzz.mjs` (targeted cases kept) and measured on 1-5.
+
+Output: the best-version draft, plus a decision sheet for the maintainer handshake. The sheet covers D-R1..D-R5, the candidate list, the R2 rank strategy, and the version slot and ADR. Only then the planner.
+
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane
   (array <-> bitmap <-> run, back and forth across 4,096) must also run at 0 B/op once warm.
@@ -1174,7 +1230,9 @@ which fits this family's bounded-in-U theme (section 2).
   max-single-op line. They are bounded but spiky, and never labelled O(1).
 
 **Not this:** 64-bit Roaring (an ART over the high 48 bits) is out of scope until SegmentedU
-settles the 32-bit ceiling. A lite-o1 member: the roster is closed. A RUNTIME dependency on lite-o1 or
+settles the 32-bit ceiling. JS numbers are exact to 2^53, so a JS "64-bit" form is 53-bit
+(2^37 chunks). It needs the paged chunk table first (RESEARCH.md 12.12 item 6). A 64-bit
+FastBit in this suite uses two Uint32 lanes, never BigInt / BigUint64Array on a hot path. A lite-o1 member: the roster is closed. A RUNTIME dependency on lite-o1 or
 lite-fastbit32 (amended 2026-10-22: devDependencies for oracles / foils / harness pieces, or an
 OPTIONAL caller-injected peer, are allowed and encouraged; the main file never imports one).
 

@@ -745,7 +745,7 @@ lite-o1 BitSet's existential summary (BITWISE 10.1 explains why this is exact fo
 
 | Op | Bound | Why |
 | --- | --- | --- |
-| `has` | bounded O(log): <= 16 key probes (or O(1) with a direct key table) + <= 12 inside an array container | never "O(1)" for the set as a whole |
+| `has` | bounded O(log): <= 16 key probes (or O(1) with a direct key table) + <= 14 reads inside a full array container (13 probes + 1 confirm; corrected 2026-11-04, 12.11) | never "O(1)" for the set as a whole |
 | `successor` / `predecessor` | bounded walk (nominal ~30 words) with 12.2; O(log) without it | independent of n either way |
 | `add` / `delete` | bounded, but up to a 4,096-entry shift in an array container, plus conversions | prints a max-single-op line |
 | `union` / `intersect` | O(containers + their sizes) | bulk, disclosed |
@@ -952,7 +952,7 @@ Bound corrections, computed. A lower bound over n entries is ceil(log2(n + 1)) p
 
 | target | probes | confirm | total | stated |
 | --- | --- | --- | --- | --- |
-| full array (4,096) | 13 | 1 | 14 | 12 (here in 12.3 and in ROADMAP section 7) |
+| full array (4,096) | 13 | 1 | 14 | 12 (12.3 and ROADMAP section 7; both corrected 2026-11-04) |
 | small array (64) | 7 | 1 | 8 | -- |
 | runs (2,048) | 12 | 1 | 13 | -- |
 
@@ -968,6 +968,78 @@ The draft settles D-R1 (b), D-R2, D-R3 (fixed pools) and D-R4 (runs in R1) by co
 - the cited decisions/0010, which does not exist yet.
 
 Sources (gitignored): `.handoff/research/roaring/` holds README.md, the original and fixed drafts, and `roaring-fuzz.mjs`. The original fails 5 / 6 targeted cases: 2 bugs plus 3 improvement checks. The fixed copy passes 6 / 6, and both pass the random scenarios.
+
+### 12.12 The draft against the sibling tiers, and what production hybrids add (2026-11-04, orchestrator)
+
+Desk research: library documentation, the Roaring papers and the draft's code. Nothing here is built or measured, beyond the `byteLength` figures, read from the fixed draft. Every gain is EXPECTED until the R0 session (ROADMAP section 10) measures it.
+
+**What the draft takes from each tier (12.10):**
+
+| tier | best part | in the draft |
+| --- | --- | --- |
+| FastBit32 | one-word idioms (`31 - clz32(v & -v)`, SWAR popcount) | yes, everywhere |
+| FastBit32 | `rank` / `select` | no (R2) |
+| FastBit1024 | 32 words + a summary word, incremental counts, walk only the active part | yes. The bitmap's 66-word summary is FastBit1024 grown one level. `_card` / `_size` are incremental. `clear()` and demotion walk only active parts. |
+| FastBit1024 | `_full` (next clear / acquire) | no. That is held for a consumer (15.2), and RoaringSet does not need it. |
+| lite-o1 BitSet | fixed-depth summary | yes, and better: the 4-level chunk pyramid is fully unrolled, with no `_s3` loop |
+| lite-o1 BitSet | bulk and / or / xor | counting forms only. The writing forms are missing (R2). |
+| StratifiedBitset | bounded successor AND predecessor, min / max | yes, at both levels. This is the edge over standard Roaring, which binary-searches a key list. |
+| StratifiedBitset | pruned intersects | yes, with the same honest bound (15.2). Inside two bitmaps, evens vs odds still reads every word. |
+
+**Lessons carried over from vEBTree (14.7 / 14.8):**
+- **(v1) Singletons need no container.** vEBTree's lazy min keeps a lone key out of the recursion. In the draft, a chunk with one key takes a 128 B small slot.
+  - At U = 2^32 with sparse random keys, almost every chunk holds one key: about 128 B per key, plus 7 B of chunk metadata.
+  - A "single" kind could keep the low 16 bits in `_slot` itself: 0 B of pool.
+  - Smaller small-array size classes (8 / 16 keys) are the general form (D-R3).
+- **(v2) [min, max] headers decide out-of-range queries in one read.** That was vEB's only read win over StratifiedBitset in 14.8. Applied per chunk, a bitmap's min / max would cost 1 read instead of up to 4.
+  - The cost: two compares per add, and a re-search when the min or max is deleted. This is the S-H1 trade.
+- **(v3) The 16 / 16 split.** vEBTree at w > 24 splits lo = 16, the same 2^16 chunk as Roaring, so the two layouts line up by design.
+- **(v4) Flat size tables.** vEBTree's `_g` per-width table is the model if RoaringSet adopts several pool size classes: one precomputed table of slab offsets, with no division on the hot path.
+
+**What production hybrids add, ranked by value for this design:**
+
+1. **Small run containers and a full-chunk form.**
+   - Lucene `IndexedDISI` has an ALL block for a full 65,536-key range.
+   - `RoaringDocIdSet` stores the complement as a short[] once a block holds more than 2^16 - 2^12 keys.
+   - The draft gives every run container an 8 KB slab, even a single run.
+   - Run containers of up to 32 runs fit the 128 B small slot. That covers full chunks, nearly full chunks and a few ranges.
+   - Clustered keys are the typical analytics shape, so this is the largest space win, and cheap: the run code exists.
+2. **A paged chunk table (D-R1).**
+   - Measured from the draft: the chunk metadata is 458,752 B at U = 2^32 with an empty set, and the default pools take the total `byteLength` to 2,774,060 B.
+   - ClickHouse keeps a cardinality of 32 or less as a plain set before switching to Roaring.
+   - The two-level 11 / 11 page table already recommended for PagedBitset (15.5) cuts the metadata floor to a few KB, for one extra read.
+   - It is also the prerequisite for any 53-bit form (item 6).
+3. **rank / select (R2).**
+   - Lucene DENSE blocks keep a rank entry every 512 bits, 8 to 12 bits recommended.
+   - For RoaringSet, a running count per 1,024 bits (one per L1 summary word) costs 128 B per bitmap and one +1 / -1 per add.
+   - In-word select is the one lookup table that pays (14.7).
+   - The cross-chunk prefix is the real cost. A Fenwick tree adds ~16 writes to every add. A cold `buildRank()` that freezes the set, as Lucene does on immutable segments, adds none. That is a maintainer call.
+4. **Writing set ops with lazy cardinality.**
+   - The Roaring paper (arXiv 1603.06549) cites a ~30 % slowdown from recounting bits after each bitmap union. Production code marks the count unknown (-1) and repairs it once at the end (CRoaring `roaring_bitmap_repair_after_lazy`).
+   - In the draft, that needs a dirty bitset beside `_card`, since a `Uint16Array` cannot hold -1.
+   - This becomes the R2 union / intersect / xor into a caller target.
+5. **Snapshot = memory layout.**
+   - Weaviate's roaring-set LSM strategy uses sroar, whose in-memory bytes are its on-disk bytes, so a load needs no decode.
+   - The draft already keeps every container in one ArrayBuffer plus five metadata typed arrays. A private snapshot is a copy of those, and a load is a copy back.
+   - The portable RoaringFormatSpec stays R3; the zero-copy view stays R4.
+6. **64-bit.**
+   - CRoaring's `roaring64` indexes the high 48 bits with an adaptive radix tree. That is a third-party claim (zroar), not checked in CRoaring's source.
+   - Java layers a sorted map over 32-bit bitmaps (Chambi, Lemire, Godin).
+   - In JS, numbers are exact to 2^53, so "64-bit" means 53 bits = 2^37 chunks. A direct table is impossible, so item 2 comes first.
+   - For a FastBit 64 in this suite: two `Uint32` lanes, never `BigInt` / `BigUint64Array` on a hot path. Each element read from a `BigUint64Array` is a BigInt, normally a heap object; V8 can sometimes avoid it, but no suite gate can prove that.
+
+**Smaller items:**
+- Build the bitmap summary while setting the 4,097 keys, instead of rescanning 2,048 words.
+- Add promote / demote hysteresis (12.11).
+- SIMD / WASM are out: single file, pure JS.
+
+**Sources:**
+- Lucene: [IndexedDISI](https://lucene.apache.org/core/api/core/org/apache/lucene/codecs/lucene90/IndexedDISI.html), [RoaringDocIdSet](https://lucene.apache.org/core/api/core/org/apache/lucene/util/RoaringDocIdSet.html), [SparseFixedBitSet](https://lucene.apache.org/core/api/core/org/apache/lucene/util/SparseFixedBitSet.html)
+- Weaviate: [roaringset package](https://pkg.go.dev/github.com/weaviate/weaviate/adapters/repos/db/lsmkv/roaringset), [sroar README](https://go-mod-viewer.appspot.com/github.com/weaviate/sroar@v0.0.0-20230210105426-26108af5465d/README.md)
+- ClickHouse: [bitmap functions](https://docs-content.clickhouse.tech/docs/en/sql-reference/functions/bitmap-functions)
+- Roaring papers: [lazy unions, arXiv 1603.06549](https://arxiv.org/pdf/1603.06549), [CRoaring, arXiv 1709.07821](https://arxiv.org/pdf/1709.07821v5), [64-bit Roaring (Chambi, Lemire, Godin)](https://r-libre.teluq.ca/930/1/Roaring64bits.pdf)
+- [zroar on CRoaring's 64-bit ART](https://ziggit.dev/t/zroar-serialized-roaring-bitmaps-in-zig-outperforms-croaring-2x-to-9x/17321)
+- All fetched 2026-11-04.
 
 ---
 

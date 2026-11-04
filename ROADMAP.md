@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1 landed, G2..G4 next (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1 + G2 landed, G3..G4 next (section 10)
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 engine core landed 2026-11-04; G2..G4 next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 engine core + G2 paging landed 2026-11-04; G3..G4 next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1250,7 +1250,12 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
 - G1 mutant suite done (2026-11-04): RoaringMutants, 47 fuzz rows + 6 contract rows, 49 / 53 killed, 4 reasoned
   equivalents, every anchor count 1, a non-parsing mutant fails as ABORT. G2 paging is written and reviewed clean
   in its code; it resumes after one doc-truth ruling (SPEC C-23).
-- Next: G2 paging (resumed with the torture / docs fix rounds); then G3 set ops + addRange, G4 shrink, then Demo.
+- G2 paging done (2026-11-04): the paged chunk table (a directory plus pooled 2^pageBits-row pages, chosen once by
+  the strict C-5 rule; default direct at every U) landed with the hot bodies byte-identical to G1; gated by
+  RoaringPagedSpace, RoaringDirectParity, RoaringPagedFuzz (page floors at the default budget, kind floors under
+  LOGLOGN_ROARING_FUZZ=full) and RoaringPagedMutants (26 / 26 killed). The RoaringSet torture worker (38 lanes)
+  landed beside it.
+- Next: G3 set ops + addRange, then G4 shrink, the torture wiring, docs and perf, then Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

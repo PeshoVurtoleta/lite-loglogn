@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 + G2 landed 2026-11-04, G3 done + G5 paged torture + G6 RoaringSet docs 2026-11-05; G4 next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 + G2 landed 2026-11-04, G3 done + G5 paged torture + G6 RoaringSet docs + audit F1 fix + G5-B4 lanes 2026-11-05; G4 next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1266,7 +1266,10 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   killed, 4 reasoned equivalents); torture runs every RoaringSet lane on both layouts (76 lanes, 13 jobs) plus a
   paged page-churn lane whose GC gate is major-0 only (pause REPORTED); README / llms RoaringSet sections are
   gated by DocSync from the engine (D-1).
-- Next: G4-B1 count ledger, G5-B4 set-op / addRange lanes, G7-B1 witness:roar, then the G4 shrink, then Demo.
+- Audit fix and G5-B4 (2026-11-05): addRange now ends every touched chunk in the kind runOptimize() would choose at
+  the post-call pool state (audit F1, engine post-pass; RoaringRange fixpoint gate). Torture gains the set-op,
+  mixed-pair and addRange lanes (93 lanes, 18 jobs, 19 controls; timed verdict pending a quiet window). G4-B1 count
+  ledger and G7-B1 witness:roar are parked with their fixes ruled. Next: those two, then the G4 shrink, then Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

@@ -3787,18 +3787,17 @@ export class RoaringSet {
     }
 
     /**
-     * Cold. The addRange head (G3-B3a entry; addRange takes it over): checks the bounds of [lo, hi) and runs the
-     * read-only precount, writing nothing. A bad bound (not a number, not an integer, not 0 <= lo <= hi <= U)
-     * throws RangeError before anything of the set is read; lo === hi returns before any shift (lo = 2^32
-     * would wrap to chunk 0). cF / a / cL / b below are the only lo / hi arithmetic: no helper receives lo or
-     * hi, only a chunk index and 16-bit offsets. Throws the page or container pool RangeError a write of
-     * [lo, hi) would hit, with the set unchanged. Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes
-     * at a non-inlined call site (as has).
+     * Adds every key in [lo, hi), 0 <= lo <= hi <= U (integers); lo === hi adds nothing. The set equals that of
+     * `add(x)` for each x in [lo, hi); each touched chunk ends in the container kind `runOptimize()` would choose
+     * for the final key set at the post-call pool state (fully covered chunks become FULL, 0 B). Precounts the
+     * slots and pages it needs and throws RangeError before any write if the pools cannot hold them (set
+     * unchanged); a bad bound throws RangeError with nothing touched. Allocates nothing for bounds < 2^30; a
+     * bound >= 2^31 boxes at a non-inlined call site (as has). Returns this.
      * @param {number} lo first key
      * @param {number} hi one past the last key
      * @returns {this}
      */
-    _rangePlan(lo, hi) {
+    addRange(lo, hi) {
         if (typeof lo !== 'number' || typeof hi !== 'number' || !Number.isInteger(lo) || !Number.isInteger(hi) ||
             !(lo >= 0) || !(lo <= hi) || !(hi <= this._u)) throwRRange(lo, hi, this._u);
         if (lo === hi) return this;
@@ -3807,6 +3806,13 @@ export class RoaringSet {
         const cL = (hi - 1) >>> 16;
         const b = (hi - 1) & 65535;
         this._rangePre(cF, a, cL, b);
+        // write pass (S-5), in the precount's order: every pop / page below was proven by _rangePre, so no throw
+        const pF = a !== 0 || (cF === cL && b !== 65535);
+        const pL = cL !== cF && b !== 65535;
+        const e = pL ? cL - 1 : cL;
+        for (let c = pF ? cF + 1 : cF; c <= e; c++) this._rangeFull(c);
+        if (pF) this._rangePart(cF, a, cF === cL ? b : 65535);
+        if (pL) this._rangePart(cL, 0, b);
         return this;
     }
 
@@ -3880,7 +3886,7 @@ export class RoaringSet {
             k = this._runs[m] === 31 && this._rangeNewRun(m, k0, a) === 1 &&
                 this._rangeScanR(m, k0, a, b) === 33 ? 4 : 5;
         } else if (k0 === 4) {
-            // a 2,049th run makes a bitmap, back to an array below 4,096 keys
+            // a 2,049th run makes a bitmap, back to an array at most 4,096 keys
             if (this._runs[m] === 2047 && this._rangeNewRun(m, k0, a) === 1) {
                 k = n <= 4096 ? 2 : 3;
             } else {
@@ -4012,6 +4018,221 @@ export class RoaringSet {
             throwRPool(both ? 'small/large' : 'large', both ? this._maxS + this._maxL : this._maxL);
         }
         return this._lFree[--this._lTop];
+    }
+
+    /**
+     * Cold, write pass (S-5). Chunk c, covered by the range (local span all of [0, 65535]) -> FULL: an empty chunk
+     * maps its page (paged; proven free by _rangePre) and sets its top bit; any other kind returns its old slot to
+     * its pool (small {1, 5}, large {2, 3, 4}). Headers [0, 65535]; size += 65536 - n0. FULL stays as it is.
+     */
+    _rangeFull(c) {
+        let m = this._mi(c);
+        const k0 = this._kind[m];
+        if (k0 === 6) return;
+        if (k0 === 0) {
+            m = this._pSh === 0 ? m : this._pageAcquire(c);
+            this._topSet(c);
+        } else if (k0 === 1 || k0 === 5) {
+            this._sFree[this._sTop++] = this._slot[m];
+        } else if (k0 !== 7) {
+            this._lFree[this._lTop++] = this._slot[m];
+        }
+        this._size += k0 === 0 ? 65536 : 65535 - this._card[m];
+        this._kind[m] = 6;
+        this._slot[m] = 0;
+        this._card[m] = 65535;
+        this._runs[m] = 0;
+        this._cMin[m] = 0;
+        this._cMax[m] = 65535;
+    }
+
+    /**
+     * Cold, write pass (S-5). Partial chunk c gets the local span [a, b] (0 <= a <= b <= 65535, not all of it):
+     * it ends in the kind _rangeKind predicts at this pool state (the precount's). E u [a, b] is built aside in
+     * _conv (sorted keys, (start, len - 1) run pairs, or a bitmap + its 66-word summary), then placed: a small
+     * kind copies into the chunk's own small slot or a popped one; a large kind takes _conv, and _conv becomes the
+     * chunk's old large slot or a popped one. The old slot of another class returns to its pool. Every pop goes
+     * through _rangeTakeS / _rangeTakeL (unreachable throws after _rangePre).
+     */
+    _rangePart(c, a, b) {
+        let m = this._mi(c);
+        const k0 = this._kind[m];
+        const k1 = this._rangeKind(m, k0, a, b, this._sTop);
+        if (k1 === 6) {
+            this._rangeFull(c);
+            return;
+        }
+        const n = this._rangeScanN(m, k0, a, b);
+        const slot = this._slot[m];
+        const n0 = k0 === 0 ? 0 : this._card[m] + 1;
+        const mn = k0 === 0 || a < this._cMin[m] ? a : this._cMin[m];
+        const mx = k0 === 0 || b > this._cMax[m] ? b : this._cMax[m];
+        if (k0 === 0) {
+            m = this._pSh === 0 ? m : this._pageAcquire(c);
+            this._topSet(c);
+        }
+        let runs = 0;
+        if (k1 === 7) {
+            // n = 1: an empty chunk + one key, or a SINGLE re-adding its own key
+            this._slot[m] = a;
+        } else {
+            const mode = k1 === 3 ? 2 : k1 === 4 || k1 === 5 ? 1 : 0;
+            const o = this._rangeWalk(m, k0, a, b, mode);
+            if (mode === 1) runs = (o >>> 1) - 1;
+            const c0 = k0 === 1 || k0 === 5 ? 1 : k0 === 2 || k0 === 3 || k0 === 4 ? 2 : 0;
+            if (k1 === 1 || k1 === 5) {
+                const s = c0 === 1 ? slot : this._rangeTakeS();
+                const sData = this._sData;
+                const lU16 = this._lU16;
+                const d = this._conv << 12;
+                const sb = s << 6;
+                for (let i = 0; i < o; i++) sData[sb + i] = lU16[d + i];
+                if (c0 === 2) this._lFree[this._lTop++] = slot;
+                this._slot[m] = s;
+            } else {
+                const s = this._conv;
+                this._conv = c0 === 2 ? slot : this._rangeTakeL();
+                if (c0 === 1) this._sFree[this._sTop++] = slot;
+                this._slot[m] = s;
+            }
+        }
+        this._kind[m] = k1;
+        this._card[m] = n - 1;
+        this._runs[m] = runs;
+        this._cMin[m] = mn;
+        this._cMax[m] = mx;
+        this._size += n - n0;
+    }
+
+    /**
+     * Cold. Writes E u [a, b] (E = row m's keys, kind k0) into _conv in ascending order: mode 0 sorted keys (u16),
+     * mode 1 (start, len - 1) run pairs (u16), mode 2 a bitmap (2,048 words) + its 66-word summary. Returns the
+     * u16 count written (mode 0: n, mode 1: 2r; mode 2: 0). The caller picked a mode whose result fits the slab.
+     */
+    _rangeWalk(m, k0, a, b, mode) {
+        const conv = this._conv;
+        const d = mode === 2 ? conv << 11 : conv << 12;
+        const slot = this._slot[m];
+        let o = 0;
+        let done = false;
+        if (mode === 2) {
+            if (k0 === 3) this._lU32.copyWithin(d, slot << 11, (slot << 11) + 2048);
+            else this._lU32.fill(0, d, d + 2048);
+        }
+        if (k0 === 7) {
+            if (slot >= a) {
+                o = this._rangePush(mode, d, o, a, b);
+                done = true;
+            }
+            o = this._rangePush(mode, d, o, slot, slot);
+        } else if (k0 === 1 || k0 === 2) {
+            const u16 = k0 === 1 ? this._sData : this._lU16;
+            const base = k0 === 1 ? slot << 6 : slot << 12;
+            const n0 = this._card[m] + 1;
+            for (let i = 0; i < n0; i++) {
+                const x = u16[base + i];
+                if (!done && x >= a) {
+                    o = this._rangePush(mode, d, o, a, b);
+                    done = true;
+                }
+                o = this._rangePush(mode, d, o, x, x);
+            }
+        } else if (k0 === 4 || k0 === 5) {
+            const u16 = k0 === 5 ? this._sData : this._lU16;
+            const base = k0 === 5 ? slot << 6 : slot << 12;
+            const nRuns = this._runs[m] + 1;
+            for (let r = 0; r < nRuns; r++) {
+                const s0 = u16[base + (r << 1)];
+                if (!done && s0 >= a) {
+                    o = this._rangePush(mode, d, o, a, b);
+                    done = true;
+                }
+                o = this._rangePush(mode, d, o, s0, s0 + u16[base + (r << 1) + 1]);
+            }
+        } else if (k0 === 3 && mode !== 2) {
+            const u32 = this._lU32;
+            const wb = slot << 11;
+            for (let w = 0; w < 2048; w++) {
+                const v = u32[wb + w] | 0;
+                if (v === 0) continue;
+                const x0 = w << 5;
+                if (!done && x0 + 31 >= a) {
+                    // the span goes before the first E key >= a: flush this word's keys below a first
+                    for (let t = v; t !== 0; t &= t - 1) {
+                        const x = x0 | (31 - Math.clz32(t & -t));
+                        if (x >= a) break;
+                        o = this._rangePush(mode, d, o, x, x);
+                    }
+                    o = this._rangePush(mode, d, o, a, b);
+                    done = true;
+                }
+                if (v === -1) {
+                    o = this._rangePush(mode, d, o, x0, x0 + 31);
+                } else {
+                    for (let t = v; t !== 0; t &= t - 1) o = this._rangePush(mode, d, o, x0 | (31 - Math.clz32(t & -t)), x0 | (31 - Math.clz32(t & -t)));
+                }
+            }
+        }
+        if (!done) o = this._rangePush(mode, d, o, a, b);
+        if (mode === 2) {
+            // the summary is a function of the words: bit w of L1 iff word w != 0, bit s of L2 iff L1 word s != 0
+            const u32 = this._lU32;
+            const sum = this._bSum;
+            const sBase = conv * 66;
+            let l2a = 0;
+            let l2b = 0;
+            for (let s1 = 0; s1 < 64; s1++) {
+                let m1 = 0;
+                const w0 = d + (s1 << 5);
+                for (let j = 0; j < 32; j++) if (u32[w0 + j] !== 0) m1 |= 1 << j;
+                sum[sBase + s1] = m1;
+                if (m1 !== 0) {
+                    if (s1 < 32) l2a |= 1 << s1;
+                    else l2b |= 1 << (s1 - 32);
+                }
+            }
+            sum[sBase + 64] = l2a;
+            sum[sBase + 65] = l2b;
+        }
+        return o;
+    }
+
+    /**
+     * Cold. Appends keys [s, e] (s >= every earlier s) to the _conv build at d, o u16 written so far; returns the
+     * new count. Mode 0: keys not yet written; mode 1: merges into the last run when s <= its end + 1; mode 2:
+     * sets the bits (order-free; returns 0).
+     */
+    _rangePush(mode, d, o, s, e) {
+        if (mode === 2) {
+            const u32 = this._lU32;
+            const ws = s >>> 5;
+            const we = e >>> 5;
+            if (ws === we) {
+                u32[d + ws] |= (-1 << (s & 31)) & (-1 >>> (31 - (e & 31)));
+            } else {
+                u32[d + ws] |= -1 << (s & 31);
+                for (let w = ws + 1; w < we; w++) u32[d + w] = 0xFFFFFFFF;
+                u32[d + we] |= -1 >>> (31 - (e & 31));
+            }
+            return 0;
+        }
+        const u16 = this._lU16;
+        if (mode === 1) {
+            if (o !== 0) {
+                const ls = u16[d + o - 2];
+                const le = ls + u16[d + o - 1];
+                if (s <= le + 1) {
+                    if (e > le) u16[d + o - 1] = e - ls;
+                    return o;
+                }
+            }
+            u16[d + o] = s;
+            u16[d + o + 1] = e - s;
+            return o + 2;
+        }
+        let x = o !== 0 && u16[d + o - 1] >= s ? u16[d + o - 1] + 1 : s;
+        for (; x <= e; x++) u16[d + o++] = x;
+        return o;
     }
 
     /** Cold, allocating. A fresh snapshot ({ universe, size, paged, chunks }) independent of later mutation. */

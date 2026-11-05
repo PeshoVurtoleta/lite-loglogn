@@ -2584,6 +2584,7 @@ async function main() {
     const R_CONTROLS = ['CR-dupSrc', 'CR-box', 'CR-has', 'CR-conv', 'CR-abConv', 'CR-gcKick', 'CR-retain', 'CR-pageMap',
         'CR-setops', 'CR-addRange', 'CR-rangeArr'];
     const R_HI_BOX = ['successor', 'predecessor', 'min', 'max'];
+    const R_CTL_WANT = 19;                      // literal pin: 11 R_CONTROLS + 2 layouts x 4 R_HI_BOX (G5-B4b M8)
     const R_HI_OPS = ['has', 'successor', 'predecessor', 'min', 'max'];
     const R_RET_CYCLES = 4096;
     const R_RET_TRACKED = 3 * R_RET_CYCLES;     // instance + its dump() + the addRange twin B per cycle (S-10)
@@ -2645,6 +2646,10 @@ async function main() {
         for (const c of consts) {
             if (c[1] !== c[2]) fails.push('R constant ' + c[0] + ': worker ' + c[1] + ' !== torture ' + c[2]);
         }
+        if (R_CONTROLS.length + 2 * R_HI_BOX.length !== R_CTL_WANT) {
+            fails.push('R control set: ' + R_CONTROLS.length + ' + 2 x ' + R_HI_BOX.length + ' !== pinned ' + R_CTL_WANT + ' -> FAIL');
+        }
+        if (new Set(R_CONTROLS).size !== R_CONTROLS.length) fails.push('R control set: duplicate name in R_CONTROLS -> FAIL');
         if (rw.RET_CYCLES !== R_RET_CYCLES) fails.push('R constant RET_CYCLES: worker ' + rw.RET_CYCLES + ' !== torture ' + R_RET_CYCLES);
         const fl = rw.FAMILY_LANES;
         if (fl === null || typeof fl !== 'object' || JSON.stringify(fl) !== JSON.stringify(R_FAMILIES)) {

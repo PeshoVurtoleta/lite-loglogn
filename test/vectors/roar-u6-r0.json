@@ -1,0 +1,4331 @@
+{
+ "fixture": "roar-u6-r0",
+ "about": "R0 unit U6 timing cells cut for the witness:roar digest parity gate (lite-loglogn 0.6.0 G7-B1). Per cell {w, n, op, columns[{label, ratioMedian}]}; SB-AA kept (the control filter input). Labels: the \"RoaringDraft.\" prefix stripped, as u6-digest.mjs prints them. golden = the stdout lines of `node u6-digest.mjs u6-best.json`. REPORTED-tier research numbers: a parity vector, never a claim.",
+ "provenance": {
+  "cutDate": "2026-11-05",
+  "cutBy": "G7-B1 TASK 0 (coder)",
+  "source": ".handoff/research/roaring/logs/u6-best.json",
+  "sha256_8": {
+   "timing-harness.mjs": "86c2597c",
+   "u6-digest.mjs": "95736b50",
+   "u6-best.json": "9f06d332"
+  },
+  "run": {
+   "date": "2026-11-04T06:40:43.729Z",
+   "node": "v26.8.2",
+   "v8": "14.6.202.34-node.28",
+   "K": 15,
+   "Q": 16384,
+   "lane": "low",
+   "libSha8": "55efef65",
+   "modules": [
+    {
+     "file": "RoaringDraft.fixed.mjs",
+     "sha8": "1799ce67"
+    },
+    {
+     "file": "RoaringDraft.vd.mjs",
+     "sha8": "13a5bd59"
+    },
+    {
+     "file": "RoaringDraft.best.mjs",
+     "sha8": "fd261191"
+    },
+    {
+     "file": "RoaringDraft.best-paged.mjs",
+     "sha8": "8a1b4667"
+    }
+   ],
+   "inconclusive": 8,
+   "exit": 0
+  }
+ },
+ "golden": [
+  "| op (cells) | vEB | YFT | BitSet | fixed | vd | best | best-paged |",
+  "| --- | --- | --- | --- | --- | --- | --- | --- |",
+  "| has (14) | 3.66 | 104.33 | 0.99 | 6.49 | 4.39 | 5.86 | 4.52 |",
+  "| add (15) | 2.78 | 35.09 | 0.91 | 8.38 | 8.52 | 8.73 | 8.94 |",
+  "| delete (15) | 4.68 | 33.39 | 0.89 | 8.10 | 8.28 | 8.40 | 8.69 |",
+  "| predecessor (14) | 3.27 | 13.06 | n/a | 2.12 | 1.79 | 1.73 | 2.11 |",
+  "| min (15) | 0.29 | 0.44 | 0.63 | 0.77 | 0.53 | 0.53 | 0.65 |",
+  "| max (11) | 0.37 | 0.34 | n/a | 1.04 | 0.50 | 0.50 | 0.63 |",
+  "| successor (13) | 3.39 | 17.25 | 1.00 | 2.42 | 2.65 | 1.84 | 2.07 |"
+ ],
+ "cells": [
+  {
+   "w": 16,
+   "n": 64,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0009136110070318
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.79549252039186
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 89.76524185323116
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.0031157045239103
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 18.06730278258081
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 23.41667828224161
+    },
+    {
+     "label": "best",
+     "ratioMedian": 14.886811871403983
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 21.49788542704394
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 64,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9607452515556519
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.978627446423183
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 23.363655896078683
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.69623204240987
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 9.10492056479702
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 9.255535832973962
+    },
+    {
+     "label": "best",
+     "ratioMedian": 9.280302061666148
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 9.48809679842098
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 64,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9937129000193452
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.682823497128017
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 22.025022506559964
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.7399785102459292
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 8.576295415859631
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.502572949625995
+    },
+    {
+     "label": "best",
+     "ratioMedian": 8.544840436736672
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 9.4036694336218
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 64,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.202248305746892
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.5429848483176087
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 14.35065800922883
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.801502046421749
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.0553784467930734
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.2214061028968373
+    },
+    {
+     "label": "best",
+     "ratioMedian": 3.321061766986972
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.3506937853897742
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 64,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9793091409685842
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.265383529942975
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 14.242036716549437
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.4761147390947453
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.599951904265904
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.759412004656043
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.3552124079547756
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 64,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.000232280452748
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3461161844723758
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.5318635808536221
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.6271618713415257
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.8879374000580159
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.6139160959362322
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.6200755774701691
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7683984443131354
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 64,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9976669321120124
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.37302770722231915
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.39988013356992524
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.0387246311721845
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5815095983671428
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5867898468345177
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7449085286274796
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.019205462234961
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.4606623276791955
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 107.43273910601799
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.0095212937300737
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 41.14243178554005
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 46.075916799463776
+    },
+    {
+     "label": "best",
+     "ratioMedian": 47.958950605625525
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 48.60484249940368
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0139454571330786
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.7755374544237272
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 51.08845670013481
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9123970486952453
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 37.847055893081354
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 37.63250657551145
+    },
+    {
+     "label": "best",
+     "ratioMedian": 36.132079952368734
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 37.313725199351296
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0014822226160491
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.4601919319036307
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 46.6775539761991
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9171425320633358
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 36.002543962035794
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 35.50790713354578
+    },
+    {
+     "label": "best",
+     "ratioMedian": 35.54050823833378
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 36.05902830351328
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0070667080624196
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.390857267317125
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 31.9901248450995
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.815748131931338
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 11.043837102683538
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 11.262548228729633
+    },
+    {
+     "label": "best",
+     "ratioMedian": 11.01679277741989
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 10.838005993421612
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.04482547636927
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.386464091806168
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 31.082710511931012
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 12.529724478792827
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 13.65257318111087
+    },
+    {
+     "label": "best",
+     "ratioMedian": 11.269113757160062
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 12.85225658648288
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0020548700146554
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.42410223911341904
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.5323803043051977
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.645853573253745
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.9184106015884075
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.6230194606496348
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.6206860317474647
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7632940832373776
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 4096,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9997727182792779
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3763670585691767
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.4543339353811412
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.719051102763649
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.587269348744071
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5891215614469584
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7430629385851142
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.004275962417298
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.51157591289148
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 138.59796918250117
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.0185921360125212
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.9515258386590006
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 4.115658304666874
+    },
+    {
+     "label": "best",
+     "ratioMedian": 4.024647849468499
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 4.522892269257319
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9988288245869227
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.2092409666712336
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 78.85050520887226
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.8599485573298823
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.138566258760806
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 4.087436137166428
+    },
+    {
+     "label": "best",
+     "ratioMedian": 4.081077864639447
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 4.822802129649033
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9940004863195877
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.446242139612297
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 72.82123602482035
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.837659435215995
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.13600830216325
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 4.2363344074216736
+    },
+    {
+     "label": "best",
+     "ratioMedian": 4.251763734484194
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 4.577876251637702
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0008508292174882
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.845554160161046
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 45.132759973551536
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9956505921952223
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.6546545267096993
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.179856652291581
+    },
+    {
+     "label": "best",
+     "ratioMedian": 3.1343746005518787
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.5826372172675995
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0627204329798108
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.9688108969350875
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 43.59580514547183
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.999558327933777
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.320126663650892
+    },
+    {
+     "label": "best",
+     "ratioMedian": 3.14559790576186
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.6012804631540662
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.000577364853393
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3398112488074449
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.519382349329623
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.6254002636940552
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.228279571773363
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.6280615451372642
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.6145964902637073
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7669566775379121
+    }
+   ]
+  },
+  {
+   "w": 16,
+   "n": 16384,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0040038935288007
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.4040545139864604
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.40466670049615094
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.5633977619613666
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5881112858335605
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5872858358462005
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7567937722496101
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.8574869227671018
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.2420151458912354
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 73.78202315048549
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9180442575025214
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 4.358318405171149
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 4.455100220914661
+    },
+    {
+     "label": "best",
+     "ratioMedian": 4.615332549023022
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 6.123126218665947
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0088838462156065
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.154379394222957
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 24.05559399824367
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.7608133164955484
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 7.601739954204041
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 7.5284934038919715
+    },
+    {
+     "label": "best",
+     "ratioMedian": 7.3546803362293725
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 7.622783019239379
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.996286149276522
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 6.297733484573587
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 20.92989258063459
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.798352454579843
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 6.8297451076013
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 7.011493640284193
+    },
+    {
+     "label": "best",
+     "ratioMedian": 6.810316174980073
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 7.221361159677584
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.1374238758013286
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.1951122998108294
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 12.597951415939942
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.7743375421437839
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.220684821729953
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.9356120270082093
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.5436368831141942
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.200410401672739
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0294122761751783
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.85958145007423
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 10.96891869707708
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.124259843665111
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.7850452335076963
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.7340985192041358
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.4689007489970192
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9995518626028295
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3404185870306843
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.5204055820455574
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.7973978257474479
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.8910327338125693
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.619173072479079
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.6174261058284137
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.758157855477852
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 64,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0076044968035365
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.8300390171318779
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.45999838626847234
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.1195977224744087
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5871183858486255
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5880220419336936
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7479619813890706
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0007102466951843
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.662139373557336
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 130.57374999462655
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9992138640142229
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 31.01360848813403
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 40.06095427772153
+    },
+    {
+     "label": "best",
+     "ratioMedian": 27.12653912503349
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 31.22654226892378
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0032290994904818
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.7771432418419755
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 47.81140263761666
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9615364815170335
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 17.802564732099455
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 18.7864510669689
+    },
+    {
+     "label": "best",
+     "ratioMedian": 19.565245882523264
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 18.877398282204677
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0079022588401263
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 5.622250093770096
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 45.130279896004915
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9765852695912478
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 16.908341686142677
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 17.78716828830173
+    },
+    {
+     "label": "best",
+     "ratioMedian": 18.49431419097197
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 18.23818195459741
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.985064147801985
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.256992705308111
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 25.784482996525615
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.808808192557665
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 6.55469816319989
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.162944593287692
+    },
+    {
+     "label": "best",
+     "ratioMedian": 7.954301670720274
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 8.488078265269335
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9893707188467534
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.213678001187961
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 28.145352279445355
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 7.724736029971756
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.238344508154189
+    },
+    {
+     "label": "best",
+     "ratioMedian": 8.522738977873995
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 8.923281356319386
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9999861391290725
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3426953798571678
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.5349208425288373
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.6264383436328295
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.9137036727816589
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.6212229636538229
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.6210978956465795
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7644838184122076
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 4096,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9911240225867844
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.36921383742756186
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.44243411485292866
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.0877818236398638
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5659293281849507
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5747437482093902
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7438962655730283
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0793475597217241
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.4693230047811743
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 147.61470854826814
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9689921095647756
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 18.58826744655411
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 26.348960056397875
+    },
+    {
+     "label": "best",
+     "ratioMedian": 26.692989402538824
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 20.666635007875943
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9904723032128597
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.5732435824502007
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 55.3816096199423
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.908476044019419
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 28.38071686057429
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 28.736264816248603
+    },
+    {
+     "label": "best",
+     "ratioMedian": 14.383824931598799
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 14.737892403479993
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0016910819486633
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.22663937945332
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 51.98143865735644
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.8873855471268821
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 35.30728221184076
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 35.51504892046622
+    },
+    {
+     "label": "best",
+     "ratioMedian": 13.840655205990844
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 14.31862159491708
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0200405091655433
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.183264892634244
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 48.265019036030345
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9508381195071267
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 8.052393817864928
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.623410889646323
+    },
+    {
+     "label": "best",
+     "ratioMedian": 8.123299395184121
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 5.808693948615942
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.313510185958033
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.8836094443736116
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 54.658551647962774
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 10.824534871675933
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 9.326270731877562
+    },
+    {
+     "label": "best",
+     "ratioMedian": 9.84465414447514
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 7.019957764893137
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9998410994959405
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3407547456741347
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.5145051440140684
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.6256869644141743
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.9126851620690214
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.6220816450205937
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.62071177786021
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.7650402516799699
+    }
+   ]
+  },
+  {
+   "w": 20,
+   "n": 65536,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.5277879187381218
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.1978971816335978
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.211665358578212
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.5861037931764755
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.30510194076703173
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.3093277139160797
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.389085194767685
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9151209251513481
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.140405309025283
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 70.25533399467348
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.83171857355055
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.6642742839247013
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.6704570811313935
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.167435022043345
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.6884789622249006
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9999716758822739
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.49899465557177
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 22.452950573254114
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.7634676227585065
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.7359221330927213
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 4.193454719905691
+    },
+    {
+     "label": "best",
+     "ratioMedian": 3.0705861154043643
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 4.124964498904866
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.004778038000866
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 6.291267491014148
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 19.525732330383512
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.7981541217481164
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.768602160936356
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.8138678980101606
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.6099397678132252
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.6210304967412235
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0210162412255945
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.331202926948124
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 8.395920888184445
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.20278703414304
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.4640412489352004
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.30830608726493
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.4904334118993763
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.5071711358713724
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0067459622869657
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.478140283329823
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 8.83088532579799
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.9279951084614506
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.6554809206073393
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.6201225574526747
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.1904094448700264
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9973573867368707
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.28986997407368165
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.4404523956760321
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.646675210074322
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.7566198002460628
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5274473911892991
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5274250697022556
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.6502212773936075
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 64,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.000688528724168
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.320028539216739
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.33642321141095716
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.93706297687341
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.49919969341241
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.49892832084806604
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.6277396379654685
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0434915765115274
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.040746044226055
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 108.567157315075
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9680672170558656
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 12.614278405880121
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 9.231085061049894
+    },
+    {
+     "label": "best",
+     "ratioMedian": 11.79236217752994
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 7.839428474435516
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9864914784031077
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.8092875437628746
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 43.139221897424505
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.2057172300882368
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 12.554754768209962
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 13.646066102348104
+    },
+    {
+     "label": "best",
+     "ratioMedian": 13.110700684316294
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 13.905688326477867
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0704046287886289
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 6.267806539033346
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 38.46313664170838
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.2272059075699666
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 11.971981011538755
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 12.387451249651162
+    },
+    {
+     "label": "best",
+     "ratioMedian": 11.761201826867083
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 12.460315556096779
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.008049287202404
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.009343688313941
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 17.25372068719207
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.3316900199759634
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.8368385995564975
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.647318335637581
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.1002363904252737
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.067360929761725
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.978453571722957
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.317182589282315
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 18.835489103955062
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 3.01475677760745
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.1869774754511586
+    },
+    {
+     "label": "best",
+     "ratioMedian": 3.1390546396507566
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.7035203660345166
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0066356355639687
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3299705784358946
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.4348371497693408
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.6524144478400251
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.7662285734776376
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5305770163250654
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5269631056807659
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.6467572210716811
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 4096,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.6116233553693411
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.22268937551959483
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.2059343147226332
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.5934577085488919
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.3052674144908351
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.30515438633392855
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.38193184821338344
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0064134878065811
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.2715574959477975
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 159.09781872940914
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9927753150416188
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 33.41499390671188
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 33.2420184406655
+    },
+    {
+     "label": "best",
+     "ratioMedian": 40.355108263852465
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 36.32670009717468
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.000598651403706
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.2299504860872443
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 46.19213280780973
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9760323131000975
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 17.447787051666193
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 18.94188546119009
+    },
+    {
+     "label": "best",
+     "ratioMedian": 17.53794662672659
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 18.930397280441074
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0079075288580355
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.591719247825962
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 42.83802780234421
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.9953494560470478
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 16.7564759616981
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 17.763294076957283
+    },
+    {
+     "label": "best",
+     "ratioMedian": 16.545176993553817
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 17.707701179938294
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0156059171663128
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.8423751494850578
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 29.955576661043434
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 1.717735739256643
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 7.583966303010799
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.992109544885071
+    },
+    {
+     "label": "best",
+     "ratioMedian": 8.946392556544449
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 9.840202736681936
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0076082357358558
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.014290611984422
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 33.465228339734864
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 9.454023219257422
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 9.737955913993877
+    },
+    {
+     "label": "best",
+     "ratioMedian": 9.385437895425298
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 10.312305933137264
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9988746099733858
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.28781408419844007
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.4392306000798847
+    },
+    {
+     "label": "BitSet",
+     "ratioMedian": 0.5557485159159142
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.7708464503914718
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.5259961439663172
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.5255779544271822
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.645748572160504
+    }
+   ]
+  },
+  {
+   "w": 24,
+   "n": 65536,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0002121002941702
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.5125173253682787
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.33610800500200994
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.7284929309543557
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.4995781728350426
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.49636481120314585
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.6330627302183705
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9938905639790038
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.6610290704090125
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 78.92780585488092
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.848228641519088
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.337609804784743
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.1924260004351153
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.8880174121697872
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0288209243603776
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.177688311141482
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 20.53414529873095
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.568160406969159
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.732950530455228
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.307220361244637
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.67906757178434
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9908754297452849
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.7133812632922845
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 17.983189571501377
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.706526769682231
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.54927525927131
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.9986277097951297
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.2664388186801916
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.009247755736584
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.7795641625280758
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 6.805084005443548
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.2007255068159846
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.098210706886893
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.249963218073145
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.2364745563403612
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0037220062793204
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.0910108973173607
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 7.771319696131295
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.6916144310050443
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.404646240158038
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.4087606615870367
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.9289260175368474
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.059308520657871
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.2530729534640203
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.381093261929748
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.6378366658517268
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.44394525631758264
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.44589378566957627
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.5456445517336914
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 64,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.000519449580462
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.2726228560780563
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.28795737517798553
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.807261921050556
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.4264201785895212
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.4270497559118508
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.540895535806542
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9162965200620513
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.427955669341631
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 104.32656865441633
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 4.037032256970182
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.1113643236792723
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.9875524610438378
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.2249138893665665
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9787143236524236
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.3184699526559625
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 29.680045784504728
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 5.174155600151551
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 5.252413340058752
+    },
+    {
+     "label": "best",
+     "ratioMedian": 3.71990792579466
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 4.594671660473629
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0153498502282152
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 8.304598339895009
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 32.30422365238532
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 6.143385435025668
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 6.260257037521662
+    },
+    {
+     "label": "best",
+     "ratioMedian": 4.4253943700547635
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 5.795263786421557
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0100016694809237
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.6634991047664078
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 10.234282645578489
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.574139780429427
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.1453208144841893
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.2552086768578388
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.3798701221749283
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0364013461431316
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.859847565708841
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 11.844180276756818
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.957593121606224
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.4234417954897458
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.430285207766662
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.9884355023532667
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9708784270279205
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.2364347546981589
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.36430665621769487
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.6181790895182181
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.4295415569721515
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.4311201821098633
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.5304524835067862
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 4096,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.7149163260447249
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.19774233148200432
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.20752627314176625
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.0801541113190731
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.3058538150843088
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.30540411880335927
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.3861740273476059
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0084076888885682
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 5.535902564333889
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 151.9397423881009
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 10.939985652977251
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 10.21946861277039
+    },
+    {
+     "label": "best",
+     "ratioMedian": 12.279658888608804
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 11.023587036385925
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0589307824715808
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.9307645955222563
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 43.79001477810525
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 12.094888994935488
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 12.214376267660224
+    },
+    {
+     "label": "best",
+     "ratioMedian": 12.687762149203907
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 13.228812478281037
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.010852562565011
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 6.253119852249642
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 42.479366986016664
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 12.310910707280664
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 12.08339891944136
+    },
+    {
+     "label": "best",
+     "ratioMedian": 12.547911952231056
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 13.626255007099763
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0253480951626326
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.90072485565136
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 18.334331137217504
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.417893579919124
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.6781198864967304
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.8353737388695164
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.1117095654905653
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0613543570439645
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.6271725516856295
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 21.29683356388238
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.153006608518776
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.8993672240121007
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.834167316211734
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.1058983815122154
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9915316127731038
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.24310460912666443
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.37082827357074005
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.6361186848436127
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.4427013515726582
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.4415270368667788
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.5531718231286575
+    }
+   ]
+  },
+  {
+   "w": 28,
+   "n": 65536,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9999155935786836
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.3061285335358229
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.33044648752241984
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.8265201469901506
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.4269923356704091
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.4264943676814709
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.5947723475416273
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.99732602516825
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.5024854932514127
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 62.40884861549328
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.0376919471249084
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.469465824514122
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.5887060351002098
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.1387735332128153
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0048239872875535
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.5200667437644717
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 19.650733071402506
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.5086399586390478
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.6551604347002358
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.4477433738245757
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 3.3316562617160224
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0028566137541004
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.961121478170637
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 16.973120860142455
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.7760455730989055
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.787476840240485
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.154162537940276
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 8.63905546360915
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0260577339356778
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.8463409881318982
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 5.825000049982425
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.0029719809577509
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.9336193274055407
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.0527276897186126
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.0363295604817826
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0273254663171398
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.0502815365783187
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 6.4280263104975806
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.3754625820391586
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.1621012038955705
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.1642901083935957
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.5835979464135732
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9979894068444046
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.21804894150344775
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.33273494986952473
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.5710955393405306
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.3939460285963473
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.39277245116909126
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.48699737669306814
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 64,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.000841164485796
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.2434202312344412
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.29091323092266985
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.6980027427045529
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.37988029901680387
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.3770436310425033
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.4758054287582837
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0017078886288142
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 3.677975357190976
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 86.74454638128402
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.2912490762591715
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.1879540029190867
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.5922724976903881
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.094902037386545
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0183218122363602
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.3333970292605013
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 26.034289247452968
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.8401999171767645
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 3.1143707380927514
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.277995705298756
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.9191387965338658
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0645472283310058
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.533709925804896
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 25.060860850773945
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 2.9264757560727044
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 2.974942555944699
+    },
+    {
+     "label": "best",
+     "ratioMedian": 2.158024140225513
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 2.9422118834477855
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0161497399078545
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.1809607770619281
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 7.95563926576096
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.9340831052060751
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.8153597765367036
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.9221876264872119
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.9744663662820281
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9957757621477094
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 1.2797496832405262
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 8.864461021141162
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.2156831603796938
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.9840672711294048
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.9826466009323165
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.3815839840383015
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9940300386864119
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.21886322536637168
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.34292048488833704
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.5683883718531674
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.3946625155686019
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.39439452811835296
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.4826727267414194
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 4096,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0019114140344403
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.24490984686417827
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.28100330736931345
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.7190165112360325
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.38033523353431514
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.3803964574126566
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.49807087822245777
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "has",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0015042025586294
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.90313958182623
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 103.19645091178711
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 6.488030820605298
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 4.393493825806888
+    },
+    {
+     "label": "best",
+     "ratioMedian": 5.862447244653654
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 4.206565479494126
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "add",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9732322060398445
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 4.104871287648128
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 35.09346325898288
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 8.379752112627886
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.519051349319556
+    },
+    {
+     "label": "best",
+     "ratioMedian": 8.72612423063366
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 8.944202157474562
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "delete",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9543684834694784
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 7.6114707287116365
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 33.38914348439715
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 8.096339664837899
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 8.278809788334696
+    },
+    {
+     "label": "best",
+     "ratioMedian": 8.396870275799598
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 8.693575257294194
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "successor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.0661904831956615
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.8974454706949766
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 12.57189345862081
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.5246867634262797
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.2910484835661027
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.0580923322763658
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.4023342622521537
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "predecessor",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.9388167084957689
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 2.624027978191453
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 13.055163231947311
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 1.571295239685855
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 1.0929913960606543
+    },
+    {
+     "label": "best",
+     "ratioMedian": 1.3555443837728747
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 1.4181053262265169
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "min",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 1.002736048135171
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.21875891775313988
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.33799909992839217
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.575201742107694
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.3942492384901112
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.39490061817654565
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.48925869876706235
+    }
+   ]
+  },
+  {
+   "w": 32,
+   "n": 65536,
+   "op": "max",
+   "columns": [
+    {
+     "label": "SB",
+     "ratioMedian": 1
+    },
+    {
+     "label": "SB-AA",
+     "ratioMedian": 0.8005087225408238
+    },
+    {
+     "label": "vEB",
+     "ratioMedian": 0.19501120735579042
+    },
+    {
+     "label": "YFT",
+     "ratioMedian": 0.20536829592036318
+    },
+    {
+     "label": "fixed",
+     "ratioMedian": 0.5840815937384881
+    },
+    {
+     "label": "vd",
+     "ratioMedian": 0.305464438682202
+    },
+    {
+     "label": "best",
+     "ratioMedian": 0.30617818518073425
+    },
+    {
+     "label": "best-paged",
+     "ratioMedian": 0.3861077700120789
+    }
+   ]
+  }
+ ]
+}

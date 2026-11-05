@@ -1,6 +1,6 @@
 /**
- * @zakkster/lite-loglogn -- RoaringSet torture lanes in a Worker (0.6.0 G5-B1a / B1b / B3a,
- * PLAN-roaringset-G5 tasks 1-4 + DELTA G5-B3, SPEC C-10 / C-11 / C-20 / C-21). Not a test
+ * @zakkster/lite-loglogn -- RoaringSet torture lanes in a Worker (0.6.0 G5-B1a / B1b / B3a / B4a / B4c,
+ * PLAN-roaringset-G5 tasks 1-4 + DELTA G5-B3 / G5-B4, SPEC C-10 / C-11 / C-20 / C-21). Not a test
  * file: the npm glob `test/*.test.js` never matches it. Inert when merely
  * imported (torture.mjs imports the constants and startRoaringTorture); a job
  * runs only as a node:worker_threads Worker (workerData.roaringTorture === true).
@@ -33,7 +33,10 @@
  *              every lane chunk's dump() kind === its kind at build (a lane that
  *              drifted off its labelled shape measured something else: FAIL);
  *   paged      set.paged === the job's wantPaged, checked at build (a mismatch
- *              FAILS the lane, even when every other channel passes);
+ *              FAILS the lane, even when every other channel passes); set-op lanes
+ *              check `other` too; pair lanes: !A.paged && other.paged; setops.* /
+ *              pair.*: both sets hold chunks on all 4 dir entries of pageBits 8
+ *              (S-8: all 4 pages of {4, 8}; a shape on fewer FAILS pagedOk);
  *   work       ops.* and gap.* only: a cold replay of ONE script cycle (after
  *              measurement) must move SINK by exactly what the labelled method,
  *              called directly in a separate oracle loop, yields on the same keys,
@@ -43,6 +46,13 @@
  *              min / max (L = 1) a defined result;
  *              add lanes the size rises above the built size, delete lanes it falls
  *              below (else the step never ran the labelled op: FAIL, reason named);
+ *              setops.* / pair.*: the step's SINK delta === a JS Set model of the
+ *              BUILD key lists (intersects.hit 1, .miss 0, sizes === the model's and
+ *              > 0; both set sizes === the model's; ops[] never read);
+ *              range.addRange: a step-by-step replay against a JS Set model (add /
+ *              addRange / clear by definition) AND S-9's literal size trace, has()
+ *              agreeing at every bound (a swapped op code fails the trace), and the
+ *              cycle's peak holding chunks on all 4 dir entries (S-9: all 4 pages);
  *   pool       churn.page only (poolOk; null on every other lane): poolCheck at
  *              cycle start after measurement -- add(kA) maps the one free page,
  *              add(kB) on another page throws /metadata page pool exhausted/ with
@@ -64,7 +74,14 @@
  * (SPEC C-10 / A10: U 2^32, (64, 32) at PAGED_KNOBS.churn {254, 8}, 253 of 254
  * pages mapped, a 12 x [ADD k, DEL k] script over 3 empty dir entries maps and
  * frees the free page on every pair; its GC gate is maxMajor 0 ONLY, gc maxMs is
- * REPORTED on its lane line; a churn job with paged null is a TypeError); hi = the 5 hi-key
+ * REPORTED on its lane line; a churn job with paged null is a TypeError).
+ * G5-B4 (outside the 38, inside C-10's 93): setops 5 per layout (R0 alloc-harness
+ * :376-401 shapes A / B / C at U 2^32, pools (8, 16), w 8, chunks (i >> 2) * 256 +
+ * (i & 3), all 4 pages of PAGED_KNOBS.setops); pair 5 = the same lanes with A
+ * direct and B / C paged (job.paged = PAGED_KNOBS.pair; paged null = TypeError);
+ * range 1 per layout (range.addRange: a 7-op cycle at U 2^32, bounds < 2^30 in
+ * `his`, edges empty>single, empty>full, full>empty; DELTA S-9). setops / pair /
+ * range lanes post workOk true; range posts edgesOk true, setops / pair null. hi = the 5 hi-key
  * lanes at U = 2^32 (keys and results >= 2^31), CONTROLS as torture's CV7:
  * hi.successor / predecessor / min / max must read transient excess >=
  * NS_MAX_EXCESS with every result >= 2^31 (share 1.0), hi.has must stay <
@@ -109,20 +126,44 @@
  *   CR-pageMap (churn jobs) _pageAcquire holds [pg] in a module-level array on
  *              every page map (anchor count 1 AND inside _pageAcquire, else BAD):
  *              churn.page retained round(B/call) >= 1 (measureAllocs);
- *   CR-retain  (retention jobs) the churn with every instance + dump also held:
- *              tracker.size() >= 1 after the drain.
+ *   CR-setops.<f> (setops / pair jobs) intersectionSize() stores [tA, tB] in a
+ *              module binding (anchor: its header, guard and const tA / tB, which
+ *              must sit between intersectionSize and unionSize): <f>.intersectionSize,
+ *              <f>.unionSize and <f>.differenceSize (both call it) each read excess
+ *              >= NS_MAX_EXCESS;
+ *   CR-addRange (range jobs) addRange() stores [lo, hi] in a module binding (anchor:
+ *              its header, guard and `if (lo === hi) return this;`, which must sit
+ *              between addRange and _rangePre): range.addRange excess >= NS_MAX_EXCESS;
+ *   CR-rangeArr (range jobs) a step-source variant on the UNMUTATED engine: case 13
+ *              routes every addRange through a fresh [lo, hi] array held in the
+ *              step function's own property slot (the replace must count 1, else
+ *              BAD); the variant must pass the range work check, then read
+ *              range.addRange excess >= NS_MAX_EXCESS;
+ *   CR-retain  (retention jobs) the churn with every instance + dump + twin also
+ *              held: tracker.size() >= 1 after the drain.
+ * Self-check oracle (setops / pair jobs, cold, every run; nit 2 of the G5-B4a
+ * review): the family rebuilt from a RoaringSet subclass whose unionSize()
+ * returns + 1: exactly the <f>.unionSize lane's work check FAILS and the other
+ * four pass (setopWork's model never reads the engine's answer). A miss puts
+ * 'selfcheck oracle' in fail[] and prints its selfcheck line; it posts no
+ * control (torture's control-name contract is unchanged).
  *
  * Retention (job family 'retention', layout = job.paged): RET_CYCLES 4,096
  * cycles, each builds RoaringSet(2^20, 2, 1) direct or RoaringSet(2^32, 4, 2,
  * maxPages, pageBits) paged (DELTA S-7 = PLAN-G2 A-5; PAGED_KNOBS.retention),
- * runs every public op, takes dump(), ends with clear() and a size-0 check
- * (clearBad), and tracks BOTH (8,192 tracked) with a module-level
+ * adds 70 keys in chunk 0 and a SINGLE in chunk 1, then addRange(3 << 16, 4 << 16)
+ * (chunk 3 FULL), builds a twin B (same constructor, same addRange) and checks
+ * intersectionSize(B) === 65,536 (a miss: rangeBad; DELTA S-10), runs every other
+ * public op, takes dump() (size 65,606 and 3 chunks, else dumpBad), ends with
+ * clear() and a size-0 check (clearBad), and tracks the instance, its dump and B
+ * (3 x RET_CYCLES = 12,288 tracked) with a module-level
  * no-op cleanup and a string tag (neither captures the target); the churn has
- * its own frame. Gate: tracked 8,192, every instance's paged === wantPaged,
- * tracker.size() 0 after the drain and after one more gc, collected 8,192,
- * findings 0, leaks 0, clearBad 0 (result.retention: layout, universe, paged, cycles, tracked, size,
- * after === sizeAfterGc, collected, findings, findingKinds, warnings, leaks, pagedMismatch, dumpBad,
- * clearBad, ok, ms). result.retention is null in a job without the family;
+ * its own frame. Gate: tracked 12,288, every instance's (and twin's) paged ===
+ * wantPaged, tracker.size() 0 after the drain and after one more gc, collected
+ * 12,288, findings 0, leaks 0, dumpBad 0, clearBad 0, rangeBad 0 (result.retention:
+ * layout, universe, paged, cycles, tracked, size, after === sizeAfterGc, collected,
+ * findings, findingKinds, warnings, leaks, pagedMismatch, dumpBad, clearBad,
+ * rangeBad, ok, ms). result.retention is null in a job without the family;
  * a retention job with a null or failing retention FAILS.
  *
  * Layout knob: job.paged === null builds every set with the 3-argument
@@ -165,16 +206,16 @@ export const WARM_CALLS = 131072;
 // Per-job kill timer: >= 4.5x the slowest job seen (G5-B3 DELTA S-7: 25.4 s at load1 78, R17; G5-B3a: see
 // .handoff/evidence/roaring-g5-b3a.md, PRELIMINARY shared host). A hang or a stuck job is a FAIL, never a wait.
 export const KILL_MS = 120000;
-/** Retention churn cycles per job (each tracks the instance AND its dump(): 2 x RET_CYCLES tracked). */
+/** Retention churn cycles per job (each tracks the instance, its dump() and the addRange twin: 3 x RET_CYCLES tracked). */
 export const RET_CYCLES = 4096;
 /** Gated lane count per family (fail closed: a family that builds fewer is an error). */
-export const FAMILY_LANES = Object.freeze({ ops: 28, gap: 3, conv: 6, clear: 1, churn: 1 });
+export const FAMILY_LANES = Object.freeze({ ops: 28, gap: 3, conv: 6, clear: 1, churn: 1, setops: 5, pair: 5, range: 1 });
 /**
  * Paged knobs per family (G5-B3 DELTA S-4), each a valid job.paged as-is. Every one is paged under the
  * engine's layout rule (strict): 11 (maxPages + 1) 2^pageBits + 2 dirLen + 4 maxPages + 2 < 11 chunks.
  * ops / conv / clear at U 2^20 (16 chunks): 144 < 176; gap at 2^31: 14,354 < 360,448; hi at 2^32:
  * 14,610 < 720,896; churn at 2^32: 719,610 < 720,896 (maxPages 255 would be direct); retention at 2^32:
- * 8,970 < 720,896.
+ * 8,970 < 720,896; setops / pair / range at 2^32 (G5-B4 DELTA CONTRACT): 14,610 < 720,896.
  */
 export const PAGED_KNOBS = Object.freeze({
     ops: Object.freeze({ maxPages: 4, pageBits: 1 }),
@@ -184,10 +225,13 @@ export const PAGED_KNOBS = Object.freeze({
     hi: Object.freeze({ maxPages: 4, pageBits: 8 }),
     churn: Object.freeze({ maxPages: 254, pageBits: 8 }),
     retention: Object.freeze({ maxPages: 2, pageBits: 8 }),
+    setops: Object.freeze({ maxPages: 4, pageBits: 8 }),
+    pair: Object.freeze({ maxPages: 4, pageBits: 8 }),
+    range: Object.freeze({ maxPages: 4, pageBits: 8 }),
 });
 /** hi-key control lanes (family 'hi'). */
 export const HI_OPS = Object.freeze(['has', 'successor', 'predecessor', 'min', 'max']);
-const FAMILY_ORDER = ['ops', 'gap', 'conv', 'clear', 'churn', 'hi', 'retention'];
+const FAMILY_ORDER = ['ops', 'gap', 'conv', 'clear', 'churn', 'setops', 'pair', 'range', 'hi', 'retention'];
 const JOB_KEYS = ['src', 'families', 'paged'];
 const TF_BIT = 32;
 const HI_MIN = 2147483648;
@@ -245,13 +289,14 @@ export function dupSources(fns) {
 // ---- the step (one literal; every lane compiles its body text with its marker) ------
 
 const OP_ADD = 0, OP_DEL = 1, OP_HAS = 2, OP_SUCC = 3, OP_PRED = 4, OP_MIN = 5, OP_MAX = 6;
-const OP_RUNOPT = 7, OP_CLEAR = 12;
-const OP_LAST = 12;
+const OP_RUNOPT = 7, OP_ISECTS = 8, OP_ISIZE = 9, OP_USIZE = 10, OP_DSIZE = 11, OP_CLEAR = 12, OP_RANGE = 13;
+const OP_LAST = 13;
 
-// A cyclic script (ops[p], keys[p]) on `set` (and `other` for the set ops of
-// G5-B4). Const bindings only; position and sink live in Int32Array slots (no
-// mutable number in a context, no box from the harness itself).
-function makeStep(set, other, ops, keys, SINK) {
+// A cyclic script (ops[p], keys[p], his[p]) on `set` (and `other` for the set
+// ops of G5-B4; his[p] = addRange's exclusive upper bound, 0 for every other op).
+// Const bindings only; position and sink live in Int32Array slots (no mutable
+// number in a context, no box from the harness itself).
+function makeStep(set, other, ops, keys, his, SINK) {
     const L = ops.length;
     const st = new Int32Array(1);
     const step = function step() {
@@ -272,6 +317,7 @@ function makeStep(set, other, ops, keys, SINK) {
             case 10: r = set.unionSize(other); break;
             case 11: r = set.differenceSize(other); break;
             case 12: set.clear(); break;
+            case 13: set.addRange(x, his[p]); break;
         }
         SINK[0] = (SINK[0] + r) | 0;
         const q = p + 1;
@@ -315,22 +361,33 @@ function checkJob(job) {
     if (pg === null && job.families.includes('churn')) {
         throw new TypeError('family churn is paged-only: job.paged must be { maxPages, pageBits } (PAGED_KNOBS.churn)');
     }
+    if (pg === null && job.families.includes('pair')) {
+        throw new TypeError('family pair is paged-only (A direct, B / C paged): job.paged must be { maxPages, pageBits } (PAGED_KNOBS.pair)');
+    }
 }
 
 function settle(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function lcg(seed) { let s = seed >>> 0; return () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0); }
 function range(n, f) { const a = []; for (let j = 0; j < n; j++) a.push(f(j)); return a; }
 
+// pairs[i] = [op, key] or, for OP_RANGE only, [op, lo, hi] (hi held in his[i]; every bound < 2^32).
 function script(pairs) {
     const ops = new Int32Array(pairs.length);
     const keys = new Uint32Array(pairs.length);
+    const his = new Uint32Array(pairs.length);
     for (let i = 0; i < pairs.length; i++) {
         const op = pairs[i][0];
         if (!Number.isInteger(op) || op < 0 || op > OP_LAST) throw new Error('script: bad op ' + op);
+        if ((op === OP_RANGE) !== (pairs[i].length === 3)) throw new Error('script: op ' + op + ' at ' + i + ' with ' + pairs[i].length + ' fields');
         ops[i] = op;
         keys[i] = pairs[i][1];
+        if (op === OP_RANGE) {
+            const hb = pairs[i][2];
+            if (!Number.isInteger(hb) || !(hb >= pairs[i][1]) || !(hb < 4294967296)) throw new Error('script: bad range bound ' + hb + ' at ' + i);
+            his[i] = hb;
+        }
     }
-    return { ops, keys };
+    return { ops, keys, his };
 }
 
 // Shapes (key sets inside one chunk, lo = the low 16 bits), alloc-harness r2.
@@ -347,17 +404,31 @@ function kindsOf(set, chunks) {
     for (const e of set.dump().chunks) by.set(e.chunk, e.kind);
     return chunks.map((c) => (by.has(c) ? by.get(c) : 'empty'));
 }
+/** A lane's kind string: the set's chunk kinds, then (set-op lanes) ' | ' + the other set's. Cold. */
+function laneKinds(set, other, chunks) {
+    const k = kindsOf(set, chunks).join(',');
+    return other === null ? k : k + ' | ' + kindsOf(other, chunks).join(',');
+}
 
 /** The layout check of every build site (lanes, hi, retention): CR-paged pins it. */
 function pagedMatch(set, want) { return set.paged === want; }
+/** Distinct dir entries (chunk >>> bits) holding a live chunk, read from the public dump(): the pages a paged set maps. Cold. */
+function dirEntries(set, bits) {
+    const d = new Set();
+    for (const e of set.dump().chunks) d.add(e.chunk >>> bits);
+    return d.size;
+}
+// S-8 / S-9: the setops / pair shapes and the range peak cover all 4 pages of {4, 8}.
+const SETOP_DIRS = 4;
 
 /** Builds the lanes of the job's families. invert (CR-paged only) flips wantPaged. Cold. */
 function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
     const pg = job.paged;
     const wantPaged = (pg !== null) !== invert;
     const mkSet = pg === null ? (U, s, l) => new RoaringSet(U, s, l) : (U, s, l) => new RoaringSet(U, s, l, pg.maxPages, pg.pageBits);
-    const build = (U, maxS, maxL, parts) => {
-        const s = mkSet(U, maxS, maxL);
+    const mkDirect = (U, s, l) => new RoaringSet(U, s, l);
+    const build = (U, maxS, maxL, parts, make = mkSet) => {
+        const s = make(U, maxS, maxL);
         for (const [chunk, shape] of parts) for (const lo of shape.lo) s.add(chunk * 65536 + lo);
         if (parts.some((p) => p[1].opt)) s.runOptimize();
         return s;
@@ -368,14 +439,26 @@ function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
         if (!/^[\x20-\x7e]+$/.test(name)) throw new Error('lane name not printable ASCII: ' + name);
         const tag = STEP_HEAD + '\n        // lane ' + (lanes.length + hi.length) + ' ' + name;
         const marked = BODY.replace(STEP_HEAD, () => tag);                 // function replacer: '$' in a name is literal
-        return new Function('set', 'other', 'ops', 'keys', 'SINK', marked)(set, other, sc.ops, sc.keys, SINK);
+        return new Function('set', 'other', 'ops', 'keys', 'his', 'SINK', marked)(set, other, sc.ops, sc.keys, sc.his, SINK);
     };
-    const lane = (name, group, w, set, sc, chunks, edges, pool = null) => {
-        // ops.* / gap.*: the labelled method is the name's last segment (the work check's oracle)
-        const work = group.startsWith('ops-') || group === 'gap' ? name.slice(name.lastIndexOf('.') + 1) : null;
+    // other: set-op lanes only. model: set-op lanes = { a, b } key arrays for the work oracle; range lanes carry
+    // model = { trace } (S-9's literal sizes) and the oracle also replays the script on a JS Set. pagedOk:
+    // pair lanes (A direct, other paged by the job's knobs) check BOTH sets against the job's layout, A
+    // inverted; setops / pair lanes also need both sets on all SETOP_DIRS dir entries (S-8).
+    const lane = (name, group, w, set, sc, chunks, edges, pool = null, other = null, model = null) => {
+        // ops.* / gap.*: the labelled method is the name's last segment; setops.* / pair.*: the name after
+        // the family prefix; range.*: addRange (the work check's oracle)
+        const work = group.startsWith('ops-') || group === 'gap' ? name.slice(name.lastIndexOf('.') + 1)
+            : group === 'setops' || group === 'pair' ? name.slice(name.indexOf('.') + 1) : group === 'range' ? 'addRange' : null;
         if (work !== null && !WORK_OPS.includes(work)) throw new Error('lane ' + name + ': no work oracle for ' + work);
-        lanes.push({ name, group, w, set, other: null, sc, chunks, edges, work, step: stepFor(name, set, null, sc),
-            size0: set.size, kinds0: kindsOf(set, chunks).join(','), pagedOk: pagedMatch(set, wantPaged), pool });
+        if ((group === 'setops' || group === 'pair') !== (other !== null)) throw new Error('lane ' + name + ': other');
+        if ((work === null || group.startsWith('ops-') || group === 'gap') !== (model === null)) throw new Error('lane ' + name + ': model');
+        const dirsOk = other === null || (dirEntries(set, PAGED_KNOBS[group].pageBits) === SETOP_DIRS &&
+            dirEntries(other, PAGED_KNOBS[group].pageBits) === SETOP_DIRS);
+        const pagedOk = dirsOk && (group === 'pair' ? pagedMatch(set, !wantPaged) && pagedMatch(other, wantPaged)
+            : pagedMatch(set, wantPaged) && (other === null || pagedMatch(other, wantPaged)));
+        lanes.push({ name, group, w, set, other, sc, chunks, edges, work, model, step: stepFor(name, set, other, sc),
+            size0: set.size, kinds0: laneKinds(set, other, chunks), pagedOk, pool });
     };
     const fam = new Set(job.families);
 
@@ -555,6 +638,56 @@ function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
             [((61 << 8) + 250) * 65536 + 77, ((62 << 8) + 250) * 65536 + 77]);
     }
 
+    for (const f of ['setops', 'pair']) {
+        if (!fam.has(f)) continue;
+        // setops.* / pair.* (G5-B4 DELTA S-8; R0 alloc-harness:376-401 shapes), U 2^32, pools (8, 16), w 8. 16
+        // chunks CH[i] = (i >> 2) * 256 + (i & 3): 4 chunks on each of 4 dir entries (all 4 pages of {4, 8}).
+        // A's kind at CH[i] = shape [i & 3], B's = [i >> 2] (every pair of kinds meets); C = B's keys + 32,768
+        // (every A key is < 32,768 low: disjoint from C in every shared chunk, so intersects.miss scans all 16).
+        // setops: A, B, C in the job's layout; pair: A direct, B / C paged by the job's knobs (mixed). The three
+        // sets are shared by the family's five read-only lanes. model = the BUILD key lists (the work oracle).
+        const A_SH = [
+            { lo: range(30, (j) => 1000 * j), opt: false },
+            { lo: range(300, (j) => 100 * j), opt: false },
+            { lo: range(4500, (j) => 3 * j), opt: false },
+            { lo: range(2000, (j) => 1500 * ((j / 100) | 0) + (j % 100)), opt: true },
+        ];
+        const B_SH = [
+            { lo: range(30, (j) => 500 * j), opt: false },
+            { lo: range(300, (j) => 50 * j), opt: false },
+            { lo: range(4500, (j) => 2 * j), opt: false },
+            { lo: range(2000, (j) => 1500 * ((j / 100) | 0) + 50 + (j % 100)), opt: true },
+        ];
+        const C_SH = B_SH.map((sh) => ({ lo: sh.lo.map((v) => v + 32768), opt: sh.opt }));
+        const CH = range(16, (i) => (i >> 2) * 256 + (i & 3));
+        const parts = (shs, sel) => CH.map((c, i) => [c, shs[sel(i)]]);
+        const keysOf = (pp) => { const out = []; for (const [c, sh] of pp) for (const lo of sh.lo) out.push(c * 65536 + lo); return out; };
+        const pA = parts(A_SH, (i) => i & 3), pB = parts(B_SH, (i) => i >> 2), pC = parts(C_SH, (i) => i >> 2);
+        const A = build(4294967296, 8, 16, pA, f === 'pair' ? mkDirect : mkSet);
+        const Bs = build(4294967296, 8, 16, pB);
+        const Cs = build(4294967296, 8, 16, pC);
+        const mAB = { a: keysOf(pA), b: keysOf(pB) }, mAC = { a: mAB.a, b: keysOf(pC) };
+        lane(f + '.intersects.hit', f, 8, A, script([[OP_ISECTS, 0]]), CH, null, null, Bs, mAB);
+        lane(f + '.intersects.miss', f, 8, A, script([[OP_ISECTS, 0]]), CH, null, null, Cs, mAC);
+        lane(f + '.intersectionSize', f, 8, A, script([[OP_ISIZE, 0]]), CH, null, null, Bs, mAB);
+        lane(f + '.unionSize', f, 8, A, script([[OP_USIZE, 0]]), CH, null, null, Bs, mAB);
+        lane(f + '.differenceSize', f, 8, A, script([[OP_DSIZE, 0]]), CH, null, null, Bs, mAB);
+    }
+
+    if (fam.has('range')) {
+        // range.addRange (G5-B4 DELTA S-9): built empty at U 2^32, pools (8, 16), 7 ops per cycle: ADD 65,586;
+        // ADD 68,536; ADD 900 x 65,536 + 5; RANGE [66,536, 71,536) (+4,999: 68,536 overlaps); RANGE
+        // [255 x 65,536 + 60,000, 257 x 65,536 + 100) (+71,172: partial 255, FULL 256, partial 257; crosses
+        // page 0 -> 1); RANGE [600 x 65,536, 601 x 65,536) (+65,536, FULL); CLEAR. Every bound <= 39,387,136
+        // < 2^30 (his). Paged {4, 8}: chunks 1 / 255 on page 0, 256 / 257 on 1, 600 on 2, 900 on 3 (all 4).
+        // model.trace = S-9's size after each step (a literal, independent of the engine and of ops[]).
+        const K = 65536;
+        const s = [[OP_ADD, K + 50], [OP_ADD, K + 3000], [OP_ADD, 900 * K + 5], [OP_RANGE, K + 1000, K + 6000],
+            [OP_RANGE, 255 * K + 60000, 257 * K + 100], [OP_RANGE, 600 * K, 601 * K], [OP_CLEAR, 0]];
+        lane('range.addRange', 'range', 1, mkSet(4294967296, 8, 16), script(s), [1, 255, 256, 257, 600, 900],
+            ['empty>single', 'empty>full', 'full>empty'], null, null, { trace: [1, 2, 3, 5002, 76174, 141710, 0] });
+    }
+
     let share = null;
     if (fam.has('hi')) {
         // U = 2^32, set and queries in [2^31, 2^32): every returned key is >= 2^31 (a HeapNumber across a
@@ -599,7 +732,8 @@ function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
 // container at build only if it fits; runs past 32 move to a large slot).
 const CONV_ARR_EDGES = ['array>smallRuns', 'smallRuns>runs', 'runs>array'];
 // The labelled methods the work check has an oracle for.
-const WORK_OPS = ['has', 'successor', 'predecessor', 'min', 'max', 'add', 'delete'];
+const WORK_OPS = ['has', 'successor', 'predecessor', 'min', 'max', 'add', 'delete',
+    'intersects.hit', 'intersects.miss', 'intersectionSize', 'unionSize', 'differenceSize', 'addRange'];
 
 /**
  * churn.page's pool check (G5-B3 DELTA S-5), cold, at cycle start: add(kA) maps the one free page; add(kB)
@@ -754,6 +888,8 @@ function makeMeasure(lib) {
     function workCheck(l) {
         const set = l.set, ops = l.sc.ops, keys = l.sc.keys, L = ops.length, s0 = l.size0;
         if (l.step.st[0] !== 0 || set.size !== s0) return { ok: false, reason: 'not at cycle start' };
+        if (l.group === 'setops' || l.group === 'pair') return setopWork(l);
+        if (l.group === 'range') return rangeWork(l);
         const trace = new Float64Array(L);
         const before = SINK[0];
         for (let p = 0; p < L; p++) { l.step(0); trace[p] = set.size; }
@@ -797,6 +933,67 @@ function makeMeasure(lib) {
         if (!informative) return { ok: false, reason: 'uninformative cycle (' + info + ')' };
         return { ok: true, reason: info };
     }
+    // Cold, allocating: the set-op work check (G5-B4). A step replay of one cycle moves SINK by L x the labelled
+    // op's result; the oracle is a JS Set model of the BUILD key lists (never the engine, never ops[]):
+    // intersects.hit 1, intersects.miss 0, sizes === the model's and > 0; both set sizes === the model's.
+    function setopWork(l) {
+        const L = l.sc.ops.length;
+        const before = SINK[0];
+        for (let p = 0; p < L; p++) l.step(0);
+        const got = (SINK[0] - before) | 0;
+        if (l.step.st[0] !== 0 || l.set.size !== l.size0) return { ok: false, reason: 'step replay did not restore the cycle' };
+        const A = new Set(l.model.a), B = new Set(l.model.b);
+        let inter = 0;
+        for (const x of A) if (B.has(x)) inter++;
+        const w = l.work;
+        const one = w === 'intersects.hit' || w === 'intersects.miss' ? (inter > 0 ? 1 : 0) : w === 'intersectionSize' ? inter
+            : w === 'unionSize' ? A.size + B.size - inter : A.size - inter;
+        const info = w + ' model ' + one + ' (|A| ' + A.size + ', |B| ' + B.size + ', |A&B| ' + inter + ')';
+        if (l.set.size !== A.size || l.other.size !== B.size) {
+            return { ok: false, reason: 'set sizes ' + l.set.size + ' / ' + l.other.size + ' != model (' + info + ')' };
+        }
+        if (got !== ((one * L) | 0)) return { ok: false, reason: 'SINK delta ' + got + ' != oracle ' + info };
+        const informative = w === 'intersects.hit' ? one === 1 : w === 'intersects.miss' ? one === 0 : one > 0;
+        if (!informative) return { ok: false, reason: 'uninformative cycle (' + info + ')' };
+        return { ok: true, reason: info };
+    }
+    // Cold, allocating: the range work check (G5-B4). One cycle step by step against a JS Set model that applies
+    // each op by its own definition (add x; addRange: every k in [lo, hi); clear), admitting only those three
+    // codes. After every step: size === the model's AND === model.trace (S-9's literal sizes: a swapped op code
+    // agrees with the JS Set but not with the trace), and has() agrees with the model at x (add) / lo - 1, lo,
+    // hi - 1, hi (addRange). Informative: some addRange step adds > 1 key. Pages: the cycle's peak holds chunks on
+    // all SETOP_DIRS dir entries of PAGED_KNOBS.range (S-9; a script that maps fewer pages FAILS).
+    function rangeWork(l) {
+        const set = l.set, ops = l.sc.ops, keys = l.sc.keys, his = l.sc.his, L = ops.length, tr = l.model.trace;
+        if (tr.length !== L) return { ok: false, reason: 'model trace length ' + tr.length + ' != script ' + L };
+        const model = new Set();
+        let ranged = 0, peak = 0, dirs = 0;
+        for (let p = 0; p < L; p++) {
+            const op = ops[p], x = keys[p], hb = his[p];
+            const n0 = model.size;
+            if (op === OP_ADD) model.add(x);
+            else if (op === OP_RANGE) { for (let k = x; k < hb; k++) model.add(k); }
+            else if (op === OP_CLEAR) model.clear();
+            else return { ok: false, reason: 'op ' + op + ' at ' + p + ' in the range lane (add / addRange / clear only)' };
+            l.step(0);
+            if (set.size !== model.size || set.size !== tr[p]) {
+                return { ok: false, reason: 'size ' + set.size + ' after step ' + p + ' != model ' + model.size + ' / trace ' + tr[p] };
+            }
+            const probes = op === OP_RANGE ? [x - 1, x, hb - 1, hb] : [x];
+            for (const k of probes) {
+                if (k >= 0 && k < set.universe && set.has(k) !== model.has(k)) return { ok: false, reason: 'has(' + k + ') after step ' + p + ' != model' };
+            }
+            if (op === OP_RANGE && model.size - n0 > 1) ranged++;
+            if (model.size > peak) peak = model.size;
+            const de = dirEntries(set, PAGED_KNOBS.range.pageBits);
+            if (de > dirs) dirs = de;
+        }
+        if (l.step.st[0] !== 0 || set.size !== l.size0) return { ok: false, reason: 'step replay did not restore the cycle' };
+        const info = ranged + ' addRange steps adding > 1 key, peak size ' + peak + ' on ' + dirs + ' dir entries, trace ' + tr.join('/');
+        if (ranged === 0) return { ok: false, reason: 'uninformative cycle (' + info + ')' };
+        if (dirs !== SETOP_DIRS) return { ok: false, reason: 'peak not on all ' + SETOP_DIRS + ' pages (' + info + ')' };
+        return { ok: true, reason: info };
+    }
     async function measure(l) {
         const t0 = performance.now();
         const res = { name: l.name, group: l.group, family: familyOf(l), weight: l.w, opsPerCall: 1,
@@ -838,7 +1035,7 @@ function makeMeasure(lib) {
                 res.workOk = wk.ok;
                 res.workInfo = wk.reason;
             }
-            res.kindsAfter = kindsOf(l.set, l.chunks).join(',');
+            res.kindsAfter = laneKinds(l.set, l.other, l.chunks);
             res.kindsOk = res.kindsAfter === l.kinds0;
             if (l.edges === null) {
                 res.edgesOk = null;
@@ -884,7 +1081,7 @@ function makeMeasure(lib) {
         res.ms = Math.round(performance.now() - t0);
         return res;
     }
-    return { nsLane, emptyFn, nsExcess, abLane, boxControl, gcKickControl, measure, measureHi };
+    return { nsLane, emptyFn, nsExcess, abLane, boxControl, gcKickControl, measure, measureHi, workCheck };
 }
 
 // A rejected baseline (null transient) prints the base it read: ' BASE-REJECTED <B> > NS_BASE_MAX'. Cold.
@@ -947,12 +1144,28 @@ const CR_DEL_HEAD = '\n    delete(x) {\n';
 const CR_PAGEMAP_ANCHOR = 'pg = this._pFree[--this._pTop];\n            this._dir[d] = pg;\n';
 const CR_ACQ_HEAD = '\n    _pageAcquire(c) {\n';
 const CR_ACQ_END = '\n    _pagesNeeded(';
-const CR_TAIL = '\nlet __crHas = null;\nlet __crConv = null;\nconst __crHold = [];\n';
+// intersectionSize()'s header, guard and const tA / tB (G5-B4 DELTA task 3); unionSize / differenceSize both call it.
+// Must sit between the intersectionSize and unionSize headers (CR_WITHIN). Inject AFTER.
+const CR_SET_ANCHOR = '    intersectionSize(other) {\n        if (!isRoaringSet(other) || other._u !== this._u) throwROther(other, this._u);\n' +
+    '        const tA = this._top;\n        const tB = other._top;\n';
+// addRange()'s header, guard and the empty-range return (G5-B4 DELTA task 3): must sit between the addRange and
+// _rangePre headers (CR_WITHIN). Inject AFTER (a non-empty range only).
+const CR_RANGE_ANCHOR = "    addRange(lo, hi) {\n        if (typeof lo !== 'number' || typeof hi !== 'number' || !Number.isInteger(lo) || " +
+    "!Number.isInteger(hi) ||\n            !(lo >= 0) || !(lo <= hi) || !(hi <= this._u)) throwRRange(lo, hi, this._u);\n" +
+    '        if (lo === hi) return this;\n';
+// [method header, next method header]: the anchor must sit after the class, inside that span (each header count 1).
+const CR_WITHIN = Object.freeze({
+    setops: Object.freeze(['\n    intersectionSize(other) {\n', '\n    unionSize(other) {\n']),
+    addRange: Object.freeze(['\n    addRange(lo, hi) {\n', '\n    _rangePre(cF, a, cL, b) {\n']),
+});
+const CR_TAIL = '\nlet __crHas = null;\nlet __crConv = null;\nconst __crHold = [];\nlet __crSet = null;\nlet __crRange = null;\n';
 export const CR_MUTANTS = Object.freeze({
     'CR-has': { anchor: CR_HAS_ANCHOR, at: 'has', inject: '        __crHas = [c, lo];\n' },
     'CR-conv': { anchor: CR_CONV_ANCHOR, at: 'add', inject: '            __crConv = new Uint32Array(64);\n' },
     'CR-abConv': { anchor: CR_CONV_ANCHOR, at: 'add', inject: '            __crHold.push(new Uint32Array(64));\n' },
     'CR-pageMap': { anchor: CR_PAGEMAP_ANCHOR, at: 'pageAcquire', inject: '            __crHold.push([pg]);\n' },
+    'CR-setops': { anchor: CR_SET_ANCHOR, at: 'setops', inject: '        __crSet = [tA, tB];\n' },
+    'CR-addRange': { anchor: CR_RANGE_ANCHOR, at: 'addRange', inject: '        __crRange = [lo, hi];\n' },
 });
 
 /** The mutant source { n, src } or { n, src: null, bad } (bad = why the control cannot run). Cold. */
@@ -980,7 +1193,16 @@ export function crSource(base, name) {
             return { n, src: null, bad: 'BAD anchor at ' + at + ' not inside RoaringSet _pageAcquire() (' + accAt + '..' + endAt + ')' };
         }
     }
-    const cut = m.at === 'has' || m.at === 'pageAcquire' ? at + m.anchor.length : at;
+    const win = CR_WITHIN[m.at];
+    if (win !== undefined) {
+        const hAt = base.indexOf(win[0], cls);
+        const eAt = hAt < 0 ? -1 : base.indexOf(win[1], hAt);
+        if (base.split(win[0]).length !== 2 || base.split(win[1]).length !== 2 ||
+            !(hAt > cls && at > hAt && eAt >= at + m.anchor.length)) {
+            return { n, src: null, bad: 'BAD anchor at ' + at + ' not inside RoaringSet ' + m.at + ' span (' + hAt + '..' + eAt + ')' };
+        }
+    }
+    const cut = m.at === 'has' || m.at === 'pageAcquire' || win !== undefined ? at + m.anchor.length : at;
     return { n, src: base.slice(0, cut) + m.inject + base.slice(cut) + CR_TAIL, bad: null };
 }
 
@@ -1000,26 +1222,38 @@ function retTracker(createLeakTracker, name, box) {
 // Direct: (2^20, 2, 1); paged (S-7 = PLAN-G2 A-5): (2^32, 4, 2, maxPages, pageBits).
 const RET_U_DIRECT = 1048576;
 const RET_U_PAGED = 4294967296;
+// S-10: chunk 3 FULL in the instance and in its twin B (addRange [3 << 16, 4 << 16)).
+const RET_R_LO = 3 << 16;
+const RET_R_HI = 4 << 16;
+/** Tracked per retention cycle: the instance, its dump() and the twin B. */
+const RET_PER_CYCLE = 3;
 function retChurn(RoaringSet, pg, wantPaged, tracker, held) {
-    let tracked = 0, mismatch = 0, dumpBad = 0, clearBad = 0, uni = null;
+    let tracked = 0, mismatch = 0, dumpBad = 0, clearBad = 0, rangeBad = 0, uni = null;
+    const mk = pg === null ? () => new RoaringSet(RET_U_DIRECT, 2, 1) : () => new RoaringSet(RET_U_PAGED, 4, 2, pg.maxPages, pg.pageBits);
     for (let i = 0; i < RET_CYCLES; i++) {
-        const s = pg === null ? new RoaringSet(RET_U_DIRECT, 2, 1) : new RoaringSet(RET_U_PAGED, 4, 2, pg.maxPages, pg.pageBits);
+        const s = mk();
         if (!pagedMatch(s, wantPaged)) mismatch++;
         uni = s.universe;
         const a = i & 0xFFFF;
         for (let k = 0; k < 70; k++) s.add((a + k * 7) & 0xFFFF);      // small -> array (65th key, large slot)
         s.add(65536 + a);                                               // a SINGLE in chunk 1
+        s.addRange(RET_R_LO, RET_R_HI);                                 // chunk 3 FULL
+        const B = mk();
+        if (!pagedMatch(B, wantPaged)) mismatch++;
+        B.addRange(RET_R_LO, RET_R_HI);
+        if (s.intersectionSize(B) !== RET_R_HI - RET_R_LO) rangeBad++;
         s.has(a); s.successor(a); s.predecessor(0xFFFF - a); s.min(); s.max(); s.runOptimize(); s.delete(a);
         const d = s.dump();
-        if (d.size !== 70 || d.chunks.length !== 2) dumpBad++;
+        if (d.size !== 70 + (RET_R_HI - RET_R_LO) || d.chunks.length !== 3) dumpBad++;
         s.clear();
         if (s.size !== 0) clearBad++;
         tracker.track(s, retNoop, 'roaringset', { audit: true });
         tracker.track(d, retNoop, 'roaringset.dump', { audit: true });
-        tracked += 2;
-        if (held !== null) held.push(s, d);
+        tracker.track(B, retNoop, 'roaringset.twin', { audit: true });
+        tracked += RET_PER_CYCLE;
+        if (held !== null) held.push(s, d, B);
     }
-    return { tracked, mismatch, dumpBad, clearBad, universe: uni };
+    return { tracked, mismatch, dumpBad, clearBad, rangeBad, universe: uni };
 }
 async function retDrain(tracker) {
     let live = tracker.size();
@@ -1038,15 +1272,15 @@ async function runRetention(RoaringSet, job, wantPaged) {
     globalThis.gc();
     await settle(25);
     const after = tracker.size();
-    const want = 2 * RET_CYCLES;
+    const want = RET_PER_CYCLE * RET_CYCLES;
     const r = { layout: wantPaged ? 'paged' : 'direct', universe: ch.universe,
         paged: job.paged === null ? null : { maxPages: job.paged.maxPages, pageBits: job.paged.pageBits },
         cycles: RET_CYCLES, tracked: ch.tracked, size: live, after, sizeAfterGc: after, collected: box.collected, findings: findings.length,
         findingKinds: findings.map((x) => x.kind + ':' + x.reason), warnings: box.warns.length, leaks: box.leaks.length,
-        pagedMismatch: ch.mismatch, dumpBad: ch.dumpBad, clearBad: ch.clearBad };
+        pagedMismatch: ch.mismatch, dumpBad: ch.dumpBad, clearBad: ch.clearBad, rangeBad: ch.rangeBad };
     r.ok = r.tracked === want && live === 0 && after === 0 && box.collected === want && findings.length === 0 &&
-        box.leaks.length === 0 && ch.mismatch === 0 && ch.dumpBad === 0 && ch.clearBad === 0;
-    // CR-retain: the same churn, every instance + dump also held past the drain
+        box.leaks.length === 0 && ch.mismatch === 0 && ch.dumpBad === 0 && ch.clearBad === 0 && ch.rangeBad === 0;
+    // CR-retain: the same churn, every instance + dump + twin also held past the drain
     const boxC = { collected: 0, leaks: [], warns: [] };
     const trackerC = retTracker(createLeakTracker, 'roaring-retention-control', boxC);
     const held = [];
@@ -1057,6 +1291,16 @@ async function runRetention(RoaringSet, job, wantPaged) {
         flipped: Number.isInteger(liveC) && liveC >= 1, detail: 'size ' + liveC + '/' + want + ' held' };
     r.ms = Math.round(performance.now() - t0);
     return { retention: r, control: ctl };
+}
+
+// CR-rangeArr: the step's addRange case and its variant (a fresh [lo, hi] array in the step function's own slot).
+const CR_ARR_CASE = 'case 13: set.addRange(x, his[p]); break;';
+const CR_ARR_VARIANT = 'case 13: { const ra = [x, his[p]]; step.crArr = ra; set.addRange(ra[0], ra[1]); break; }';
+/** The oracle self-check's engine fault: unionSize() one too high, everything else the engine's own. Cold. */
+function offByOneUnion(RoaringSet) {
+    return class OffByOneUnion extends RoaringSet {
+        unionSize(other) { return super.unionSize(other) + 1; }
+    };
 }
 
 function ctlLine(c) {
@@ -1103,7 +1347,8 @@ async function runJob(job) {
     const dupSrc = dupSources(lanes.map((l) => l.step).concat(hi.map((l) => l.step)));
     const probeSc = script([[OP_HAS, 0]]);
     const probe = new mod.RoaringSet(1 << 16, 1, 1);
-    const plantDup = dupSources([makeStep(probe, null, probeSc.ops, probeSc.keys, SINK), makeStep(probe, null, probeSc.ops, probeSc.keys, SINK)]);
+    const plantDup = dupSources([makeStep(probe, null, probeSc.ops, probeSc.keys, probeSc.his, SINK),
+        makeStep(probe, null, probeSc.ops, probeSc.keys, probeSc.his, SINK)]);
     const controls = [{ name: 'CR-dupSrc', family: null, lanes: [], value: plantDup, want: 'exactly 1', flipped: plantDup === 1, detail: '' }];
 
     const lib = { measureAllocs, measureOps, GcProfiler, checkNoGc, getHeapSpaceStatistics, GCProfiler, optStatus, SINK };
@@ -1170,10 +1415,14 @@ async function runJob(job) {
         MUT.push({ name: 'CR-abConv', fam: 'conv', targets: ['conv.4096<->4097'], ch: 'ab' });
     }
     if (fam.has('churn')) MUT.push({ name: 'CR-pageMap', fam: 'churn', targets: ['churn.page'], ch: 'retained' });
+    for (const f of ['setops', 'pair']) {
+        if (fam.has(f)) MUT.push({ name: 'CR-setops', fam: f, targets: [f + '.intersectionSize', f + '.unionSize', f + '.differenceSize'], ch: 'transient' });
+    }
+    if (fam.has('range')) MUT.push({ name: 'CR-addRange', fam: 'range', targets: ['range.addRange'], ch: 'transient' });
     if (MUT.length > 0) {
         const base = job.src !== null ? job.src : readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
         for (const m of MUT) {
-            const c = { name: m.name + (m.name === 'CR-has' ? '.' + m.fam : ''), family: m.fam, lanes: m.targets.slice(), value: null,
+            const c = { name: m.name + (m.name === 'CR-has' || m.name === 'CR-setops' ? '.' + m.fam : ''), family: m.fam, lanes: m.targets.slice(), value: null,
                 want: m.ch === 'ab' ? 'arrayBuffers growth > 0 on every target' : m.ch === 'retained' ? 'round(retained) >= 1 B/call on every target'
                     : 'excess >= ' + NS_MAX_EXCESS + ' on every target',
                 flipped: false, detail: '', anchorCount: null };
@@ -1212,6 +1461,39 @@ async function runJob(job) {
             controls.push(c);
         }
     }
+    if (fam.has('range')) {
+        // CR-rangeArr: the step source with case 13 routed through a fresh [lo, hi] array in a heap slot (the step
+        // function's own property; it dies young on the next overwrite), on the UNMUTATED engine
+        const c = { name: 'CR-rangeArr', family: 'range', lanes: ['range.addRange'], value: null,
+            want: 'replace count 1, work ok, excess >= ' + NS_MAX_EXCESS, flipped: false, detail: '', anchorCount: null };
+        const n13 = BODY.split(CR_ARR_CASE).length - 1;
+        c.anchorCount = n13;
+        if (n13 !== 1) c.detail = 'BAD step-source replace count ' + n13 + ' (want exactly 1)';
+        else {
+            const b = buildLanes(mod.RoaringSet, { src: null, families: ['range'], paged: job.paged }, SINK,
+                BODY.replace(CR_ARR_CASE, () => CR_ARR_VARIANT));
+            const l = b.lanes.find((x) => x.name === 'range.addRange');
+            const wk = M.workCheck(l);
+            const n = Math.max(8192, (WARM_CALLS / l.w) | 0);
+            for (let i = 0; i < n; i++) l.step(i);
+            const ns = M.nsExcess(l.step, null);
+            c.value = ns === null ? null : ns.excess;
+            c.flipped = wk.ok === true && nsBox(c.value);
+            c.detail = 'replace count 1; work ' + (wk.ok ? 'ok' : 'FAIL (' + wk.reason + ')') + '; transient ' + fmtN(c.value, 0);
+        }
+        controls.push(c);
+    }
+    // Self-check oracle (nit 2): a RoaringSet subclass whose unionSize() returns + 1 fails exactly the unionSize
+    // lane's work check (setopWork never reads the engine's answer). No control name: torture's contract is unchanged.
+    const oracle = [];
+    for (const f of ['setops', 'pair']) {
+        if (!fam.has(f)) continue;
+        const Off = offByOneUnion(mod.RoaringSet);
+        const b = buildLanes(Off, { src: null, families: [f], paged: job.paged }, SINK, BODY);
+        const bad = [], good = [];
+        for (const l of b.lanes) (M.workCheck(l).ok === true ? good : bad).push(l.name);
+        oracle.push({ family: f, bad, good, ok: bad.length === 1 && bad[0] === f + '.unionSize' && good.length === FAMILY_LANES[f] - 1 });
+    }
     let retention = null;
     if (fam.has('retention')) {
         const rr = await runRetention(mod.RoaringSet, job, wantPaged);
@@ -1235,17 +1517,23 @@ async function runJob(job) {
     }
     lines.push('selfcheck dupSrc=' + dupSrc + '/0 control CR-dupSrc=' + plantDup + ' (want 1) | ' +
         (dupSrc === 0 && plantDup === 1 ? 'ok' : 'FAIL'));
+    for (const o of oracle) {
+        lines.push('selfcheck oracle ' + o.family + ': subclass unionSize + 1 -> work FAIL on [' + o.bad.join(', ') + '] (want exactly ' +
+            o.family + '.unionSize), work ok on ' + o.good.length + '/' + (FAMILY_LANES[o.family] - 1) + ' others | ' + (o.ok ? 'ok' : 'FAIL'));
+    }
     for (const c of controls) if (c.name !== 'CR-dupSrc') lines.push(ctlLine(c));
     if (retention !== null) {
         const r = retention;
         lines.push('retention ' + r.layout + ' universe=' + r.universe + ' cycles=' + r.cycles + ' tracked=' + r.tracked + ' size=' + r.size + '/0 after=' + r.after +
             ' collected=' + r.collected + '/' + r.tracked + ' findings=' + r.findings + ' warnings=' + r.warnings + ' leaks=' + r.leaks +
-            ' pagedMismatch=' + r.pagedMismatch + ' dumpBad=' + r.dumpBad + ' clearBad=' + r.clearBad + ' ' + r.ms + ' ms | ' + (r.ok ? 'ok' : 'FAIL'));
+            ' pagedMismatch=' + r.pagedMismatch + ' dumpBad=' + r.dumpBad + ' clearBad=' + r.clearBad + ' rangeBad=' + r.rangeBad + ' ' + r.ms + ' ms | ' +
+            (r.ok ? 'ok' : 'FAIL'));
     }
 
     const fail = results.filter((r) => !r.ok).map((r) => r.name);
     if (hiRes !== null) for (const r of hiRes.lanes) if (!r.ok) fail.push(r.name);
     if (dupSrc !== 0) fail.push('selfcheck dupSrc');
+    for (const o of oracle) if (!o.ok) fail.push('selfcheck oracle ' + o.family);
     for (const c of controls) if (!c.flipped) fail.push('control ' + c.name);
     if (fam.has('retention') && (retention === null || retention.ok !== true)) fail.push('retention');
     return {

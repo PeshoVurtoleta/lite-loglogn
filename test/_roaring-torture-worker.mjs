@@ -203,9 +203,11 @@ export const GC_OPS = 400000;
 export const MO_OPS = 100000;
 export const MO_WARM = 25000;
 export const WARM_CALLS = 131072;
-// Per-job kill timer: >= 4.5x the slowest job seen (G5-B3 DELTA S-7: 25.4 s at load1 78, R17; G5-B3a: see
-// .handoff/evidence/roaring-g5-b3a.md, PRELIMINARY shared host). A hang or a stuck job is a FAIL, never a wait.
-export const KILL_MS = 120000;
+// Per-job kill timer (U-0, G5-B4 task 5 rule): max(120,000, 4.5 x the slowest COMPLETED job wall), rounded up
+// to 10 s. Slowest completed: mixed-pair 90.5 s (B4a timed driver, frozen engine, 2026-11-05, load1 14.7 -> 17.4,
+// shared host) -> 4.5 x 90.5 s = 407.25 s -> 410,000 ms. The 120,000 it replaces killed the live setops / pair jobs
+// at load1 17.9 -> 25.1. See .handoff/evidence/burst-close/README.md. A hang or a stuck job is a FAIL, never a wait.
+export const KILL_MS = 410000;
 /** Retention churn cycles per job (each tracks the instance, its dump() and the addRange twin: 3 x RET_CYCLES tracked). */
 export const RET_CYCLES = 4096;
 /** Gated lane count per family (fail closed: a family that builds fewer is an error). */

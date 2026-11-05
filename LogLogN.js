@@ -2064,7 +2064,9 @@ function throwRRange(lo, hi, u) {
  * over the chunks (`_top`, 2,115 words) answers next / previous live chunk;
  * per-chunk [min, max] headers (`_cMin` / `_cMax`) answer min / max and
  * cross-chunk successor / predecessor without a container search. Runs come
- * only from runOptimize() (add never re-encodes).
+ * from runOptimize(), from a delete in a FULL chunk (runs / small runs) and
+ * from addRange() (which may end in either); add never re-encodes an array or
+ * bitmap as runs.
  *
  * SPACE is fixed at construction: every pool is preallocated and NEVER grows.
  * The chunk table is DIRECT (11 B per chunk) or PAGED (a directory plus pooled
@@ -3812,7 +3814,16 @@ export class RoaringSet {
         const e = pL ? cL - 1 : cL;
         for (let c = pF ? cF + 1 : cF; c <= e; c++) this._rangeFull(c);
         if (pF) this._rangePart(cF, a, cF === cL ? b : 65535);
-        if (pL) this._rangePart(cL, 0, b);
+        if (pL) {
+            this._rangePart(cL, 0, b);
+            // cF was decided before cL's write, which returns a small slot when cL leaves the small class: apply
+            // runOptimize's run-slab rule to cF at the post-call pool state (the slot is free: no throw)
+            if (pF) {
+                const m = this._mi(cF);
+                const r = this._runs[m];
+                if (this._kind[m] === 4 && r < 32 && this._sTop !== 0) this._demoteRunToSmall(m, this._slot[m], r + 1);
+            }
+        }
         return this;
     }
 

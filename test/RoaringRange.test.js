@@ -600,3 +600,232 @@ test('RoaringRange S-3 rows: runs at cap 2048 with n <= 4096 -> array (erratum b
     d.addRange(4 * 65536, 5 * 65536 + 5000);
     assert.deepEqual(d.dump().chunks, [{ chunk: 4, kind: 'full', count: 65536, runs: 0 }, { chunk: 5, kind: 'runs', count: 5000, runs: 1 }]);
 });
+
+// ---- F1 (audit cloud-zm96u9; maintainer ruling 2026-11-05): C-8's kind contract at the POST-CALL pool state ----
+// The first partial chunk cF is decided before the last partial chunk cL is written; cL can return a small slot
+// (a small chunk that leaves the small class), so cF must end in runOptimize()'s kind at the pool state AFTER cL.
+// Oracle: runOptimize() itself (not _rangeKind): right after addRange, runOptimize() must leave every touched
+// chunk's (kind, count, runs) unchanged; when it also leaves every UNtouched chunk unchanged, the pool tops
+// (_sTop, _lTop) must be unchanged too. runOptimize() runs on the set itself and the stream continues from the
+// optimized state (the add / delete / runOptimize / addRange mix of the audit's R2 search, xorshift32 streams).
+// Also after every addRange: slot conservation (each pool's held slots + free stack (+ _conv) is a permutation of its
+// slot ids, so a demotion that pops an empty pool or leaks a slot fails), and every 250 steps a full ordered walk
+// equals a membership model of the focus window (a demotion that copies too few / many runs fails).
+
+function xs32(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+const SMALLK = new Set(['small', 'smallRuns']);
+const LARGEK = new Set(['array', 'bitmap', 'runs']);
+
+// null, or why the pools are inconsistent: small slots {held by small / smallRuns chunks} + _sFree[0, _sTop) must be
+// exactly 0..maxS-1; large slots {held by array / bitmap / runs} + _lFree[0, _lTop) + _conv exactly 0..maxL
+function poolError(r) {
+    const d = r.dump();
+    if (!(r._sTop >= 0 && r._lTop >= 0)) return 'pool top negative s ' + r._sTop + ' l ' + r._lTop;
+    const sIds = [], lIds = [r._conv];
+    for (const c of d.chunks) {
+        const slot = r._slot[r._mi(c.chunk)];
+        if (SMALLK.has(c.kind)) sIds.push(slot); else if (LARGEK.has(c.kind)) lIds.push(slot);
+    }
+    for (let i = 0; i < r._sTop; i++) sIds.push(r._sFree[i]);
+    for (let i = 0; i < r._lTop; i++) lIds.push(r._lFree[i]);
+    const perm = (ids, n) => ids.length === n && ids.slice().sort((x, y) => x - y).every((v, i) => v === i);
+    if (!perm(sIds, r._maxS)) return 'small slots ' + JSON.stringify(sIds) + ' (maxSmall ' + r._maxS + ')';
+    if (!perm(lIds, r._maxL + 1)) return 'large slots ' + JSON.stringify(lIds) + ' (maxLarge ' + r._maxL + ' + _conv)';
+    return null;
+}
+
+// one seeded stream on set r over the focus chunks; returns the counters (violations listed, first 5 kept)
+function fixpointStream(r, U, focus, seed, steps) {
+    const random = xs32(seed);                    // the op stream
+    const rkey = xs32(seed ^ 0x9E3779B9);         // the key / base / span stream (independent of the op draws)
+    const out = { ranges: 0, twoPartial: 0, freed: 0, poolChecks: 0, walks: 0, violations: 0, first: [] };
+    const w0 = focus[0] * 65536, w1 = Math.min(U, (focus[focus.length - 1] + 4) * 65536);   // model window [w0, w1)
+    const flags = new Uint8Array(w1 - w0);
+    const setF = (x, v) => { assert.ok(x >= w0 && x < w1, 'key ' + x + ' outside the model window'); flags[x - w0] = v; };
+    const fail = (msg) => { out.violations++; if (out.first.length < 5) out.first.push(msg); };
+    const byChunk = (d) => new Map(d.chunks.map((c) => [c.chunk, c.kind + ':' + c.count + ':' + c.runs]));
+    for (let step = 0; step < steps; step++) {
+        const base = focus[Math.floor(rkey() * focus.length)] * 65536;
+        const op = random();
+        try {
+            if (op < 0.4) { const x = Math.min(U - 1, base + Math.floor(rkey() * (rkey() < 0.5 ? 65536 : 500))); r.add(x); setF(x, 1); }
+            else if (op < 0.6) { const x = Math.min(U - 1, base + Math.floor(rkey() * (rkey() < 0.5 ? 65536 : 500))); r.delete(x); setF(x, 0); }
+            else if (op < 0.68) r.runOptimize();
+            else {
+                let lo = base + Math.floor(rkey() * 65536);
+                const span = rkey() < 0.3 ? Math.floor(rkey() * 40) : rkey() < 0.6 ? Math.floor(rkey() * 5000) : Math.floor(rkey() * 150000);
+                let hi = Math.min(lo + span, U); lo = Math.min(lo, U); if (hi < lo) hi = lo;
+                const pre = byChunk(r.dump());
+                r.addRange(lo, hi);
+                for (let x = lo; x < hi; x++) setF(x, 1);
+                if (hi === lo) continue;
+                const pe = poolError(r);
+                if (pe !== null) fail('step ' + step + ' addRange(' + lo + ', ' + hi + ') ' + pe);
+                out.ranges++;
+                const cF = lo >>> 16, cL = (hi - 1) >>> 16;
+                const pF = (lo & 65535) !== 0 || (cF === cL && ((hi - 1) & 65535) !== 65535);
+                const pL = cL !== cF && ((hi - 1) & 65535) !== 65535;
+                const d0 = r.dump();
+                const before = byChunk(d0);
+                if (pF && pL) {
+                    out.twoPartial++;
+                    // witness of the F1 scenario: cL left the small class and cF ends in small runs
+                    const lPre = (pre.get(cL) || 'empty').split(':')[0], lPost = before.get(cL).split(':')[0];
+                    if (SMALLK.has(lPre) && !SMALLK.has(lPost) && before.get(cF).split(':')[0] === 'smallRuns' &&
+                        !SMALLK.has((pre.get(cF) || 'empty').split(':')[0])) out.freed++;
+                }
+                const sTop = r._sTop, lTop = r._lTop;
+                r.runOptimize();
+                const after = byChunk(r.dump());
+                let untouchedSame = true;
+                for (const [c, v] of before) {
+                    const touched = c >= cF && c <= cL;
+                    if (after.get(c) === v) continue;
+                    if (touched) fail('step ' + step + ' addRange(' + lo + ', ' + hi + ') chunk ' + c + ': ' + v + ' -> runOptimize -> ' + after.get(c));
+                    else untouchedSame = false;
+                }
+                if (untouchedSame) {
+                    out.poolChecks++;
+                    if (r._sTop !== sTop || r._lTop !== lTop) {
+                        fail('step ' + step + ' addRange(' + lo + ', ' + hi + ') pool tops s ' + sTop + ' -> ' + r._sTop + ', l ' + lTop + ' -> ' + r._lTop);
+                    }
+                }
+            }
+        } catch (e) { if (!(e instanceof RangeError)) throw e; }
+        if (step % 250 === 249) {
+            out.walks++;
+            let x = r.has(w0) ? w0 : r.successor(w0);
+            let n = 0, bad = -1;
+            for (let i = 0; i < flags.length; i++) {
+                if (flags[i] === 0) continue;
+                n++;
+                if (x !== w0 + i) { bad = w0 + i; break; }
+                x = r.successor(x);
+            }
+            if (bad < 0 && x !== undefined && x < w1) bad = x;
+            if (bad >= 0 || r.size !== n) fail('step ' + step + ' model walk differs at ' + bad + ' (size ' + r.size + ' model ' + n + ')');
+        }
+    }
+    return out;
+}
+
+test('RoaringRange F1 fixpoint: runOptimize() right after addRange changes no touched chunk (tight pools, direct + paged)', () => {
+    // [label, make(), U, focus chunks, seeds]; 2,500 steps per seed. Row 1 uses the audit R2's configuration and seed, not R2's
+    // exact stream (op and key draws are split here; reproductions.mjs R2 still replays that stream).
+    const ROWS = [
+        ['R2 U=3c s2 l1', () => new RoaringSet(3 * 65536, 2, 1), 3 * 65536, [0, 1, 2], [2675, 11, 97]],
+        ['U=3c s1 l2', () => new RoaringSet(3 * 65536, 1, 2), 3 * 65536, [0, 1, 2], [5, 2675]],
+        ['U=3c s1 l1', () => new RoaringSet(3 * 65536, 1, 1), 3 * 65536, [0, 1, 2], [7, 1234]],
+        ['U=3c s3 l1', () => new RoaringSet(3 * 65536, 3, 1), 3 * 65536, [0, 1, 2], [3, 4242]],
+        ['U=2^20 s2 l2', () => new RoaringSet(1 << 20, 2, 2), 1 << 20, [5, 6, 7], [21, 2675]],
+        ['FORCED paged 2^20 pb2 mp4 s2 l1', () => new FORCED(1 << 20, 2, 1, 4, 2), 1 << 20, [3, 4, 5], [2675, 31]],
+        ['REAL paged 2^32 pb8 mp4 s2 l2', () => new RoaringSet(U32, 2, 2, 4, 8), U32, [255, 256, 257], [2675, 77]],
+    ];
+    const tot = { ranges: 0, twoPartial: 0, freed: 0, poolChecks: 0, walks: 0, violations: 0, paged: 0 };
+    const msgs = [];
+    for (const [label, make, U, focus, seeds] of ROWS) {
+        for (const seed of seeds) {
+            const r = make();
+            if (label.includes('paged')) { assert.equal(r.paged, true, label + ' built paged'); tot.paged++; }
+            else assert.equal(r.paged, false, label + ' built direct');
+            const o = fixpointStream(r, U, focus, seed, 2500);
+            for (const k of ['ranges', 'twoPartial', 'freed', 'poolChecks', 'walks', 'violations']) tot[k] += o[k];
+            for (const m of o.first) msgs.push(label + ' seed ' + seed + ': ' + m);
+        }
+    }
+    console.log('# F1 fixpoint: ' + JSON.stringify(tot));
+    assert.equal(tot.violations, 0, 'fixpoint violations:\n' + msgs.join('\n'));
+    // floors: the streams reach two-partial ranges, the F1 scenario itself, the pool check, and both paged rows
+    assert.ok(tot.ranges >= 5000, 'ranges ' + tot.ranges);
+    assert.ok(tot.twoPartial >= 1000, 'two-partial ranges ' + tot.twoPartial);
+    assert.ok(tot.freed >= 10, 'F1 scenario witnessed ' + tot.freed);   // head 15, base engine 2
+    assert.ok(tot.poolChecks >= 2000, 'pool-top checks ' + tot.poolChecks);
+    assert.equal(tot.walks, 15 * 10, 'model walks');
+    assert.equal(tot.paged, 4);
+});
+
+test('RoaringRange F1 R1 (exact): cF ends smallRuns after cL returns the small slot; add(64) then succeeds', () => {
+    // U = 3 chunks, maxSmall 1, maxLarge 2. chunk 1: 100 keys -> large array; chunk 2: 60 keys -> small (pool empty).
+    const r = new RoaringSet(3 * 65536, 1, 2);
+    for (let i = 0; i < 100; i++) r.add(65536 + i);
+    for (let i = 0; i < 120; i += 2) r.add(131072 + i);
+    assert.deepEqual(r.dump().chunks, [{ chunk: 1, kind: 'array', count: 100, runs: 0 }, { chunk: 2, kind: 'small', count: 60, runs: 0 }]);
+    assert.equal(r._sTop, 0);
+    // chunk 1 gets [200, 65535] (2 runs, decided with no small slot free); chunk 2 gets [0, 9] -> 65 keys, 55 runs ->
+    // large array, returning its small slot. Post-call: a small slot is free, so runOptimize's kind for chunk 1 is smallRuns.
+    r.addRange(65536 + 200, 131072 + 10);
+    assert.deepEqual(r.dump().chunks, [{ chunk: 1, kind: 'smallRuns', count: 65436, runs: 2 }, { chunk: 2, kind: 'array', count: 65, runs: 0 }]);
+    assert.equal(r._sTop, 0, 'chunk 1 holds the small slot chunk 2 returned');
+    assert.equal(r._lTop, 1, 'one large slot free (chunk 2 holds the other)');
+    assert.equal(r.size, 65436 + 65);
+    // the 8 KB slot is free: chunk 0 grows to 65 keys (SINGLE -> large array: no small slot) without a pool throw
+    for (let i = 0; i < 64; i++) r.add(i);
+    r.add(64);
+    assert.equal(r.size, 65436 + 65 + 65);
+    assert.deepEqual(r.dump().chunks[0], { chunk: 0, kind: 'array', count: 65, runs: 0 });
+    assert.equal(r._lTop, 0);
+});
+
+test('RoaringRange F1 demoted content (exact): 32 runs copied whole, neighbour small slot untouched', () => {
+    // maxSmall 2 (slot 0 pops first), maxLarge 2. chunk 2 takes small slot 0 (60 keys 0, 2, .., 118); chunk 0 takes slot 1
+    // (20 keys 1000 + 3i); chunk 1 gets 31 isolated keys 0, 2, .., 60 in a LARGE array (no small slot free).
+    const r = new RoaringSet(3 * 65536, 2, 2);
+    for (let i = 0; i < 120; i += 2) r.add(131072 + i);
+    for (let i = 0; i < 20; i++) r.add(1000 + 3 * i);
+    for (let i = 0; i <= 60; i += 2) r.add(65536 + i);
+    assert.deepEqual(r.dump().chunks.map((c) => c.kind), ['small', 'array', 'small']);
+    assert.equal(r._sTop, 0);
+    // chunk 1 gets [100, 65535]: 31 + 1 = 32 runs (the small-runs cap), decided as a run slab; chunk 2 gets [0, 9] -> large
+    // array, returning small slot 0; the demotion copies all 32 runs (64 u16 words) into slot 0, next to chunk 0's slot 1.
+    r.addRange(65536 + 100, 131072 + 10);
+    assert.deepEqual(r.dump().chunks, [{ chunk: 0, kind: 'small', count: 20, runs: 0 },
+        { chunk: 1, kind: 'smallRuns', count: 31 + 65436, runs: 32 }, { chunk: 2, kind: 'array', count: 65, runs: 0 }]);
+    assert.equal(r._sTop, 0);
+    assert.equal(r._lTop, 1);
+    // every run of chunk 1, both ends, and the gaps around them (run 32 = [100, 65535] is the last pair copied)
+    const B = 65536;
+    for (let i = 0; i <= 60; i += 2) {
+        assert.equal(r.has(B + i), true, 'run [' + i + ', ' + i + ']');
+        assert.equal(r.has(B + i + 1), false, 'gap after ' + i);
+        assert.equal(r.successor(B + i), i === 60 ? B + 100 : B + i + 2, 'successor of run end ' + i);
+    }
+    for (const x of [100, 101, 32767, 65534, 65535]) assert.equal(r.has(B + x), true, 'run 32 key ' + x);
+    for (const x of [61, 98, 99]) assert.equal(r.has(B + x), false, 'gap key ' + x);
+    assert.equal(r.predecessor(B + 100), B + 60);
+    assert.equal(r.predecessor(B + 65536), B + 65535);
+    // chunk 0 (small slot 1, the neighbour) and chunk 2 are exactly their keys: full ordered walks
+    const walk = (lo, hi) => { const ks = []; for (let k = lo === 0 && r.has(0) ? 0 : r.successor(lo === 0 ? 0 : lo - 1); k !== undefined && k < hi; k = r.successor(k)) ks.push(k); return ks; };
+    assert.deepEqual(walk(0, B), Array.from({ length: 20 }, (_, i) => 1000 + 3 * i));
+    const c2 = []; for (let i = 0; i < 10; i++) c2.push(2 * B + i); for (let i = 10; i < 120; i += 2) c2.push(2 * B + i);
+    assert.deepEqual(walk(2 * B, 3 * B), c2);
+    assert.equal(r.min(), 1000);
+    assert.equal(r.max(), 2 * B + 118);
+    // the encoded runs themselves: 32 (start, len - 1) pairs in small slot 0
+    const m = r._mi(1);
+    assert.equal(r._slot[m], 0);
+    const want = []; for (let i = 0; i <= 60; i += 2) want.push(i, 0); want.push(100, 65435);
+    assert.deepEqual(Array.from(r._sData.subarray(0, 64)), want);
+});
+
+test('RoaringRange F1 boundary (exact): a 33-run cF stays a run slab although a small slot is free post-call', () => {
+    // maxSmall 2, maxLarge 3. chunk 2: 100 isolated keys 20 + 2i -> large array (101 runs after [0, 9]: stays array).
+    // chunk 1: 32 runs of 3 keys (4q + 0..2) -> runOptimize -> smallRuns, 32 runs (the cap).
+    const r = new RoaringSet(3 * 65536, 2, 3);
+    for (let i = 0; i < 100; i++) r.add(131072 + 20 + 2 * i);
+    for (let q = 0; q < 32; q++) for (let i = 0; i < 3; i++) r.add(65536 + 4 * q + i);
+    r.runOptimize();
+    assert.deepEqual(r.dump().chunks, [{ chunk: 1, kind: 'smallRuns', count: 96, runs: 32 }, { chunk: 2, kind: 'array', count: 100, runs: 0 }]);
+    // [200, 65535] is an isolated 33rd run: chunk 1 spills to a run slab (33 > 32) and returns its small slot, so both
+    // small slots are free post-call; runOptimize keeps 33 runs in the slab, so the post-pass must not demote it.
+    r.addRange(65536 + 200, 131072 + 10);
+    assert.deepEqual(r.dump().chunks, [{ chunk: 1, kind: 'runs', count: 96 + 65336, runs: 33 }, { chunk: 2, kind: 'array', count: 110, runs: 0 }]);
+    assert.equal(r._sTop, 2);
+    assert.equal(poolError(r), null);
+    const d = JSON.stringify(r.dump());
+    r.runOptimize();
+    assert.equal(JSON.stringify(r.dump()), d, 'runOptimize fixpoint');
+    for (let q = 0; q < 32; q++) {
+        assert.equal(r.has(65536 + 4 * q), true); assert.equal(r.has(65536 + 4 * q + 2), true); assert.equal(r.has(65536 + 4 * q + 3), false);
+    }
+    assert.equal(r.has(65536 + 199), false); assert.equal(r.has(65536 + 200), true); assert.equal(r.has(65536 + 65535), true);
+});

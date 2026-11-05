@@ -528,6 +528,58 @@ Limits and failure modes:
 
 For a sparse key set in a large universe use `YFastTrie` (O(n) space) instead.
 
+### RoaringSet
+
+| Signature | Returns | Notes |
+| --- | --- | --- |
+| `new RoaringSet(universe, maxSmall?, maxLarge?, maxPages?, pageBits?)` | instance | Positional. `universe` REQUIRED, an integer in [1, 2^32]. `maxSmall` [0, 65535] (default 1024), `maxLarge` [1, 65534] (default 256), `pageBits` [1, 15] (default 8), `maxPages` [1, ceil(C / 2^pageBits)] (default = all pages), C = ceil(U / 65536). Every pool is preallocated once and never grows. |
+| `has(x)` | `boolean` | Bad key -> `false`. |
+| `add(x)` | `this` | Idempotent. Bad key -> `RangeError`; pool exhaustion -> `RangeError`; each with no state changed. |
+| `addRange(lo, hi)` | `this` | Adds every key in [lo, hi), 0 <= lo <= hi <= U (integers); `lo === hi` adds nothing. Prechecks the slots and pages it needs and throws `RangeError` before any write if the pools cannot hold them; a bad bound throws `RangeError` with nothing touched. Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a non-inlined call site (as `has`). |
+| `delete(x)` | `boolean` | `true` if `x` was present. Bad key -> `false`. Can throw `RangeError` on a PRESENT key when a pool is exhausted (set unchanged): deleting from a FULL chunk needs a slot, and splitting a small-runs run past 32 runs needs a large one. |
+| `successor(x)` | `number \| undefined` | Smallest key > x (STRICT). Bad key -> `undefined`. |
+| `predecessor(x)` | `number \| undefined` | Largest key < x (STRICT). Bad key -> `undefined`. |
+| `min()` / `max()` | `number \| undefined` | `undefined` when empty. |
+| `runOptimize()` | `this` | Cold, O(live chunks). Re-encodes chunks as FULL / runs / small runs / array where that is smaller. Never throws, allocates nothing. `add` never re-encodes, so call it after clustered ingestion. |
+| `intersects(other)` / `intersectionSize(other)` / `unionSize(other)` / `differenceSize(other)` | `boolean` / `number` | Cold counting set ops over live chunks; nothing is materialized and neither set changes. `other` must be a `RoaringSet` of the same universe (either layout, any `pageBits`). |
+| `clear()` | `void` | Cold. Removes every key and restores the constructed (empty) state. |
+| `dump()` | `RoaringSetDump` | Cold, allocating. A fresh snapshot `{ universe, size, paged, chunks }`; each chunk `{ chunk, kind, count, runs }`, `kind` one of `'single' \| 'small' \| 'array' \| 'bitmap' \| 'runs' \| 'smallRuns' \| 'full'`. |
+
+Getters (cold, read-only): `size`, `universe`, `paged` (true iff the chunk table is paged; fixed at construction), `byteLength` (every typed array the set owns; formula below). No `forEach`, no iterator, no `rank` / `select`: iterate with the `successor` walk. A returned key >= 2^31 (>= 2^30 on a pointer-compressed engine) may box a HeapNumber when the call is not inlined (the boxing note in the Zero-GC section).
+
+Each 65,536-key chunk is held by the smallest container that fits: a SINGLE key (0 B), a small array (2..64 keys), an array (up to 4,096 keys), a bitmap, runs, small runs (<= 32 runs) or FULL (all 65,536 keys, 0 B). Promote / demote use hysteresis, so a count that oscillates around a boundary does not thrash.
+
+Limits and failure modes:
+
+| Limit | Value |
+| --- | --- |
+| Universe U | integer, 1 .. 2^32, REQUIRED (`new RoaringSet()` is a `RangeError`): `[lite-loglogn] RoaringSet universe must be an integer in [1, 2^32]; got ...` |
+| Other knobs | `maxSmall`, `maxLarge`, `pageBits`: `[lite-loglogn] RoaringSet <knob> must be an integer in [lo, hi]; got ...`. `maxPages`: `[lite-loglogn] RoaringSet maxPages must be an integer in [1, N] for this universe and pageBits; got ...` |
+| Container pools | fixed at construction, never grow. Exhaustion throws before any write: `[lite-loglogn] RoaringSet small/large container pool exhausted (capacity N); increase pool capacity at construction` (the pool name is `small/large` or `large`) |
+| Page pool (paged only) | `[lite-loglogn] RoaringSet metadata page pool exhausted (maxPages N); increase maxPages at construction`; from `addRange`: `[lite-loglogn] RoaringSet addRange metadata page pool exhausted (needs N new page(s), F free of maxPages M); increase maxPages at construction` |
+| Bad key | not a number, non-integer, NaN, negative, >= U, null, string, Symbol, BigInt, boxed Number: touches nothing (`has` / `delete` -> `false`, `successor` / `predecessor` -> `undefined`, `add` -> `RangeError` `[lite-loglogn] key must be an integer in [0, U); got ...`); `-0` aliases key 0 |
+| Set op argument | not a `RoaringSet` -> `TypeError`; a different universe -> `RangeError` |
+| Memory | fixed by the constructor arguments; `byteLength` below |
+
+Layout. The chunk table is DIRECT (11 B per chunk) or PAGED (a directory plus pooled 2^pageBits-row pages at 11 B per row, page 0 a shared zero page), chosen once at construction. It is paged only when the paged table is STRICTLY smaller than the direct one: 11 (maxPages + 1) 2^pageBits + 2 ceil(C / 2^pageBits) + 4 maxPages + 2 < 11 C. The default constructor is direct at every U.
+
+`byteLength` (exact; direct = 8,460 + 11 C + 130 maxSmall + 8,456 (maxLarge + 1) + 2 maxLarge; paged replaces 11 C by 11 (maxPages + 1) 2^pageBits + 2 ceil(C / 2^pageBits) + 4 maxPages + 2; DETERMINISTIC, gated against the engine in test/DocSync.test.js). Columns: U, then `maxSmall, maxLarge, maxPages, pageBits`:
+
+| U | (maxSmall, maxLarge, maxPages, pageBits) | layout | byteLength |
+| --- | --- | --- | --- |
+| 2^16 | defaults (1024, 256, all, 8) | direct | 2,315,295 B |
+| 2^25 | (0, 1, 1, 8) | direct | 31,006 B |
+| 2^26 | (0, 1, 1, 8) | paged | 31,020 B |
+| 184,942,592 | (0, 1, 10, 8) | direct (tie: 31,042 is not < 31,042) | 56,416 B |
+| 2^32 | defaults (1024, 256, all, 8) | direct | 3,036,180 B |
+| 2^32 | (0, 1, all, 8) | direct | 746,270 B |
+| 2^32 | (0, 1, 1, 8) | paged | 31,524 B |
+| 2^32 | (0, 1, 254, 8) | paged | 744,984 B |
+| 2^32 | (0, 1, 255, 8) | direct (722,430 is not < 720,896) | 746,270 B |
+| 2^32 | (0, 1, 1000, 6) | paged | 736,128 B |
+
+The empty floor is a pool-sizing choice, not a layout one: at U = 2^32 the default pools alone are 2,306,824 B (DETERMINISTIC: the 2^32 default row minus 8,460 minus the direct table 11 C = 720,896). For clustered ingestion prefer `addRange` for each run of consecutive keys, or call `runOptimize()` at a chunk boundary. Timing for RoaringSet is REPORTED only (R0 measurements: RESEARCH.md 12.13); this reference quotes none.
+
 ## The roster
 
 One member per release, each landing append-only (StratifiedBitset stays byte-identical, pinned by Parity; XFastTrie stays behavior-identical with the seed omitted). StratifiedBitset (0.2.0), XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published.

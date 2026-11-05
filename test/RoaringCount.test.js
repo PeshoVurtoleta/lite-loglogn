@@ -32,7 +32,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
-import { ROWS, readsOf, Meter, fmtCounts, measureRow } from './_roaring-count-worker.mjs';
+import { ROWS, readsOf, Meter, fmtCounts, measureRow, badLine } from './_roaring-count-worker.mjs';
 
 const T = { timeout: 120000 };
 const HANG_MS = 100000;
@@ -299,6 +299,8 @@ const HAS_MID = '        if (k === 6) return true;\n        const lo = x & 0xFFF
     '        if (k === 7) return slot === lo;\n';
 const HAS_BMP = '            return (this._lU32[(slot << 11) + (lo >>> 5)] & (1 << (lo & 31))) !== 0;\n';
 
+// each mutant must FAIL with a line matching `want`; `mayTimeout: true` (declared by none) would let a TIMEOUT count
+// as its kill, unchecked against `want`, so an undeclared TIMEOUT fails the control.
 const MUTANTS = {
     // add: an extra `_card` self-write after the `_kind` read (every add row: +1 read, +1 write; u1-teeth `w`)
     w: {
@@ -448,7 +450,9 @@ for (const name of Object.keys(MUTANTS)) {
         t.diagnostic('M-' + name + ' ' + v.v + ' (' + v.fails.length + ' lines): ' + (v.fails[0] || ''));
         assert.notEqual(v.v, 'PASS', 'a mutant that PASSES fails the gate');
         assert.notEqual(v.v, 'ERROR', 'mutant run errored: ' + v.error);
-        if (v.v === 'FAIL') assert.ok(v.fails.some((m) => MUTANTS[name].want.test(m)), v.fails.slice(0, 4).join('\n'));
+        // a TIMEOUT never checks `want`: it is a kill only for a mutant that declares `mayTimeout: true` (none does)
+        if (v.v === 'TIMEOUT') assert.equal(MUTANTS[name].mayTimeout, true, 'M-' + name + ' timed out; its want reason ' + MUTANTS[name].want + ' was never seen');
+        else assert.ok(v.fails.some((m) => MUTANTS[name].want.test(m)), v.fails.slice(0, 4).join('\n'));
     });
 }
 
@@ -632,19 +636,57 @@ test('control r4: a prototype or descriptor change with the same key names is a 
     const p1 = { _a: new Uint16Array(4), _n: 3 };
     const mp = new Meter(p1);
     mp.run(() => { Object.setPrototypeOf(p1, { x: 1 }); });
-    assert.deepEqual(mp.bad, ['own key set changed in the measured call'], 'setPrototypeOf (P1)');
+    assert.deepEqual(mp.bad, ['prototype changed in the measured call'], 'setPrototypeOf (P1)');
     mp.undo();
     const d1 = { _a: new Uint16Array(4), _n: 3 };
     const md = new Meter(d1);
     md.run(() => { const v = d1._n; delete d1._n; Object.defineProperty(d1, '_n', { value: v, writable: true, configurable: true }); });
     assert.deepEqual(Reflect.ownKeys(d1), ['_a', '_n'], 'same key names, same order');
-    assert.deepEqual(md.bad, ['own key set changed in the measured call'], 'non-enumerable re-add (D1)');
+    assert.deepEqual(md.bad, ['own key descriptor changed (_n) in the measured call'], 'non-enumerable re-add (D1)');
     md.undo();
     const x1 = { _a: new Uint16Array(4), _n: 3 };
     const mx = new Meter(x1);
     Object.preventExtensions(x1);
     mx.run(() => x1._a[0]);
-    assert.deepEqual(mx.bad, ['own key set changed since the Meter was built', 'own key set changed in the measured call'], 'extensibility change between calls');
+    assert.deepEqual(mx.bad, ['extensibility changed (now not extensible) since the Meter was built', 'extensibility changed (now not extensible) in the measured call'], 'extensibility change between calls');
+    // fillers-t6 A12 (b): each part is named; several changed parts are all named, in signature order
+    const w1 = { _a: new Uint16Array(4), _n: 3 };
+    const mw = new Meter(w1);
+    mw.run(() => { Object.defineProperty(w1, '_n', { writable: false }); });
+    assert.deepEqual(mw.bad, ['own key descriptor changed (_n) in the measured call'], 'writable flag only');
+    const f1 = { _a: new Uint16Array(4), _n: 3 };
+    const mf = new Meter(f1);
+    mf.run(() => { Object.setPrototypeOf(f1, null); Object.preventExtensions(f1); Object.defineProperty(f1, '_n', { enumerable: false }); });
+    assert.deepEqual(mf.bad, ['prototype changed, extensibility changed (now not extensible), own key descriptor changed (_n) in the measured call'], 'setPrototypeOf + preventExtensions + a descriptor');
+    const k1 = { _a: new Uint16Array(4), _n: 3 };
+    const mk1 = new Meter(k1);
+    mk1.run(() => { Object.setPrototypeOf(k1, null); k1._z = 1; });
+    assert.deepEqual(mk1.bad, ['prototype changed, own key set changed in the measured call'], 'prototype + a new key');
+});
+
+test('control (fillers-t6 A12 (a)): measureRow words each Meter FAIL as what it is; only a method read says "method"', () => {
+    const CASES = [
+        [function () { this._a.subarray(0); }, 'FAIL method _a.subarray read through a counted field'],
+        [function () { return this._a[Symbol.iterator] && undefined; }, 'FAIL method _a.Symbol(Symbol.iterator) read through a counted field'],
+        [function () { void this._a.buffer; }, 'FAIL _a.buffer (an uncounted alias) read through a counted field'],
+        [function () { Reflect.getOwnPropertyDescriptor(this._a, 0); }, 'FAIL _a.getOwnPropertyDescriptor through a counted field (an uncounted element read)'],
+        [function () { Object.defineProperty(this._a, '1', { value: 5 }); }, 'FAIL _a.defineProperty through a counted field (an uncounted element write)'],
+        [function () { this._a.hits = 1; }, 'FAIL _a.set hits'],
+        [function () { this._extra = 1; }, 'FAIL own key set changed in the measured call'],
+        [function () { Object.setPrototypeOf(this, Object.prototype); }, 'FAIL prototype changed in the measured call'],
+        [function () { this._a = new Uint16Array(4); }, 'FAIL field _a replaced in the measured call'],
+    ];
+    for (const [min, want] of CASES) {
+        class Fake {
+            constructor() { this._a = new Uint16Array(4); }
+            get size() { return 0; }
+        }
+        Fake.prototype.min = min;
+        const inst = new Fake();
+        const row = measureRow(inst, new Meter(inst), new Float64Array(0), 65536, { id: 'fake min', op: 'min', x: undefined }, 'direct');
+        assert.deepEqual(row.fails.filter((f) => /^direct fake min: FAIL /.test(f)), ['direct fake min: ' + want], want + ' | ' + JSON.stringify(row.fails));
+    }
+    assert.equal(badLine('_lU32.subarray'), 'FAIL method _lU32.subarray read through a counted field', 'the M-view line (its want) is unchanged');
 });
 
 test('control r4: a query row that turns a scalar 0 into -0 fails (review r3 nit Z1: the scalar hash is exact)', () => {

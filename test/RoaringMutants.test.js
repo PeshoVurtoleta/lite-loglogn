@@ -11,12 +11,12 @@
  * dropped, so vd-M6 / vf-m3 lose their q-lines; the 4 set-op mutants va-m1 / va-m10b / S7 / S8 came back in G3-B4
  * (SPEC C-21), re-cut to _chunkIntersectionSize's per-set rows mA0 / mB0 (C-6) and killed by checkPair inside job
  * 'fuzz'; va-m10b's two R0 edits are ONE anchor because the shipped pA / pB lines are adjacent):
- *   51 FUZZ rows    job 'fuzz' at BUDGET (S11: 'fuzz:V' at BUDGET_V): 47 must be KILLED, 4 are reasoned EQUIVALENTS (B1, B2c, B2d, S9) that
+ *   49 FUZZ rows    job 'fuzz' at BUDGET (S11: 'fuzz:V' at BUDGET_V): 47 must be KILLED, 2 are reasoned EQUIVALENTS (B1, S9) that
  *                   must SURVIVE; a killed "equivalent" FAILS too (its reason is then wrong).
  *    6 CONTRACT rows the 4 NEW throw-site hoists of A-3 (va-m7, the 5th site, is a fuzz row) via job 'a3'; the
  *                   universe-default mutant (A-4) via job 'universe'; the maxSmall-default mutant via the in-file
  *                   'defaults' oracle (byteLength of a default-constructed set vs the C-3 closed form).
- *   TOTAL 57 rows: 53 killed, 4 equivalents, 0 unexplained / ABORT (SPEC C-10a).
+ *   TOTAL 55 rows: 53 killed, 2 equivalents, 0 unexplained / ABORT (SPEC C-10a).
  *
  * Controls: one UNMUTATED run per job kind (fuzz, fuzz:V, a3, universe, defaults) on the same text through the same path
  * (data: URL); each must come back clean, else the file FAILS (a harness bug would otherwise read as a kill).
@@ -31,7 +31,7 @@
  *
  * Census mode: LOGLOGN_MUT_CENSUS=1 prints `# census <id> <count>` for every row and runs only the anchor test
  * (no Worker starts). Later edits of LogLogN.js keep every anchor at count 1 or re-cut it in the same batch
- * (SPEC C-9: G4-B2 drops B2c / B2d and re-cuts B2a / va-m9).
+ * (SPEC C-9: G4-B2 dropped B2c / B2d -- the -1 exits they guarded are gone -- and re-cut B2a / va-m9).
  */
 
 import { test } from 'node:test';
@@ -50,11 +50,7 @@ const BUDGET_V = { seeds: 8, ops: 4000, only: ['V'] };
 const ROW_MS = 300000;                  // per-row kill timer (a hang = killed)
 const POOL = Math.max(2, Math.min(6, availableParallelism() >> 1));
 const EXPECT_KILLED = 53;
-const EXPECT_EQUIV = 4;
-
-const EQ_B2 = 'EQUIVALENT: the in-chunk bitmap search runs only for lo in (min, max] (successor) / [min, max) ' +
-    '(predecessor), and the delete-of-min / max re-derive runs with >= 2,048 keys on the far side, so a hit always ' +
-    'exists and every -1 exit of _bmpNextGEQ / _bmpPrevLEQ is unreachable (dead bytes: G4-B2 drops them, C-9)';
+const EXPECT_EQUIV = 2;
 
 // [id, what, from, to, job, equivalence reason (equivalents only)]
 const ROWS = [
@@ -82,8 +78,8 @@ const ROWS = [
         '                this._cMax[m] = u16[pIdx] + u16[pIdx + 1];',
         '                this._cMax[m] = this._lU16[pIdx] + this._lU16[pIdx + 1];', 'fuzz'],
     ['va-m9', 'successor on FULL +1',
-        'if (k === 6) return ((c << 16) | lo) >>> 0;\n            const slot = this._slot[m];\n            if (k === 1) {\n                const len = this._card[m] + 1;\n                const base = slot << 6;\n                const j = this._lb16(this._sData, base, len, lo);\n                if (j < len) return',
-        'if (k === 6) return ((c << 16) | (lo === 65535 ? lo : lo + 1)) >>> 0;\n            const slot = this._slot[m];\n            if (k === 1) {\n                const len = this._card[m] + 1;\n                const base = slot << 6;\n                const j = this._lb16(this._sData, base, len, lo);\n                if (j < len) return', 'fuzz'],
+        'if (k === 6) return ((c << 16) | lo) >>> 0;\n            const slot = this._slot[m];\n            if (k === 1) {\n                const len = this._card[m] + 1;\n                const base = slot << 6;\n                const j = this._lb16(this._sData, base, len, lo);\n                return ((c << 16) | this._sData',
+        'if (k === 6) return ((c << 16) | (lo === 65535 ? lo : lo + 1)) >>> 0;\n            const slot = this._slot[m];\n            if (k === 1) {\n                const len = this._card[m] + 1;\n                const base = slot << 6;\n                const j = this._lb16(this._sData, base, len, lo);\n                return ((c << 16) | this._sData', 'fuzz'],
     ['va-m10b', 'intersect priority as base (small runs ranked with bitmap)',
         '        const pA = kA <= 2 ? 0 : (kA === 3 ? 2 : 1);\n        const pB = kB <= 2 ? 0 : (kB === 3 ? 2 : 1);',
         '        const pA = kA <= 2 ? 0 : (kA === 4 ? 1 : 2);\n        const pB = kB <= 2 ? 0 : (kB === 4 ? 1 : 2);', 'fuzz'],
@@ -134,7 +130,7 @@ const ROWS = [
         '                m1 |= (-1 << (a & 31)) & (-1 >>> (31 - (b & 31)));', '                m1 |= 1 << (a & 31);', 'fuzz'],
     ['ve-m5', 'bitmap never demotes', 'if (newCard < DEMOTE_BITMAP) {', 'if (newCard < 0) {', 'fuzz'],
     ['ve-m6', 'small demote ignores the pool', 'len - 1 <= DEMOTE_SMALL && this._sTop > 0', 'len - 1 <= DEMOTE_SMALL', 'fuzz'],
-    // ---- base-defect fixes (B1a, B1b, B1, B2a..B2d) ----
+    // ---- base-defect fixes (B1a, B1b, B1, B2a, B2b) ----
     ['B1a', '_lastChunk word load drops bit 31',
         '        v = t[i] | 0;\n        return (i << 5) | (31 - Math.clz32(v));\n    }\n\n    _lb16',
         '        v = t[i] & 0x7FFFFFFF;\n        return (i << 5) | (31 - Math.clz32(v));\n    }\n\n    _lb16', 'fuzz'],
@@ -145,13 +141,8 @@ const ROWS = [
         'v = t[2048 + i] | 1;\n        i = (i << 5) | (31 - Math.clz32(v));\n        v = t[i] | 0;\n        return (i << 5) | (31 - Math.clz32(v));\n    }\n\n    /** Hot helper. Smallest', 'fuzz',
         'EQUIVALENT: the L1 word is non-zero on this path (its L2 bit is set), and OR-ing bit 0 into a non-zero word never moves its highest set bit'],
     ['B2a', '_bmpNextGEQ hoist reads word 64',
-        '                l2v = sum[sBase + 65];\n                if (l2v === 0) return -1;',
-        '                l2v = sum[sBase + 64];\n                if (l2v === 0) return -1;', 'fuzz'],
+        '                l2v = sum[sBase + 65];\n', '                l2v = sum[sBase + 64];\n', 'fuzz'],
     ['B2b', '_bmpPrevLEQ hoist reads word 65', '                l2v = sum[sBase + 64] | 0;', '                l2v = sum[sBase + 65] | 0;', 'fuzz'],
-    ['B2c', '_bmpNextGEQ l2p guard dropped', '                if (l2p !== 0) return -1;\n', '', 'fuzz', EQ_B2],
-    ['B2d', '_bmpPrevLEQ empty-L2 guard dropped',
-        '                l2v = sum[sBase + 64] | 0;\n                if (l2v === 0) return -1;\n',
-        '                l2v = sum[sBase + 64] | 0;\n', 'fuzz', EQ_B2],
     // ---- merge seams (S1..S12) ----
     ['S1', 'add-empty SINGLE without headers (_addChunk)',
         '        this._slot[m] = lo;\n        this._card[m] = 0;\n        this._cMin[m] = lo;\n        this._cMax[m] = lo;\n',
@@ -297,8 +288,8 @@ test('RoaringMutants: every anchor occurs exactly once in ../LogLogN.js (census)
         if (CENSUS) console.log('# census ' + r.id + ' ' + COUNTS[i]);
         if (COUNTS[i] !== 1) bad.push(r.id + ' count ' + COUNTS[i]);
     });
-    assert.equal(ROWS.length, 57, '51 fuzz + 6 contract rows');
-    assert.equal(ROWS.filter((r) => r.job === 'fuzz' || r.job === 'fuzz:V').length, 51);
+    assert.equal(ROWS.length, 55, '49 fuzz + 6 contract rows');
+    assert.equal(ROWS.filter((r) => r.job === 'fuzz' || r.job === 'fuzz:V').length, 49);
     assert.equal(ROWS.filter((r) => r.reason !== null).length, EXPECT_EQUIV);
     assert.equal(new Set(ROWS.map((r) => r.id)).size, ROWS.length, 'unique ids');
     assert.ok(ROWS.every((r) => r.from !== r.to), 'every row changes the text');

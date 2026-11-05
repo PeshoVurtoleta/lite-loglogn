@@ -16,8 +16,15 @@
  *   lo === hi (also 2^32), single chunk, chunk-aligned, cross-chunk, a full chunk, every existing kind 1..7, runs at
  *   cap (32 smallRuns / 2048 runs with an isolated first key).
  * A-4: (a) pool exhaustion all-or-nothing (C-4 text), (b) page-pool exhaustion, both layouts; bad bounds leave the
- *   set byte-identical (dump before == after).
+ *   set byte-identical (fullSnap before == after: dump() plus every own scalar field and typed array, so a throw
+ *   after any write shows). (a2) / (a3): S-4 step 3, a covered chunk returns its slot before the partials count.
  * C-25: layout coverage is counted on the BUILT sets (.paged / _pSh) and asserted against expectPaged (C-5 closed form).
+ * C-9 (G4-B2b): after every addRange in runCase and fixpointStream, wbError checks every live chunk's _card / _cMin /
+ *   _cMax / _runs against its decoded content and every bitmap's L1 / L2 summary bit-exactly (+ the membership model
+ *   in runCase and at fixpointStream's walk cadence), every row the top pyramid does not reach (kind 0) and a paged
+ *   set's zero page (all zero); its must-fail controls corrupt one L2 bit, one L1 bit, one _cMax, one _cMin, one
+ *   _card, one _runs, the kind (unknown -> fail closed), one model bit, a non-live row's kind, a non-live row's _runs,
+ *   one zero-page field (paged), one free-page _cMin (paged) and a run chunk shrunk to 1 key (want SINGLE).
  *
  * Seed: printed; override with LOGLOGN_SEED (fail-closed parse, test/helpers/seed.mjs). Bounds, structure and
  * key streams are independent seeded 32-bit-exact PRNG streams.
@@ -97,6 +104,136 @@ const snapOf = (s) => JSON.stringify(s.dump());
 const fullSnap = (s) => JSON.stringify(s.dump()) + snap(s);
 const kindOf = (d, c) => { const e = d.chunks.find((x) => x.chunk === c); return e ? KIND_ID[kindName(e.kind)] : 0; };
 
+// ---- white-box header + summary oracle (G4-B2b, SPEC C-9) ----
+// The G4-B2 shrink removed every -1 fall-through of successor / predecessor / _bmpNextGEQ / _bmpPrevLEQ: they now
+// trust I-hdr (_cMin / _cMax are the chunk's first / last key), I-bmp (a bitmap holds > 2,048 keys) and I-sum (the
+// bitmap summary is exact). A broken header or summary gives a WRONG answer, not a miss, so every addRange stream
+// here checks them against the CONTENT (decoded per kind, never from the engine's own headers), and against the
+// membership model where one is in scope. Checked: every live chunk of the top pyramid (as dump() walks it); a kind
+// outside 1..7 fails closed; _card + 1 == the content's key count; _cMin / _cMax == its first / last key; _runs + 1
+// bounds the decoded runs (kinds 4 / 5: sorted, disjoint, non-adjacent, inside the chunk, within the kind's cap,
+// >= 2 keys: one key is a SINGLE, as checkSet); kinds 1 / 2 strictly increasing within the kind's cap; kind 3:
+// > 2,048 keys, L1 bit j of word s iff bitmap word 32s + j != 0, L2 bit s iff L1 word s != 0 (bit-exact); the live
+// keys sum to size; a kind without runs (1 / 2 / 3 / 6 / 7) reads _runs 0. Every chunk the pyramid does NOT reach
+// reads _kind / _card / _runs 0 (an emptied row keeps _slot / _cMin / _cMax stale by design, never read, while
+// _kind / _card / _runs read 0: the _pageZero contract), a paged set's shared zero page (rows 0 .. 2^pageBits - 1,
+// what every absent page maps to) is zero in every header field, and so is every free page (_pFree[0, _pTop)).
+// With a model (flags over
+// [wBase, wBase + flags.length), wBase chunk-aligned) every window chunk's count / min / max equals the model's, a
+// live chunk outside the window or a model-filled chunk that is not live fails.
+const WB = { checks: 0, chunks: 0, bitmaps: 0, bmpZeroWord: 0, model: 0, zeroPage: 0 };
+const pop32 = (v) => {
+    v = v - ((v >>> 1) & 0x55555555);
+    v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+    return Math.imul((v + (v >>> 4)) & 0x0F0F0F0F, 0x01010101) >>> 24;
+};
+function wbError(r, flags, wBase) {
+    WB.checks++;
+    const c0 = flags ? wBase / 65536 : 0, c1 = flags ? Math.ceil((wBase + flags.length) / 65536) : 0;
+    let total = 0;
+    const live = new Set();
+    for (let c = r._nextChunk(0); c >= 0; c = r._nextChunk(c + 1)) {
+        WB.chunks++;
+        live.add(c);
+        const m = r._mi(c), k = r._kind[m], slot = r._slot[m];
+        const at = 'chunk ' + c + ' kind ' + k + ': ';
+        let n = 0, mn = -1, mx = -1;
+        if (k === 1 || k === 2) {
+            const a = k === 1 ? r._sData : r._lU16, b = k === 1 ? slot << 6 : slot << 12;
+            n = r._card[m] + 1;
+            if (!(n >= 2 && n <= (k === 1 ? 64 : 4096))) return at + 'count ' + n + ' outside the kind';
+            for (let i = 1; i < n; i++) if (!(a[b + i] > a[b + i - 1])) return at + 'keys not increasing at #' + i;
+            mn = a[b]; mx = a[b + n - 1];
+        } else if (k === 4 || k === 5) {
+            const a = k === 5 ? r._sData : r._lU16, b = k === 5 ? slot << 6 : slot << 12, R = r._runs[m] + 1;
+            if (!(R >= 1 && R <= (k === 5 ? 32 : 2048))) return at + 'runs ' + R + ' outside the kind';
+            let end = -2;
+            for (let i = 0; i < R; i++) {
+                const st = a[b + 2 * i], en = st + a[b + 2 * i + 1];
+                if (!(st > end + 1)) return at + 'run #' + i + ' starts ' + st + ' at or next to the previous end ' + end;
+                if (!(en <= 65535)) return at + 'run #' + i + ' ends ' + en + ' past the chunk';
+                n += en - st + 1;
+                end = en;
+            }
+            if (n === 1) return at + 'holds 1 key (want SINGLE)';
+            mn = a[b]; mx = end;
+        } else if (k === 3) {
+            WB.bitmaps++;
+            const u32 = r._lU32, sum = r._bSum, wb = slot << 11, sb = slot * 66;
+            let l2a = 0, l2b = 0, zw = 0;
+            for (let s1 = 0; s1 < 64; s1++) {
+                let m1 = 0;
+                for (let j = 0; j < 32; j++) {
+                    const w = (s1 << 5) | j, v = u32[wb + w];
+                    if (v === 0) { zw = 1; continue; }
+                    m1 |= 1 << j;
+                    n += pop32(v);
+                    if (mn < 0) mn = (w << 5) | (31 - Math.clz32(v & -v));
+                    mx = (w << 5) | (31 - Math.clz32(v));
+                }
+                if ((sum[sb + s1] | 0) !== m1) return at + 'L1 word ' + s1 + ' ' + (sum[sb + s1] >>> 0).toString(16) + ' vs content ' + (m1 >>> 0).toString(16);
+                if (m1 !== 0) { if (s1 < 32) l2a |= 1 << s1; else l2b |= 1 << (s1 - 32); }
+            }
+            if ((sum[sb + 64] | 0) !== l2a || (sum[sb + 65] | 0) !== l2b) {
+                return at + 'L2 ' + (sum[sb + 64] >>> 0).toString(16) + '/' + (sum[sb + 65] >>> 0).toString(16) + ' vs content ' + (l2a >>> 0).toString(16) + '/' + (l2b >>> 0).toString(16);
+            }
+            if (!(n > 2048)) return at + n + ' keys (I-bmp: a bitmap holds > 2,048)';
+            WB.bmpZeroWord += zw;                                   // a zero word was checked: its L1 bit must read 0
+        } else if (k === 6) {
+            n = 65536; mn = 0; mx = 65535;
+        } else if (k === 7) {
+            n = 1; mn = slot; mx = slot;
+            if (!(slot <= 65535)) return at + 'SINGLE key ' + slot;
+        } else {
+            return at + 'unknown kind (fail closed)';
+        }
+        if (k !== 4 && k !== 5 && r._runs[m] !== 0) return at + '_runs ' + r._runs[m] + ' on a kind without runs (want 0)';
+        if (r._card[m] + 1 !== n) return at + '_card + 1 = ' + (r._card[m] + 1) + ' vs content ' + n;
+        if (r._cMin[m] !== mn) return at + '_cMin ' + r._cMin[m] + ' vs content ' + mn;
+        if (r._cMax[m] !== mx) return at + '_cMax ' + r._cMax[m] + ' vs content ' + mx;
+        total += n;
+        if (flags) {
+            if (!(c >= c0 && c < c1)) return at + 'live outside the model window';
+            const o = c * 65536 - wBase, top = Math.min(o + 65536, flags.length);
+            let fn = 0, fmn = -1, fmx = -1;
+            for (let i = o; i < top; i++) if (flags[i] !== 0) { fn++; if (fmn < 0) fmn = i - o; fmx = i - o; }
+            if (fn !== n || fmn !== mn || fmx !== mx) return at + 'content ' + n + ' keys ' + mn + '..' + mx + ' vs model ' + fn + ' keys ' + fmn + '..' + fmx;
+        }
+    }
+    if (total !== r.size) return 'live chunks hold ' + total + ' keys vs size ' + r.size;
+    for (let c = 0; c < r._chunks; c++) {
+        if (live.has(c)) continue;
+        const m = r._mi(c), k = r._kind[m];
+        if ((k | r._card[m] | r._runs[m]) !== 0) return 'chunk ' + c + ' not live (top pyramid) but kind ' + k + ' card ' + r._card[m] + ' runs ' + r._runs[m];
+    }
+    if (r._pSh !== 0) {
+        WB.zeroPage++;
+        for (let m = 0; m < 1 << r._pSh; m++) {
+            if ((r._kind[m] | r._slot[m] | r._card[m] | r._runs[m] | r._cMin[m] | r._cMax[m]) !== 0) {
+                return 'zero page row ' + m + ' written: kind ' + r._kind[m] + ' slot ' + r._slot[m] + ' card ' + r._card[m] + ' runs ' + r._runs[m] +
+                    ' cMin ' + r._cMin[m] + ' cMax ' + r._cMax[m];
+            }
+        }
+        // every free page (_pFree[0, _pTop)) is all zero in all 6 arrays: _pageZero resets _slot / _cMin / _cMax on release,
+        // and _kind / _card / _runs already read 0 on every emptied row
+        for (let q = 0; q < r._pTop; q++) {
+            const pg = r._pFree[q], b0 = pg << r._pSh, e0 = b0 + (1 << r._pSh);
+            for (let m = b0; m < e0; m++) {
+                if ((r._kind[m] | r._slot[m] | r._card[m] | r._runs[m] | r._cMin[m] | r._cMax[m]) !== 0) return 'free page ' + pg + ' row ' + m + ' written';
+            }
+        }
+    }
+    if (flags) {
+        WB.model++;
+        for (let c = c0; c < c1; c++) {
+            if (live.has(c)) continue;
+            const o = c * 65536 - wBase, top = Math.min(o + 65536, flags.length);
+            for (let i = o; i < top; i++) if (flags[i] !== 0) return 'chunk ' + c + ' not live but the model holds ' + (wBase + i);
+        }
+    }
+    return null;
+}
+
 // ---- coverage (built counts, C-25) ----
 const cov = { k0: new Array(8).fill(0), k1: new Array(8).fill(0), cases: 0, direct: 0, realPaged: 0, forced: 0, pb15: 0,
     pbSeen: new Set(), covered: 0, cross: 0, single: 0, loZero: 0, hiU: 0, empty: 0, partial2: 0, tail: 0, edge: 0 };
@@ -127,6 +264,8 @@ function runCase(cfg, w, pre, lo, hi, label, deep, record, post) {
     for (let x = lo; x < hi; x++) L.add(x);
     L.runOptimize();
     for (let x = lo; x < hi; x++) flags[x - wBase] = 1;
+    const we = wbError(R, flags, wBase);                            // I-hdr / I-bmp / I-sum + model, after the addRange
+    assert.equal(we, null, label + ' white-box after addRange: ' + we);
     let want = 0;
     for (let i = 0; i < flags.length; i++) want += flags[i];
 
@@ -225,6 +364,69 @@ function recorder(cfg, R) {
 test('RoaringRange: seed printed', () => {
     console.log('# RoaringRange seed 0x' + BASE_SEED.toString(16) + ', ' + CASES + ' cases, ' + CONFIGS.length + ' layout configs');
     assert.ok(Number.isInteger(BASE_SEED) && BASE_SEED >= 0 && BASE_SEED <= 0xFFFFFFFF);
+});
+
+test('RoaringRange white-box controls (C-9 teeth): a corrupted L2 / L1 bit, _cMax, _cMin, _card, _runs, kind, model bit, non-live row, zero page or 1-key run chunk is reported', () => {
+    const ROWS = [['direct 2^20', () => new RoaringSet(1 << 20, 64, 16), 0], ['REAL paged 2^32 pb8 mp4', () => new RoaringSet(U32, 64, 16, 4, 8), 256]];
+    for (const [tag, make, wc] of ROWS) {
+        const s = make();
+        const w = wc * 65536;
+        const flags = new Uint8Array(NW * 65536);
+        const put = (x) => { s.add(x); flags[x - w] = 1; };
+        const range = (lo, hi) => { s.addRange(lo, hi); for (let x = lo; x < hi; x++) flags[x - w] = 1; };
+        // chunk wc: a bitmap of 20,479 keys whose words 0..127 (L1 words 0..3) are EMPTY, so a summary bit set for an
+        // empty word shows; then an addRange into it far from word 0 (the bitmap path, _rangeWalk mode 2 rebuild)
+        for (let x = 4099; x < 65536; x += 3) put(w + x);
+        range(w + 30001, w + 30040);
+        range(w + 65536 + 100, w + 65536 + 900);                            // chunk wc + 1: two runs
+        range(w + 65536 + 2000, w + 65536 + 2600);
+        for (const x of [5, 77, 4000]) put(w + 2 * 65536 + x);              // chunk wc + 2: a small array
+        put(w + 3 * 65536 + 123);                                           // chunk wc + 3: a SINGLE
+        assert.equal(s.paged, wc !== 0, tag + ' layout');
+        assert.equal(wbError(s, flags, w), null, tag + ' clean set reads clean');
+        const kinds = s.dump().chunks.map((e) => kindName(e.kind));
+        assert.equal(kinds[0], 'bitmap', tag + ' kinds ' + kinds);
+        assert.ok(kinds[1] === 'runs' || kinds[1] === 'smallRuns', tag + ' kinds ' + kinds);
+        assert.equal(kinds[2], 'small', tag + ' kinds ' + kinds);
+        assert.equal(kinds[3], 'single', tag + ' kinds ' + kinds);
+        const mB = s._mi(wc), mR = s._mi(wc + 1), mS = s._mi(wc + 2), sb = s._slot[mB] * 66;
+        // a 1-key run chunk, consistent in every header and in size (only the SINGLE rule sees it; checked without the
+        // model, which would also differ): chunk wc + 1 keeps its first run's start key alone
+        const kR = s._kind[mR], rA = kR === 5 ? s._sData : s._lU16, rB = kR === 5 ? s._slot[mR] << 6 : s._slot[mR] << 12;
+        const one = [s._runs[mR], rA[rB + 1], s._card[mR], s._cMax[mR], s._size];
+        const mN = s._mi(wc + 5), mZ = s._mi(0);                            // a non-live row; chunk 0's row (paged: the zero page)
+        assert.equal(s._kind[mN], 0, tag + ' premise: chunk ' + (wc + 5) + ' not live');
+        assert.equal(mZ === 0 && s._kind[mZ] === 0, wc !== 0, tag + ' premise: paged chunk 0 maps to zero page row 0');
+        if (wc !== 0) assert.ok(s._pTop >= 1, tag + ' premise: >= 1 free page (pTop ' + s._pTop + ')');
+        const mF = wc !== 0 ? s._pFree[0] << s._pSh : -1;                  // paged: the first row of a free page
+        // [what, corrupt(), restore(), the report it must produce, check without the model]
+        const CORRUPT = [
+            ['run chunk shrunk to 1 key', () => { s._runs[mR] = 0; rA[rB + 1] = 0; s._card[mR] = 0; s._cMax[mR] = s._cMin[mR]; s._size -= one[2]; },
+                () => { [s._runs[mR], rA[rB + 1], s._card[mR], s._cMax[mR], s._size] = one; }, /kind [45]: holds 1 key \(want SINGLE\)/, true],
+            ['non-live row kind 7', () => { s._kind[mN] = 7; }, () => { s._kind[mN] = 0; }, new RegExp('chunk ' + (wc + 5) + ' not live \\(top pyramid\\) but kind 7')],
+            ['non-live row _runs', () => { s._runs[mN] = 3; }, () => { s._runs[mN] = 0; }, new RegExp('chunk ' + (wc + 5) + ' not live .* runs 3$')],
+            ...(wc !== 0 ? [['free page _cMin', () => { s._cMin[mF] = 1; }, () => { s._cMin[mF] = 0; }, /free page \d+ row \d+ written/]] : []),
+            ...(wc !== 0 ? [['zero page _cMax', () => { s._cMax[mZ] = 9; }, () => { s._cMax[mZ] = 0; }, /zero page row 0 written: .* cMax 9$/]] : []),
+            ['one L2 summary bit', () => { s._bSum[sb + 65] ^= 1 << 7; }, () => { s._bSum[sb + 65] ^= 1 << 7; }, /: L2 /],
+            ['one L1 summary bit', () => { s._bSum[sb + 3] ^= 1 << 9; }, () => { s._bSum[sb + 3] ^= 1 << 9; }, /: L1 word 3 /],
+            ['bitmap _cMax - 1', () => { s._cMax[mB]--; }, () => { s._cMax[mB]++; }, /kind 3: _cMax 65532 vs content 65533/],
+            ['bitmap _runs 1', () => { s._runs[mB] = 1; }, () => { s._runs[mB] = 0; }, /kind 3: _runs 1 on a kind without runs \(want 0\)/],
+            ['SINGLE _runs 2', () => { s._runs[s._mi(wc + 3)] = 2; }, () => { s._runs[s._mi(wc + 3)] = 0; }, /kind 7: _runs 2 on a kind without runs \(want 0\)/],
+            ['small _cMin + 1', () => { s._cMin[mS]++; }, () => { s._cMin[mS]--; }, /kind 1: _cMin 6 vs content 5/],
+            ['bitmap _card + 1', () => { s._card[mB]++; }, () => { s._card[mB]--; }, /kind 3: _card \+ 1 = /],
+            ['runs _runs + 1', () => { s._runs[mR]++; }, () => { s._runs[mR]--; }, /kind [45]: /],
+            ['kind 9 (unknown)', () => { s._kind[mR] += 9; }, () => { s._kind[mR] -= 9; }, /unknown kind \(fail closed\)/],
+            ['kind 8 (one past SINGLE)', () => { s._kind[mS] = 8; }, () => { s._kind[mS] = 1; }, /kind 8: unknown kind/],
+            ['model bit', () => { flags[2 * 65536 + 6] = 1; }, () => { flags[2 * 65536 + 6] = 0; }, /vs model 4 keys/],
+        ];
+        for (const [what, bad, undo, re, noModel] of CORRUPT) {
+            bad();
+            const e = wbError(s, noModel ? null : flags, noModel ? 0 : w);
+            undo();
+            assert.ok(e !== null && re.test(e), tag + ' control "' + what + '" not reported as ' + re + ': ' + e);
+            assert.equal(wbError(s, flags, w), null, tag + ' clean again after "' + what + '"');
+        }
+    }
 });
 
 test('RoaringRange A-3: addRange == add loop + runOptimize == Set model on ' + CASES + ' seeded cases (both layouts)', () => {
@@ -493,6 +695,8 @@ test('RoaringRange A-4 (a): large-pool exhaustion is all-or-nothing (C-4 text), 
     }
     // a free small slot class (maxSmall 4): S-3 s = true, both chunks end smallRuns (2 small, 0 large): the call SUCCEEDS
     const t = new RoaringSet(1 << 20, 4, 1);
+    // premise: an empty set with all 4 small slots and the 1 large slot free (2 large-class chunks would not fit)
+    assert.deepEqual([t.size, t._sTop, t._lTop], [0, 4, 1], 'maxSmall-4 row premise: size, free small, free large');
     t.addRange(3 * 65536 - 5000, 3 * 65536 + 5000);
     assert.equal(t.size, 10000);
     assert.deepEqual(t.dump().chunks, [{ chunk: 2, kind: 'smallRuns', count: 5000, runs: 1 }, { chunk: 3, kind: 'smallRuns', count: 5000, runs: 1 }]);
@@ -563,7 +767,7 @@ test('RoaringRange A-4 (b): page-pool exhaustion (paged pb4, maxPages 2) -> the 
     assert.equal(t.dump().chunks.length, 32);
 });
 
-test('RoaringRange S-3 rows: runs at cap 2048 with n <= 4096 -> array (erratum branch); covered smallRuns / runs return their slot', () => {
+test('RoaringRange S-3 row: runs at cap 2048 with n <= 4096 -> array (erratum branch)', () => {
     // (A) 2047 runs of 3 at 32q optimize to 'runs'; a 2048th run is added, then keys deleted so n0 = 4094 (hand: 6144 - 2048 - 2),
     // r0 = 2048. I = {170}: isolated (169, 171 absent) -> r = 2049, n = 4095 <= 4096, n0 < 4095: K' array (S-3 k0 = runs); step 2
     // array: 2r = 4098 >= n -> array stays. Count 4095, runs 0.
@@ -582,6 +786,9 @@ test('RoaringRange S-3 rows: runs at cap 2048 with n <= 4096 -> array (erratum b
     assert.deepEqual(R.dump().chunks, [{ chunk: 0, kind: 'array', count: 4095, runs: 0 }]);
     sameDump(R.dump(), L.dump(), 'A: R vs add loop');
     assert.equal(R.size, 4095);
+});
+
+test('RoaringRange A-4 (a3): a covered smallRuns / runs chunk returns its small / large slot before the partial chunk is counted (S-4 step 3)', () => {
     // (C) covered smallRuns returns its SMALL slot: maxSmall 1 / maxLarge 1; chunk 4 smallRuns (3 runs of 30) holds the small slot,
     // chunk 8 an array holds the large slot; [4*65536, 5*65536 + 10): chunk 4 FULL (small slot back), chunk 5 takes it for 10 keys -> small.
     const c = new RoaringSet(1 << 20, 1, 1);
@@ -609,8 +816,10 @@ test('RoaringRange S-3 rows: runs at cap 2048 with n <= 4096 -> array (erratum b
 // (_sTop, _lTop) must be unchanged too. runOptimize() runs on the set itself and the stream continues from the
 // optimized state (the add / delete / runOptimize / addRange mix of the audit's R2 search, xorshift32 streams).
 // Also after every addRange: slot conservation (each pool's held slots + free stack (+ _conv) is a permutation of its
-// slot ids, so a demotion that pops an empty pool or leaks a slot fails), and every 250 steps a full ordered walk
-// equals a membership model of the focus window (a demotion that copies too few / many runs fails).
+// slot ids, so a demotion that pops an empty pool or leaks a slot fails) and the white-box header / summary check
+// (wbError, G4-B2b), and every 250 steps a full ordered walk equals a membership model of the focus window and
+// wbError against that model (a demotion that copies too few runs fails; one that copies too many is pinned by the F1
+// demoted-content row).
 
 function xs32(seed) { let s = seed >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
 const SMALLK = new Set(['small', 'smallRuns']);
@@ -638,7 +847,7 @@ function poolError(r) {
 function fixpointStream(r, U, focus, seed, steps) {
     const random = xs32(seed);                    // the op stream
     const rkey = xs32(seed ^ 0x9E3779B9);         // the key / base / span stream (independent of the op draws)
-    const out = { ranges: 0, twoPartial: 0, freed: 0, poolChecks: 0, walks: 0, violations: 0, first: [] };
+    const out = { ranges: 0, twoPartial: 0, freed: 0, poolChecks: 0, walks: 0, wb: 0, wbModel: 0, violations: 0, first: [] };
     const w0 = focus[0] * 65536, w1 = Math.min(U, (focus[focus.length - 1] + 4) * 65536);   // model window [w0, w1)
     const flags = new Uint8Array(w1 - w0);
     const setF = (x, v) => { assert.ok(x >= w0 && x < w1, 'key ' + x + ' outside the model window'); flags[x - w0] = v; };
@@ -661,6 +870,9 @@ function fixpointStream(r, U, focus, seed, steps) {
                 if (hi === lo) continue;
                 const pe = poolError(r);
                 if (pe !== null) fail('step ' + step + ' addRange(' + lo + ', ' + hi + ') ' + pe);
+                const we = wbError(r, null, 0);                  // headers / summaries vs content, every addRange
+                if (we !== null) fail('step ' + step + ' addRange(' + lo + ', ' + hi + ') white-box ' + we);
+                out.wb++;
                 out.ranges++;
                 const cF = lo >>> 16, cL = (hi - 1) >>> 16;
                 const pF = (lo & 65535) !== 0 || (cF === cL && ((hi - 1) & 65535) !== 65535);
@@ -704,6 +916,9 @@ function fixpointStream(r, U, focus, seed, steps) {
             }
             if (bad < 0 && x !== undefined && x < w1) bad = x;
             if (bad >= 0 || r.size !== n) fail('step ' + step + ' model walk differs at ' + bad + ' (size ' + r.size + ' model ' + n + ')');
+            const wm = wbError(r, flags, w0);                       // + the model, at the walk cadence (any op mix)
+            if (wm !== null) fail('step ' + step + ' white-box vs model ' + wm);
+            out.wbModel++;
         }
     }
     return out;
@@ -711,7 +926,7 @@ function fixpointStream(r, U, focus, seed, steps) {
 
 test('RoaringRange F1 fixpoint: runOptimize() right after addRange changes no touched chunk (tight pools, direct + paged)', () => {
     // [label, make(), U, focus chunks, seeds]; 2,500 steps per seed. Row 1 uses the audit R2's configuration and seed, not R2's
-    // exact stream (op and key draws are split here; reproductions.mjs R2 still replays that stream).
+    // exact stream (op and key draws are split here; audit cloud-zm96u9 R2 still replays that stream).
     const ROWS = [
         ['R2 U=3c s2 l1', () => new RoaringSet(3 * 65536, 2, 1), 3 * 65536, [0, 1, 2], [2675, 11, 97]],
         ['U=3c s1 l2', () => new RoaringSet(3 * 65536, 1, 2), 3 * 65536, [0, 1, 2], [5, 2675]],
@@ -721,7 +936,7 @@ test('RoaringRange F1 fixpoint: runOptimize() right after addRange changes no to
         ['FORCED paged 2^20 pb2 mp4 s2 l1', () => new FORCED(1 << 20, 2, 1, 4, 2), 1 << 20, [3, 4, 5], [2675, 31]],
         ['REAL paged 2^32 pb8 mp4 s2 l2', () => new RoaringSet(U32, 2, 2, 4, 8), U32, [255, 256, 257], [2675, 77]],
     ];
-    const tot = { ranges: 0, twoPartial: 0, freed: 0, poolChecks: 0, walks: 0, violations: 0, paged: 0 };
+    const tot = { ranges: 0, twoPartial: 0, freed: 0, poolChecks: 0, walks: 0, wb: 0, wbModel: 0, violations: 0, paged: 0 };
     const msgs = [];
     for (const [label, make, U, focus, seeds] of ROWS) {
         for (const seed of seeds) {
@@ -729,7 +944,7 @@ test('RoaringRange F1 fixpoint: runOptimize() right after addRange changes no to
             if (label.includes('paged')) { assert.equal(r.paged, true, label + ' built paged'); tot.paged++; }
             else assert.equal(r.paged, false, label + ' built direct');
             const o = fixpointStream(r, U, focus, seed, 2500);
-            for (const k of ['ranges', 'twoPartial', 'freed', 'poolChecks', 'walks', 'violations']) tot[k] += o[k];
+            for (const k of ['ranges', 'twoPartial', 'freed', 'poolChecks', 'walks', 'wb', 'wbModel', 'violations']) tot[k] += o[k];
             for (const m of o.first) msgs.push(label + ' seed ' + seed + ': ' + m);
         }
     }
@@ -741,6 +956,8 @@ test('RoaringRange F1 fixpoint: runOptimize() right after addRange changes no to
     assert.ok(tot.freed >= 10, 'F1 scenario witnessed ' + tot.freed);   // head 15, base engine 2
     assert.ok(tot.poolChecks >= 2000, 'pool-top checks ' + tot.poolChecks);
     assert.equal(tot.walks, 15 * 10, 'model walks');
+    assert.equal(tot.wb, tot.ranges, 'a white-box check after every non-empty addRange');
+    assert.equal(tot.wbModel, tot.walks, 'a white-box + model check at every walk');
     assert.equal(tot.paged, 4);
 });
 
@@ -828,4 +1045,19 @@ test('RoaringRange F1 boundary (exact): a 33-run cF stays a run slab although a 
         assert.equal(r.has(65536 + 4 * q), true); assert.equal(r.has(65536 + 4 * q + 2), true); assert.equal(r.has(65536 + 4 * q + 3), false);
     }
     assert.equal(r.has(65536 + 199), false); assert.equal(r.has(65536 + 200), true); assert.equal(r.has(65536 + 65535), true);
+});
+
+test('RoaringRange white-box coverage (C-9): the header / summary checks ran, reached bitmaps and the model', () => {
+    console.log('# white-box (wbError): ' + JSON.stringify(WB));
+    // floors well under the seed-0 counts (evidence roaring-g4-b2b.md), so LOGLOGN_SEED re-runs keep them
+    // seed 0: checks 12,768, bitmap chunk-checks 224 (runCase's bitmap pre-states; fixpointStream's tight-pool streams
+    // rarely reach > 4,096 keys in a chunk), model checks 822
+    // bmpZeroWord (fillers-t6): bitmaps checked with >= 1 zero word (an L1 bit that must read 0), from runCase's random
+    // 5,000..12,000-key bitmap pre-states; seeds 0 / 7 / 12345 / 99 / 4242 / 31337: 224 / 212 / 208 / 200 / 212 / 208
+    // (evidence fillers-t6.md). zeroPage: paged sets whose zero page was checked (3,670 on every seed: no seeded share).
+    assert.ok(WB.checks >= 10000, 'white-box checks ' + WB.checks);
+    assert.ok(WB.bitmaps >= 150, 'bitmap summary checks ' + WB.bitmaps);
+    assert.ok(WB.bmpZeroWord >= 140, 'bitmaps checked with a zero word ' + WB.bmpZeroWord);
+    assert.ok(WB.zeroPage >= 2500, 'zero-page checks ' + WB.zeroPage);
+    assert.ok(WB.model >= 600, 'model checks ' + WB.model);
 });

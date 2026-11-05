@@ -18,7 +18,8 @@
  * The instance SHAPE is pinned at construction (prototype, extensibility, every own key with its descriptor
  * flags, in order) and re-checked before and after every measured call; each counted field's IDENTITY is
  * checked before the call (still the array the Meter was built on) and at the restore (still the proxy): a
- * changed shape or a replaced field is a FAIL, never silently undone by the restore.
+ * changed shape or a replaced field is a FAIL, never silently undone by the restore (the FAIL names the part of the
+ * shape that changed: prototype, extensibility, the own key set, or a key's descriptor flags).
  * LIMIT: a Proxy Meter sees only reads through the instance's own fields at call time. A typed-array alias
  * captured OUTSIDE the measured call (a module-scope or closure variable set in the constructor) bypasses
  * the proxies and is invisible to this Meter; the shipped engine keeps every typed array an own field read
@@ -169,7 +170,8 @@ export class Meter {
         this.m.fill(0);
         this.log.length = 0;
         this.bad.length = 0;
-        if (!this._keysSame()) this.bad.push('own key set changed since the Meter was built');
+        const s0 = this._sigDiff();
+        if (s0 !== null) this.bad.push(s0 + ' since the Meter was built');
         const inst = this.inst;
         for (let i = 0; i < this.fields.length; i++) if (inst[this.fields[i]] !== this.real[i]) this.bad.push('field ' + this.fields[i] + ' replaced since the Meter was built');
         this.sc = this.scalars.map((k) => inst[k]);
@@ -186,7 +188,8 @@ export class Meter {
                 inst[this.fields[i]] = this.real[i];
             }
         }
-        if (!this._keysSame()) this.bad.push('own key set changed in the measured call');
+        const s1 = this._sigDiff();
+        if (s1 !== null) this.bad.push(s1 + ' in the measured call');
         return { ret, err };
     }
 
@@ -213,11 +216,26 @@ export class Meter {
         return s;
     }
 
-    _keysSame() {
-        const now = this._sig();
-        if (now.length !== this.keys.length) return false;
-        for (let i = 0; i < now.length; i++) if (now[i] !== this.keys[i]) return false;
-        return true;
+    /**
+     * null when the shape equals the one pinned at construction, else the part(s) that changed, named: 'prototype
+     * changed', 'extensibility changed (..)', 'own key set changed' (a key added / removed / reordered) or, with the
+     * same keys, 'own key descriptor changed (<keys>)' (writable / enumerable / configurable / accessor flags).
+     */
+    _sigDiff() {
+        const a = this.keys;
+        const b = this._sig();
+        const parts = [];
+        if (a[0] !== b[0]) parts.push('prototype changed');
+        if (a[1] !== b[1]) parts.push('extensibility changed (now ' + (b[1] ? 'extensible' : 'not extensible') + ')');
+        let sameKeys = a.length === b.length;
+        for (let i = 2; sameKeys && i < a.length; i += 2) if (a[i] !== b[i]) sameKeys = false;
+        if (!sameKeys) parts.push('own key set changed');
+        else {
+            const d = [];
+            for (let i = 3; i < a.length; i += 2) if (a[i] !== b[i]) d.push(String(a[i - 1]));
+            if (d.length > 0) parts.push('own key descriptor changed (' + d.join(', ') + ')');
+        }
+        return parts.length > 0 ? parts.join(', ') : null;
     }
 
     hash() {
@@ -258,6 +276,20 @@ const part = (tag, map) => tag + total(map) + ordered(map).map((k) => ' ' + k + 
 /** 'r<reads> f:n .. | w<writes> f:n .. | m<moves> f:n ..' -- the exact string the ledger literals hold. */
 export function fmtCounts(c) {
     return part('r', c.r) + ' | ' + part('w', c.w) + ' | ' + part('m', c.m);
+}
+
+/**
+ * One Meter `bad` entry as a ledger FAIL line. Only a method read through a proxy ('<field>.<method>') is worded as
+ * one; `buffer` (an uncounted alias) and the descriptor traps name what they are; every other entry (a non-index
+ * key set / delete, an expando read, a replaced field, a changed shape) already says what happened and prints as is.
+ */
+export function badLine(b) {
+    const m = /^(\w+)\.(\S+)$/.exec(b);
+    if (m === null) return 'FAIL ' + b;
+    if (m[2] === 'buffer') return 'FAIL ' + b + ' (an uncounted alias) read through a counted field';
+    if (m[2] === 'getOwnPropertyDescriptor') return 'FAIL ' + b + ' through a counted field (an uncounted element read)';
+    if (m[2] === 'defineProperty') return 'FAIL ' + b + ' through a counted field (an uncounted element write)';
+    return 'FAIL method ' + b + ' read through a counted field';
 }
 
 /** Total reads of a formatted counts string. */
@@ -358,7 +390,7 @@ export function measureRow(inst, meter, model, U, r, layout) {
     const res = (r.op === 'min' || r.op === 'max') ? meter.run(() => inst[r.op]()) : meter.run(() => inst[r.op](x));
     const c = meter.snapshot();
     if (r.op !== 'add' && r.op !== 'delete' && meter.hash() !== h0) fails.push(tag + ': a query row changed state (scalar or uncounted write)');
-    for (const b of meter.bad) fails.push(tag + ': FAIL method ' + b + ' read through a counted field');
+    for (const b of meter.bad) fails.push(tag + ': ' + badLine(b));
     if (res.err !== null) fails.push(tag + ' threw ' + (res.err && res.err.message));
     else if (r.op === 'has') { if (res.ret !== mHas(model, x)) fails.push(tag + ' = ' + res.ret + ' model ' + mHas(model, x)); }
     else if (r.op === 'successor') { const m = mSucc(model, x); if (res.ret !== m) fails.push(tag + ' = ' + res.ret + ' model ' + m); }

@@ -2484,6 +2484,15 @@ export class RoaringSet {
         return true;
     }
 
+    /**
+     * Hot helper. Smallest set bit >= lo in bitmap slot `slot`. PRECONDITION: such a bit exists, so there is no
+     * miss exit (C-9): a call that breaks it returns an unspecified value (a wrong low key, or a negative one, -1
+     * included), so no caller may test the result for a miss. Callers: delete kind 3, the delete-of-min re-derive
+     * (I-bmp: a bitmap still holds >= 2,048 keys after the clear, DEMOTE_BITMAP), and successor kind 3 (lo in
+     * (min, max]; I-hdr: `_cMax` is a set bit). Both need I-sum: the 66-word summary is exact (L1 bit w set iff
+     * word w != 0, L2 bit s set iff L1 word s != 0). Hence a miss in the L2 word of s2Idx implies that word is
+     * word 64 (s2Idx <= 31) and word 65 is non-zero.
+     */
     _bmpNextGEQ(slot, lo) {
         const wBase = slot << 11;
         const sBase = slot * 66;
@@ -2493,18 +2502,14 @@ export class RoaringSet {
         let v = u32[wBase + wIdx] & (-1 << (lo & 31));
         if (v !== 0) return (wIdx << 5) | (31 - Math.clz32(v & -v));
         let i = wIdx + 1;
-        if (i >= 2048) return -1;
         let s1Idx = i >>> 5;
         v = sum[sBase + s1Idx] & (-1 << (i & 31));
         if (v === 0) {
             const s2Idx = s1Idx + 1;
-            if (s2Idx >= 64) return -1;
             const l2p = s2Idx >>> 5;
             let l2v = sum[sBase + 64 + l2p] & (-1 << (s2Idx & 31));
             if (l2v === 0) {
-                if (l2p !== 0) return -1;
                 l2v = sum[sBase + 65];
-                if (l2v === 0) return -1;
                 s1Idx = 32 + (31 - Math.clz32(l2v & -l2v));
             } else {
                 s1Idx = (l2p << 5) | (31 - Math.clz32(l2v & -l2v));
@@ -2516,6 +2521,15 @@ export class RoaringSet {
         return (wIdx << 5) | (31 - Math.clz32(v & -v));
     }
 
+    /**
+     * Hot helper. Largest set bit <= lo in bitmap slot `slot`. PRECONDITION: such a bit exists, so there is no
+     * miss exit (C-9): a call that breaks it returns an unspecified value (a wrong low key, or a negative one, -1
+     * included), so no caller may test the result for a miss. Callers: delete kind 3, the delete-of-max re-derive
+     * (I-bmp: a bitmap still holds >= 2,048 keys after the clear, DEMOTE_BITMAP), and predecessor kind 3 (lo in
+     * [min, max); I-hdr: `_cMin` is a set bit). Both need I-sum: the 66-word summary is exact (L1 bit w set iff
+     * word w != 0, L2 bit s set iff L1 word s != 0). Hence a miss in the L2 word of s2Idx implies that word is
+     * word 65 (s2Idx >= 32) and word 64 is non-zero.
+     */
     _bmpPrevLEQ(slot, lo) {
         const wBase = slot << 11;
         const sBase = slot * 66;
@@ -2524,19 +2538,15 @@ export class RoaringSet {
         let wIdx = lo >>> 5;
         let v = u32[wBase + wIdx] & ~(-2 << (lo & 31));
         if (v !== 0) return (wIdx << 5) | (31 - Math.clz32(v));
-        if (wIdx === 0) return -1;
         let i = wIdx - 1;
         let s1Idx = i >>> 5;
         v = sum[sBase + s1Idx] & ~(-2 << (i & 31));
         if (v === 0) {
-            if (s1Idx === 0) return -1;
             const s2Idx = s1Idx - 1;
             const l2p = s2Idx >>> 5;
             let l2v = sum[sBase + 64 + l2p] & ~(-2 << (s2Idx & 31));
             if (l2v === 0) {
-                if (l2p !== 1) return -1;
                 l2v = sum[sBase + 64] | 0;
-                if (l2v === 0) return -1;
                 s1Idx = 31 - Math.clz32(l2v);
             } else {
                 s1Idx = (l2p << 5) | (31 - Math.clz32(l2v));
@@ -2748,24 +2758,22 @@ export class RoaringSet {
                 const len = this._card[m] + 1;
                 const base = slot << 6;
                 const j = this._lb16(this._sData, base, len, lo);
-                if (j < len) return ((c << 16) | this._sData[base + j]) >>> 0;
+                return ((c << 16) | this._sData[base + j]) >>> 0;
             } else if (k === 2) {
                 const len = this._card[m] + 1;
                 const base = slot << 12;
                 const j = this._lb16(this._lU16, base, len, lo);
-                if (j < len) return ((c << 16) | this._lU16[base + j]) >>> 0;
+                return ((c << 16) | this._lU16[base + j]) >>> 0;
             } else if (k === 3) {
                 const b = this._bmpNextGEQ(slot, lo);
-                if (b >= 0) return ((c << 16) | b) >>> 0;
+                return ((c << 16) | b) >>> 0;
             } else {
                 const nRuns = this._runs[m] + 1;
                 const u16 = k === 5 ? this._sData : this._lU16;
                 const base = k === 5 ? slot << 6 : slot << 12;
                 const r = this._lbRun(u16, base, nRuns, lo);
-                if (r < nRuns) {
-                    const start = u16[base + (r << 1)];
-                    return ((c << 16) | (start > lo ? start : lo)) >>> 0;
-                }
+                const start = u16[base + (r << 1)];
+                return ((c << 16) | (start > lo ? start : lo)) >>> 0;
             }
         }
         c = this._nextChunk(c + 1);
@@ -2791,27 +2799,25 @@ export class RoaringSet {
                 const len = this._card[m] + 1;
                 const base = slot << 6;
                 const j = this._lb16(this._sData, base, len, lo);
-                if (j < len && this._sData[base + j] === lo) return ((c << 16) | lo) >>> 0;
-                if (j > 0) return ((c << 16) | this._sData[base + j - 1]) >>> 0;
+                if (this._sData[base + j] === lo) return ((c << 16) | lo) >>> 0;
+                return ((c << 16) | this._sData[base + j - 1]) >>> 0;
             } else if (k === 2) {
                 const len = this._card[m] + 1;
                 const base = slot << 12;
                 const j = this._lb16(this._lU16, base, len, lo);
-                if (j < len && this._lU16[base + j] === lo) return ((c << 16) | lo) >>> 0;
-                if (j > 0) return ((c << 16) | this._lU16[base + j - 1]) >>> 0;
+                if (this._lU16[base + j] === lo) return ((c << 16) | lo) >>> 0;
+                return ((c << 16) | this._lU16[base + j - 1]) >>> 0;
             } else if (k === 3) {
                 const b = this._bmpPrevLEQ(slot, lo);
-                if (b >= 0) return ((c << 16) | b) >>> 0;
+                return ((c << 16) | b) >>> 0;
             } else {
                 const nRuns = this._runs[m] + 1;
                 const u16 = k === 5 ? this._sData : this._lU16;
                 const base = k === 5 ? slot << 6 : slot << 12;
                 const r = this._lbRun(u16, base, nRuns, lo);
-                if (r < nRuns && u16[base + (r << 1)] <= lo) return ((c << 16) | lo) >>> 0;
-                if (r > 0) {
-                    const idx = base + ((r - 1) << 1);
-                    return ((c << 16) | (u16[idx] + u16[idx + 1])) >>> 0;
-                }
+                if (u16[base + (r << 1)] <= lo) return ((c << 16) | lo) >>> 0;
+                const idx = base + ((r - 1) << 1);
+                return ((c << 16) | (u16[idx] + u16[idx + 1])) >>> 0;
             }
         }
         c = this._prevChunk(c - 1);

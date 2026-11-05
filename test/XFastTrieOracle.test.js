@@ -382,7 +382,7 @@ test('XFastTrieOracle: LOGLOGN_SEED parse fails closed (F8)', () => {
     const dir = new URL('.', import.meta.url);
     // the consumers, named: an unlisted 8th (or a dropped one) fails, not just the count.
     const CONSUMERS = ['FastBit32Cross.test.js', 'Oracle.test.js', 'RoaringFuzz.test.js', 'RoaringPagedFuzz.test.js',
-        'RoaringSetOps.test.js', 'SiblingOracle.test.js', 'VebFuzz.test.js', 'XFastTrieOracle.test.js', 'YFastTrieOracle.test.js'];
+        'RoaringRange.test.js', 'RoaringSetOps.test.js', 'SiblingOracle.test.js', 'VebFuzz.test.js', 'XFastTrieOracle.test.js', 'YFastTrieOracle.test.js'];
     let wired = 0;
     const found = [];
     for (const f of readdirSync(dir)) {
@@ -394,5 +394,5 @@ test('XFastTrieOracle: LOGLOGN_SEED parse fails closed (F8)', () => {
         if (ok > 0) found.push(f);
     }
     assert.deepEqual(found.sort(), CONSUMERS, 'the parseSeed consumers drifted from the named list');
-    assert.equal(wired, 9, 'nine parseSeed consumers');
+    assert.equal(wired, 10, 'ten parseSeed consumers');
 });

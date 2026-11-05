@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1 + G2 + G3 set ops landed, addRange + G4 next (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1..G3 done, G5 / G6 partly; G4 next (section 10)
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 engine core + G2 paging landed 2026-11-04, G3 set ops 2026-11-05; addRange + G4 next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 + G2 landed 2026-11-04, G3 done + G5 paged torture + G6 RoaringSet docs 2026-11-05; G4 next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1258,8 +1258,15 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
 - G3 set ops landed (2026-11-05): intersects / intersectionSize / unionSize / differenceSize, each set reading its
   own row (direct x paged and differing pageBits), cold, insertions only (hot bytecode unchanged); torture now runs
   the 38 R lanes with 11 must-fail controls + retention on both layouts.
-- Next: addRange (G3-B3), set-op tests (G3-B2a, re-planned to built layouts), then G4 shrink, docs and perf, then
-  Demo.
+- G3 addRange landed (2026-11-05): `addRange(lo, hi)` -- bad bounds throw before any read, a read-only precount
+  proves every pool and metadata-page need, then the write pass writes each touched chunk's final container
+  (whole chunks -> FULL); all-or-nothing on exhaustion; cold, hot bytecode unchanged. Set-op and addRange tests
+  count built layouts (maintainer ruling D-2).
+- G3 closed and G5-B3 / G6-B6c landed (2026-11-05): the 4 set-op mutants are back (RoaringMutants 57 rows, 53
+  killed, 4 reasoned equivalents); torture runs every RoaringSet lane on both layouts (76 lanes, 13 jobs) plus a
+  paged page-churn lane whose GC gate is major-0 only (pause REPORTED); README / llms RoaringSet sections are
+  gated by DocSync from the engine (D-1).
+- Next: G4-B1 count ledger, G5-B4 set-op / addRange lanes, G7-B1 witness:roar, then the G4 shrink, then Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

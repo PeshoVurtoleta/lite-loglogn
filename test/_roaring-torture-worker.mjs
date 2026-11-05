@@ -1,6 +1,6 @@
 /**
- * @zakkster/lite-loglogn -- RoaringSet torture lanes in a Worker (0.6.0 G5-B1a / B1b,
- * PLAN-roaringset-G5 tasks 1-4, SPEC C-10 / C-11 / C-20 / C-21). Not a test
+ * @zakkster/lite-loglogn -- RoaringSet torture lanes in a Worker (0.6.0 G5-B1a / B1b / B3a,
+ * PLAN-roaringset-G5 tasks 1-4 + DELTA G5-B3, SPEC C-10 / C-11 / C-20 / C-21). Not a test
  * file: the npm glob `test/*.test.js` never matches it. Inert when merely
  * imported (torture.mjs imports the constants and startRoaringTorture); a job
  * runs only as a node:worker_threads Worker (workerData.roaringTorture === true).
@@ -43,7 +43,12 @@
  *              min / max (L = 1) a defined result;
  *              add lanes the size rises above the built size, delete lanes it falls
  *              below (else the step never ran the labelled op: FAIL, reason named);
- *   edges      conv.* and clear only: a cold pass of ONE whole script cycle on
+ *   pool       churn.page only (poolOk; null on every other lane): poolCheck at
+ *              cycle start after measurement -- add(kA) maps the one free page,
+ *              add(kB) on another page throws /metadata page pool exhausted/ with
+ *              the set unchanged, delete(kA), add(kB) maps, delete(kB) restores
+ *              the size (a build with more than one free page FAILS it);
+ *   edges      conv.*, clear and churn.page: a cold pass of ONE whole script cycle on
  *              the measured instance AFTER measurement, dump() (public surface)
  *              after every step, must show each required kind transition of the
  *              lane (else the lane measured no conversion and FAILS).
@@ -54,7 +59,12 @@
  * CR-dupSrc plants two closures of ONE literal (makeStep) and must count 1.
  *
  * Families (job.families, a non-empty subset, one Worker per job): ops 28 +
- * gap 3 + conv 6 + clear 1 = 38 gated lanes (FAMILY_LANES); hi = the 5 hi-key
+ * gap 3 + conv 6 + clear 1 = 38 gated lanes per layout (FAMILY_LANES; 76 over
+ * direct + paged); churn = 1 paged-only lane churn.page OUTSIDE the 38 / 76
+ * (SPEC C-10 / A10: U 2^32, (64, 32) at PAGED_KNOBS.churn {254, 8}, 253 of 254
+ * pages mapped, a 12 x [ADD k, DEL k] script over 3 empty dir entries maps and
+ * frees the free page on every pair; its GC gate is maxMajor 0 ONLY, gc maxMs is
+ * REPORTED on its lane line; a churn job with paged null is a TypeError); hi = the 5 hi-key
  * lanes at U = 2^32 (keys and results >= 2^31), CONTROLS as torture's CV7:
  * hi.successor / predecessor / min / max must read transient excess >=
  * NS_MAX_EXCESS with every result >= 2^31 (share 1.0), hi.has must stay <
@@ -96,24 +106,31 @@
  *              NS_MAX_EXCESS (16 promotes per NS_K window by construction);
  *   CR-abConv  the same scratch retained in a module-level hold: the
  *              conv.4096<->4097 'deep' arrayBuffers growth > 0;
+ *   CR-pageMap (churn jobs) _pageAcquire holds [pg] in a module-level array on
+ *              every page map (anchor count 1 AND inside _pageAcquire, else BAD):
+ *              churn.page retained round(B/call) >= 1 (measureAllocs);
  *   CR-retain  (retention jobs) the churn with every instance + dump also held:
  *              tracker.size() >= 1 after the drain.
  *
  * Retention (job family 'retention', layout = job.paged): RET_CYCLES 4,096
- * cycles, each builds RoaringSet(2^20, 2, 1[, maxPages, pageBits]), runs every
- * public op, takes dump(), and tracks BOTH (8,192 tracked) with a module-level
+ * cycles, each builds RoaringSet(2^20, 2, 1) direct or RoaringSet(2^32, 4, 2,
+ * maxPages, pageBits) paged (DELTA S-7 = PLAN-G2 A-5; PAGED_KNOBS.retention),
+ * runs every public op, takes dump(), ends with clear() and a size-0 check
+ * (clearBad), and tracks BOTH (8,192 tracked) with a module-level
  * no-op cleanup and a string tag (neither captures the target); the churn has
  * its own frame. Gate: tracked 8,192, every instance's paged === wantPaged,
  * tracker.size() 0 after the drain and after one more gc, collected 8,192,
- * findings 0, leaks 0 (result.retention: layout, paged, cycles, tracked, size, after ===
- * sizeAfterGc, collected, findings, findingKinds, warnings, leaks, pagedMismatch, dumpBad, ok,
- * ms). result.retention is null in a job without the family;
+ * findings 0, leaks 0, clearBad 0 (result.retention: layout, universe, paged, cycles, tracked, size,
+ * after === sizeAfterGc, collected, findings, findingKinds, warnings, leaks, pagedMismatch, dumpBad,
+ * clearBad, ok, ms). result.retention is null in a job without the family;
  * a retention job with a null or failing retention FAILS.
  *
  * Layout knob: job.paged === null builds every set with the 3-argument
  * constructor (direct, wantPaged false); job.paged = { maxPages, pageBits }
  * passes them as arguments 4 / 5 (wantPaged true). On the G1 build every set is
- * direct, so a paged job FAILS every lane (the mismatch control).
+ * direct, so a paged job FAILS every lane (the mismatch control). PAGED_KNOBS
+ * holds the paged knobs per family (DELTA S-4; each paged under the engine's
+ * strict layout rule at its family's universe, the two sides in its comment).
  *
  * Parent side: startRoaringTorture(job, label, ms) spawns ONE Worker with a
  * kill timer and NEVER rejects: it resolves { result, error }; error is a
@@ -145,16 +162,32 @@ export const GC_OPS = 400000;
 export const MO_OPS = 100000;
 export const MO_WARM = 25000;
 export const WARM_CALLS = 131072;
-// Per-job kill timer: 4.5x the slowest G1 job measured (direct-ops 6.4-13.4 s over 3 runs, load1 9.5-16.7,
-// PRELIMINARY host; .handoff/evidence/roaring-g5-b1a.md). A hang or a stuck job is a FAIL, never a wait.
-export const KILL_MS = 60000;
+// Per-job kill timer: >= 4.5x the slowest job seen (G5-B3 DELTA S-7: 25.4 s at load1 78, R17; G5-B3a: see
+// .handoff/evidence/roaring-g5-b3a.md, PRELIMINARY shared host). A hang or a stuck job is a FAIL, never a wait.
+export const KILL_MS = 120000;
 /** Retention churn cycles per job (each tracks the instance AND its dump(): 2 x RET_CYCLES tracked). */
 export const RET_CYCLES = 4096;
 /** Gated lane count per family (fail closed: a family that builds fewer is an error). */
-export const FAMILY_LANES = Object.freeze({ ops: 28, gap: 3, conv: 6, clear: 1 });
+export const FAMILY_LANES = Object.freeze({ ops: 28, gap: 3, conv: 6, clear: 1, churn: 1 });
+/**
+ * Paged knobs per family (G5-B3 DELTA S-4), each a valid job.paged as-is. Every one is paged under the
+ * engine's layout rule (strict): 11 (maxPages + 1) 2^pageBits + 2 dirLen + 4 maxPages + 2 < 11 chunks.
+ * ops / conv / clear at U 2^20 (16 chunks): 144 < 176; gap at 2^31: 14,354 < 360,448; hi at 2^32:
+ * 14,610 < 720,896; churn at 2^32: 719,610 < 720,896 (maxPages 255 would be direct); retention at 2^32:
+ * 8,970 < 720,896.
+ */
+export const PAGED_KNOBS = Object.freeze({
+    ops: Object.freeze({ maxPages: 4, pageBits: 1 }),
+    gap: Object.freeze({ maxPages: 4, pageBits: 8 }),
+    conv: Object.freeze({ maxPages: 4, pageBits: 1 }),
+    clear: Object.freeze({ maxPages: 4, pageBits: 1 }),
+    hi: Object.freeze({ maxPages: 4, pageBits: 8 }),
+    churn: Object.freeze({ maxPages: 254, pageBits: 8 }),
+    retention: Object.freeze({ maxPages: 2, pageBits: 8 }),
+});
 /** hi-key control lanes (family 'hi'). */
 export const HI_OPS = Object.freeze(['has', 'successor', 'predecessor', 'min', 'max']);
-const FAMILY_ORDER = ['ops', 'gap', 'conv', 'clear', 'hi', 'retention'];
+const FAMILY_ORDER = ['ops', 'gap', 'conv', 'clear', 'churn', 'hi', 'retention'];
 const JOB_KEYS = ['src', 'families', 'paged'];
 const TF_BIT = 32;
 const HI_MIN = 2147483648;
@@ -279,6 +312,9 @@ function checkJob(job) {
         Object.keys(pg).length !== 2)) {
         throw new TypeError('job.paged must be null or { maxPages, pageBits } (integers)');
     }
+    if (pg === null && job.families.includes('churn')) {
+        throw new TypeError('family churn is paged-only: job.paged must be { maxPages, pageBits } (PAGED_KNOBS.churn)');
+    }
 }
 
 function settle(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -334,12 +370,12 @@ function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
         const marked = BODY.replace(STEP_HEAD, () => tag);                 // function replacer: '$' in a name is literal
         return new Function('set', 'other', 'ops', 'keys', 'SINK', marked)(set, other, sc.ops, sc.keys, SINK);
     };
-    const lane = (name, group, w, set, sc, chunks, edges) => {
+    const lane = (name, group, w, set, sc, chunks, edges, pool = null) => {
         // ops.* / gap.*: the labelled method is the name's last segment (the work check's oracle)
         const work = group.startsWith('ops-') || group === 'gap' ? name.slice(name.lastIndexOf('.') + 1) : null;
         if (work !== null && !WORK_OPS.includes(work)) throw new Error('lane ' + name + ': no work oracle for ' + work);
         lanes.push({ name, group, w, set, other: null, sc, chunks, edges, work, step: stepFor(name, set, null, sc),
-            size0: set.size, kinds0: kindsOf(set, chunks).join(','), pagedOk: pagedMatch(set, wantPaged) });
+            size0: set.size, kinds0: kindsOf(set, chunks).join(','), pagedOk: pagedMatch(set, wantPaged), pool });
     };
     const fam = new Set(job.families);
 
@@ -497,6 +533,28 @@ function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
             ['single>empty', 'small>empty', 'array>empty', 'smallRuns>empty', 'runs>empty']);
     }
 
+    if (fam.has('churn')) {
+        // churn.page (G5-B3 DELTA S-5; PLAN-G2 A-5): paged-only, U 2^32, maxSmall 64, maxLarge 32, the job's
+        // knobs (PAGED_KNOBS.churn {254, 8}: dir entry d = chunks [256 d, 256 d + 255]). One key on 253 dir
+        // entries (192 at d >= 64, never touched again; 61 at d 0..60) leaves ONE free page. The script:
+        // 12 x [ADD k, DEL k], k a SINGLE in an empty dir entry 61 / 62 / 63 (keys < 2^30): every ADD maps
+        // the free page, every DEL frees it. pool = [kA, kB] on dir entries 61 and 62, the script's own
+        // entries (different chunks, empty at cycle start; poolCheck).
+        const set = mkSet(4294967296, 64, 32);
+        for (let d = 0; d < 256; d++) if (d < 61 || d >= 64) set.add(((d << 8) + 200) * 65536 + 1000 + d);
+        const r = lcg(0x5bd1e995);
+        const s = [];
+        const chunks = [];
+        for (let j = 0; j < 12; j++) {
+            const c = ((61 + (j % 3)) << 8) + 16 * ((j / 3) | 0) + 3;
+            chunks.push(c);
+            const k = c * 65536 + (r() >>> 16);
+            s.push([OP_ADD, k], [OP_DEL, k]);
+        }
+        lane('churn.page', 'churn', 1, set, script(s), chunks, ['empty>single', 'single>empty'],
+            [((61 << 8) + 250) * 65536 + 77, ((62 << 8) + 250) * 65536 + 77]);
+    }
+
     let share = null;
     if (fam.has('hi')) {
         // U = 2^32, set and queries in [2^31, 2^32): every returned key is >= 2^31 (a HeapNumber across a
@@ -542,6 +600,33 @@ function buildLanes(RoaringSet, job, SINK, BODY, invert = false) {
 const CONV_ARR_EDGES = ['array>smallRuns', 'smallRuns>runs', 'runs>array'];
 // The labelled methods the work check has an oracle for.
 const WORK_OPS = ['has', 'successor', 'predecessor', 'min', 'max', 'add', 'delete'];
+
+/**
+ * churn.page's pool check (G5-B3 DELTA S-5), cold, at cycle start: add(kA) maps the one free page; add(kB)
+ * on another page throws /metadata page pool exhausted/ with size unchanged; delete(kA); add(kB) maps it;
+ * delete(kB) restores the size. Any other outcome (e.g. a build with headroom > 1 page) = { ok: false }.
+ */
+function poolCheck(l) {
+    const set = l.set, s0 = l.size0, kA = l.pool[0], kB = l.pool[1];
+    if (l.step.st[0] !== 0 || set.size !== s0) return { ok: false, reason: 'not at cycle start' };
+    if (set.has(kA) || set.has(kB)) return { ok: false, reason: 'pool keys present at cycle start' };
+    const undo = (why) => { set.delete(kA); set.delete(kB); return { ok: false, reason: why }; };
+    set.add(kA);
+    if (set.size !== s0 + 1 || !set.has(kA)) return undo('add(kA) did not add');
+    const before = JSON.stringify(set.dump());
+    let threw = null;
+    try { set.add(kB); } catch (e) { threw = e; }
+    if (threw === null) return undo('add(kB) did not throw (page headroom > 1)');
+    if (JSON.stringify(set.dump()) !== before) return undo('the throwing add(kB) was not a byte-identical no-op (dump differs)');
+    const msg = String(threw && threw.message);
+    if (!(threw instanceof RangeError) || !/metadata page pool exhausted/.test(msg)) return undo('add(kB) threw ' + msg);
+    if (set.size !== s0 + 1 || set.has(kB)) return undo('the throwing add(kB) changed the set');
+    if (set.delete(kA) !== true || set.size !== s0) return undo('delete(kA) did not restore the size');
+    set.add(kB);
+    if (set.size !== s0 + 1 || !set.has(kB)) return undo('add(kB) after delete(kA) did not add');
+    if (set.delete(kB) !== true || set.size !== s0) return undo('delete(kB) did not restore the size');
+    return { ok: true, reason: 'add ok, exhausted throw, delete, add ok, delete; size ' + s0 };
+}
 
 function familyOf(l) {
     if (l.group.startsWith('ops-')) return 'ops';
@@ -715,7 +800,7 @@ function makeMeasure(lib) {
     async function measure(l) {
         const t0 = performance.now();
         const res = { name: l.name, group: l.group, family: familyOf(l), weight: l.w, opsPerCall: 1,
-            pagedOk: l.pagedOk, kindsBuilt: l.kinds0 };
+            pagedOk: l.pagedOk, kindsBuilt: l.kinds0, poolOk: l.pool === null ? null : false };
         try {
             const maIter = Math.max(4096, (MA_ITER / l.w) | 0);
             const ma = measureAllocs(l.step, { iterations: maIter, batches: MA_BATCHES });
@@ -741,6 +826,11 @@ function makeMeasure(lib) {
             const ab = abLane(l.step, l.w);
             res.abOps = ab.ops; res.abGrowth = ab.growth; res.abSettled = ab.settled; res.abOk = ab.ok;
             res.restoreOk = finishCycle(l);
+            if (l.pool !== null) {
+                const pc = poolCheck(l);
+                res.poolOk = pc.ok;
+                res.poolInfo = pc.reason;
+            }
             if (l.work === null) {
                 res.workOk = null;
             } else {
@@ -759,7 +849,8 @@ function makeMeasure(lib) {
                 res.edgesOk = e.missing.length === 0 && e.back;
             }
             res.ok = res.pagedOk && res.retainedOk && res.transientOk && res.gcOk && res.abOk && res.restoreOk && res.kindsOk &&
-                res.edgesOk !== false && (l.work === null ? res.workOk === null : res.workOk === true) && res.optOk !== false;
+                res.edgesOk !== false && (l.work === null ? res.workOk === null : res.workOk === true) && res.optOk !== false &&
+                (l.pool === null ? res.poolOk === null : res.poolOk === true);
         } catch (e) {
             res.error = String(e && e.message || e);
             res.ok = false;
@@ -770,7 +861,7 @@ function makeMeasure(lib) {
     // hi controls: transient channel only (CV7's shape), same per-lane baseline.
     function measureHi(l) {
         const t0 = performance.now();
-        const res = { name: l.name, op: l.op, pagedOk: l.pagedOk, newSpaceSize: newSpaceSize() };
+        const res = { name: l.name, op: l.op, pagedOk: l.pagedOk, poolOk: null, newSpaceSize: newSpaceSize() };
         try {
             const opt = optStatus === null ? null : { before: 0, after: 0 };
             const ns = nsExcess(l.step, opt);
@@ -819,6 +910,7 @@ export function laneLine(r) {
         (r.edgesOk === null ? '' : ' edges=' + (r.edgesOk ? 'ok' : 'MISSING ' + r.edgesMissing.join(' ')) +
             ' [' + r.edgesSeen.join(' ') + ']') +
         (r.workOk === null ? '' : ' work=' + (r.workOk ? 'ok' : 'FAIL') + ' (' + r.workInfo + ')') +
+        (r.poolOk === null ? '' : ' pool=' + (r.poolOk ? 'ok' : 'FAIL') + ' (' + r.poolInfo + ')') +
         (r.restoreOk ? '' : ' RESTORE-MISMATCH') +
         ' ' + r.ms + ' ms | ' + (r.ok ? 'ok' : 'FAIL');
 }
@@ -851,11 +943,16 @@ const CR_HAS_ANCHOR = "    has(x) {\n        if (typeof x !== 'number' || (x >>>
 const CR_CONV_ANCHOR = '            this._promoteArrayToBitmap(m, slot, lo);\n            this._size++;\n';
 const CR_ADD_HEAD = '\n    add(x) {\n';
 const CR_DEL_HEAD = '\n    delete(x) {\n';
+// _pageAcquire's page map (cold, paged only; G5-B3 DELTA S-5): must sit inside _pageAcquire. Inject AFTER.
+const CR_PAGEMAP_ANCHOR = 'pg = this._pFree[--this._pTop];\n            this._dir[d] = pg;\n';
+const CR_ACQ_HEAD = '\n    _pageAcquire(c) {\n';
+const CR_ACQ_END = '\n    _pagesNeeded(';
 const CR_TAIL = '\nlet __crHas = null;\nlet __crConv = null;\nconst __crHold = [];\n';
 export const CR_MUTANTS = Object.freeze({
     'CR-has': { anchor: CR_HAS_ANCHOR, at: 'has', inject: '        __crHas = [c, lo];\n' },
     'CR-conv': { anchor: CR_CONV_ANCHOR, at: 'add', inject: '            __crConv = new Uint32Array(64);\n' },
     'CR-abConv': { anchor: CR_CONV_ANCHOR, at: 'add', inject: '            __crHold.push(new Uint32Array(64));\n' },
+    'CR-pageMap': { anchor: CR_PAGEMAP_ANCHOR, at: 'pageAcquire', inject: '            __crHold.push([pg]);\n' },
 });
 
 /** The mutant source { n, src } or { n, src: null, bad } (bad = why the control cannot run). Cold. */
@@ -876,7 +973,14 @@ export function crSource(base, name) {
             return { n, src: null, bad: 'BAD anchor at ' + at + ' not inside RoaringSet add() (' + addAt + '..' + delAt + ')' };
         }
     }
-    const cut = m.at === 'has' ? at + m.anchor.length : at;
+    if (m.at === 'pageAcquire') {
+        const accAt = base.indexOf(CR_ACQ_HEAD, cls);
+        const endAt = accAt < 0 ? -1 : base.indexOf(CR_ACQ_END, accAt);
+        if (base.split(CR_ACQ_HEAD).length !== 2 || !(accAt > cls && at > accAt && endAt > at)) {
+            return { n, src: null, bad: 'BAD anchor at ' + at + ' not inside RoaringSet _pageAcquire() (' + accAt + '..' + endAt + ')' };
+        }
+    }
+    const cut = m.at === 'has' || m.at === 'pageAcquire' ? at + m.anchor.length : at;
     return { n, src: base.slice(0, cut) + m.inject + base.slice(cut) + CR_TAIL, bad: null };
 }
 
@@ -893,23 +997,29 @@ function retTracker(createLeakTracker, name, box) {
     });
 }
 // Own frame (torn down before the drain): conservative stack scanning would pin the last instance.
+// Direct: (2^20, 2, 1); paged (S-7 = PLAN-G2 A-5): (2^32, 4, 2, maxPages, pageBits).
+const RET_U_DIRECT = 1048576;
+const RET_U_PAGED = 4294967296;
 function retChurn(RoaringSet, pg, wantPaged, tracker, held) {
-    let tracked = 0, mismatch = 0, dumpBad = 0;
+    let tracked = 0, mismatch = 0, dumpBad = 0, clearBad = 0, uni = null;
     for (let i = 0; i < RET_CYCLES; i++) {
-        const s = pg === null ? new RoaringSet(1 << 20, 2, 1) : new RoaringSet(1 << 20, 2, 1, pg.maxPages, pg.pageBits);
+        const s = pg === null ? new RoaringSet(RET_U_DIRECT, 2, 1) : new RoaringSet(RET_U_PAGED, 4, 2, pg.maxPages, pg.pageBits);
         if (!pagedMatch(s, wantPaged)) mismatch++;
+        uni = s.universe;
         const a = i & 0xFFFF;
         for (let k = 0; k < 70; k++) s.add((a + k * 7) & 0xFFFF);      // small -> array (65th key, large slot)
         s.add(65536 + a);                                               // a SINGLE in chunk 1
         s.has(a); s.successor(a); s.predecessor(0xFFFF - a); s.min(); s.max(); s.runOptimize(); s.delete(a);
         const d = s.dump();
         if (d.size !== 70 || d.chunks.length !== 2) dumpBad++;
+        s.clear();
+        if (s.size !== 0) clearBad++;
         tracker.track(s, retNoop, 'roaringset', { audit: true });
         tracker.track(d, retNoop, 'roaringset.dump', { audit: true });
         tracked += 2;
         if (held !== null) held.push(s, d);
     }
-    return { tracked, mismatch, dumpBad };
+    return { tracked, mismatch, dumpBad, clearBad, universe: uni };
 }
 async function retDrain(tracker) {
     let live = tracker.size();
@@ -929,12 +1039,13 @@ async function runRetention(RoaringSet, job, wantPaged) {
     await settle(25);
     const after = tracker.size();
     const want = 2 * RET_CYCLES;
-    const r = { layout: wantPaged ? 'paged' : 'direct', paged: job.paged === null ? null : { maxPages: job.paged.maxPages, pageBits: job.paged.pageBits },
+    const r = { layout: wantPaged ? 'paged' : 'direct', universe: ch.universe,
+        paged: job.paged === null ? null : { maxPages: job.paged.maxPages, pageBits: job.paged.pageBits },
         cycles: RET_CYCLES, tracked: ch.tracked, size: live, after, sizeAfterGc: after, collected: box.collected, findings: findings.length,
         findingKinds: findings.map((x) => x.kind + ':' + x.reason), warnings: box.warns.length, leaks: box.leaks.length,
-        pagedMismatch: ch.mismatch, dumpBad: ch.dumpBad };
+        pagedMismatch: ch.mismatch, dumpBad: ch.dumpBad, clearBad: ch.clearBad };
     r.ok = r.tracked === want && live === 0 && after === 0 && box.collected === want && findings.length === 0 &&
-        box.leaks.length === 0 && ch.mismatch === 0 && ch.dumpBad === 0;
+        box.leaks.length === 0 && ch.mismatch === 0 && ch.dumpBad === 0 && ch.clearBad === 0;
     // CR-retain: the same churn, every instance + dump also held past the drain
     const boxC = { collected: 0, leaks: [], warns: [] };
     const trackerC = retTracker(createLeakTracker, 'roaring-retention-control', boxC);
@@ -1058,11 +1169,13 @@ async function runJob(job) {
         MUT.push({ name: 'CR-conv', fam: 'conv', targets: ['conv.4096<->4097'], ch: 'transient' });
         MUT.push({ name: 'CR-abConv', fam: 'conv', targets: ['conv.4096<->4097'], ch: 'ab' });
     }
+    if (fam.has('churn')) MUT.push({ name: 'CR-pageMap', fam: 'churn', targets: ['churn.page'], ch: 'retained' });
     if (MUT.length > 0) {
         const base = job.src !== null ? job.src : readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
         for (const m of MUT) {
             const c = { name: m.name + (m.name === 'CR-has' ? '.' + m.fam : ''), family: m.fam, lanes: m.targets.slice(), value: null,
-                want: m.ch === 'ab' ? 'arrayBuffers growth > 0 on every target' : 'excess >= ' + NS_MAX_EXCESS + ' on every target',
+                want: m.ch === 'ab' ? 'arrayBuffers growth > 0 on every target' : m.ch === 'retained' ? 'round(retained) >= 1 B/call on every target'
+                    : 'excess >= ' + NS_MAX_EXCESS + ' on every target',
                 flipped: false, detail: '', anchorCount: null };
             const ms = crSource(base, m.name);
             c.anchorCount = ms.n;
@@ -1085,12 +1198,17 @@ async function runJob(job) {
                 const n = Math.max(8192, (WARM_CALLS / w) | 0);
                 for (let i = 0; i < n; i++) l.step(i);
                 if (m.ch === 'transient') { const ns = M.nsExcess(l.step, null); vals.push(ns === null ? null : ns.excess); }
-                else vals.push(M.abLane(l.step, w).growth);
+                else if (m.ch === 'retained') {
+                    const ma = measureAllocs(l.step, { iterations: Math.max(4096, (MA_ITER / w) | 0), batches: MA_BATCHES });
+                    vals.push(ma.bytesPerCall);
+                } else vals.push(M.abLane(l.step, w).growth);
             }
             c.value = vals.length === 1 ? vals[0] : vals;
             c.flipped = vals.length === m.targets.length &&
-                (m.ch === 'ab' ? vals.every((v) => Number.isInteger(v) && v > 0) : vals.every(nsBox));
-            c.detail = 'anchor count ' + ms.n + '; ' + m.ch + ' ' + vals.map((v) => fmtN(v, 0)).join(' / ');
+                (m.ch === 'ab' ? vals.every((v) => Number.isInteger(v) && v > 0)
+                    : m.ch === 'retained' ? vals.every((v) => typeof v === 'number' && Math.round(v) >= 1) : vals.every(nsBox));
+            c.detail = 'anchor count ' + ms.n + '; ' + m.ch + ' ' + vals.map((v) => fmtN(v, m.ch === 'retained' ? 2 : 0)).join(' / ') +
+                (m.ch === 'retained' ? ' B/call' : '');
             controls.push(c);
         }
     }
@@ -1120,9 +1238,9 @@ async function runJob(job) {
     for (const c of controls) if (c.name !== 'CR-dupSrc') lines.push(ctlLine(c));
     if (retention !== null) {
         const r = retention;
-        lines.push('retention ' + r.layout + ' cycles=' + r.cycles + ' tracked=' + r.tracked + ' size=' + r.size + '/0 after=' + r.after +
+        lines.push('retention ' + r.layout + ' universe=' + r.universe + ' cycles=' + r.cycles + ' tracked=' + r.tracked + ' size=' + r.size + '/0 after=' + r.after +
             ' collected=' + r.collected + '/' + r.tracked + ' findings=' + r.findings + ' warnings=' + r.warnings + ' leaks=' + r.leaks +
-            ' pagedMismatch=' + r.pagedMismatch + ' dumpBad=' + r.dumpBad + ' ' + r.ms + ' ms | ' + (r.ok ? 'ok' : 'FAIL'));
+            ' pagedMismatch=' + r.pagedMismatch + ' dumpBad=' + r.dumpBad + ' clearBad=' + r.clearBad + ' ' + r.ms + ' ms | ' + (r.ok ? 'ok' : 'FAIL'));
     }
 
     const fail = results.filter((r) => !r.ok).map((r) => r.name);

@@ -40,19 +40,24 @@
  *       U = 2^31 + 1 (transient only, every arg / return < 2^30), V5
  *       4,096-cycle retention. A build without the vEBTree export fails closed
  *       (exit 1, veb=null on the GATE line).
- *   R (RoaringSet, PLAN-roaringset-G5 task 5) follows V5: one Worker per
- *       (layout, family) job (test/_roaring-torture-worker.mjs, kill timer),
- *       layout direct: families ops 28 + gap 3 + conv 6 + clear 1 = 38 gated
- *       lanes (each: retained round 0 settled, transient excess < 1,024 B per
- *       65,536 ops, gc major 0, arrayBuffers growth 0 settled, size / kinds
- *       restored, paged === the job), the hi job (U = 2^32, CV7 shape) and
- *       4,096-cycle retention per layout (jobs [retention] direct and paged
- *       { maxPages 4, pageBits 1 }; CR-retain flips in each). ni.* lanes and the TurboFan check stay
- *       REPORTED (C-11): tf=UNCHECKED. A build without the RoaringSet export
- *       fails closed (exit 1, roaring=null on the GATE line).
- *   Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) + 9 (CV1-CV9) + 11 (R:
+ *   R (RoaringSet, PLAN-roaringset-G5 tasks 5-6) follows V5: one Worker per
+ *       (layout, family) job (test/_roaring-torture-worker.mjs, kill timer
+ *       KILL_MS), 13 jobs: families ops 28 + gap 3 + conv 6 + clear 1 = 38
+ *       gated lanes per layout, direct and paged = 76 (each: retained round 0
+ *       settled, transient excess < 1,024 B per 65,536 ops, gc major 0,
+ *       arrayBuffers growth 0 settled, size / kinds restored, paged === the
+ *       job), the hi job per layout (U = 2^32, CV7 shape), ONE paged page-churn
+ *       lane churn.page OUTSIDE the 76 (C-10 A10: gc maxMajor 0 only, its gc
+ *       maxMs REPORTED; poolOk true) and 4,096-cycle retention per layout
+ *       (CR-retain flips in each). Paged knobs { maxPages, pageBits } (R_PAGED,
+ *       JSON-checked against the worker's PAGED_KNOBS): ops / conv / clear
+ *       { 4, 1 } at U 2^20, gap { 4, 8 } at 2^31, hi { 4, 8 } at 2^32, churn
+ *       { 254, 8 }, retention { 2, 8 } at (2^32, 4, 2). ni.* lanes and the
+ *       TurboFan check stay REPORTED (C-11): tf=UNCHECKED. A build without the
+ *       RoaringSet export fails closed (exit 1, roaring=null on the GATE line).
+ *   Must-fail controls: 5 (T3) + 6 (X4) + 9 (Y4) + 9 (CV1-CV9) + 16 (R:
  *       CR-dupSrc, CR-box, CR-has, CR-conv, CR-abConv, CR-gcKick, CR-retain,
- *       hi.successor / predecessor / min / max) = 40.
+ *       CR-pageMap, hi.successor / predecessor / min / max per layout) = 45.
  * KNOWN GAP (narrowed): a real >4 ms pause is host timing and cannot be forced, so the
  * gc kick (a forced major) pins maxMajor only. The maxPauseMs THRESHOLD AND WIRING are
  * pinned deterministically by the separate `T3w` line: the exact gcVerdict() gcLane
@@ -2536,31 +2541,51 @@ async function main() {
             ', bigKeyExcess ' + veb.bigKeyExcess + ', refreshes ' + veb.refreshes + ') is a FAIL, never a 0');
     }
 
-    // ---- R: RoaringSet (PLAN-roaringset-G5 task 5, SPEC C-10 / C-11) ---------
+    // ---- R: RoaringSet (PLAN-roaringset-G5 tasks 5-6, SPEC C-10 / C-11) ------
     // One Worker per (layout, family) job through test/_roaring-torture-worker.mjs
     // (startRoaringTorture: kill timer KILL_MS, never rejects, resolves
-    // { result, error }). This rung: layout direct, families ops 28 + gap 3 +
-    // conv 6 + clear 1 = 38 gated lanes, plus the hi job (CV7-shape controls).
+    // { result, error }). 13 jobs: direct and paged for each of ops 28 + gap 3 +
+    // conv 6 + clear 1 = 38 gated lanes (76 in all) and for hi (CV7-shape
+    // controls), ONE paged churn job (lane churn.page, outside the 76, C-10 A10:
+    // gc maxMajor 0 only, its gc maxMs REPORTED on its line; poolOk true), and
+    // retention direct + paged. Paged knobs are torture's own R_PAGED copy,
+    // JSON-checked against the worker's PAGED_KNOBS (a mismatch is a FAIL).
     // Every lane verdict is RE-DERIVED here from its raw fields (A-1), never
     // taken from the worker's own ok alone; a missing / null / non-array field
-    // is a FAIL, never a pass. Controls: every name in R_CONTROLS must appear in
-    // some job's controls[] and EVERY instance must have flipped === true; the
-    // 4 boxing hi lanes (A-3) are controls too; CR-dupSrc must be in every job.
-    // Retention (A-5): two retention-only jobs (direct, paged R_RET_PAGED) each
-    // post a non-null retention { layout, cycles, tracked, collected, size,
-    // after, sizeAfterGc, findings, leaks, pagedMismatch, dumpBad, ok }; every
+    // is a FAIL, never a pass. Lane names are keyed `layout:name` (direct and
+    // paged post the same names). Controls: every name in R_CONTROLS must appear
+    // in some job's controls[] and EVERY instance must have flipped === true; the
+    // 4 boxing hi lanes per layout (A-3) are controls too; CR-dupSrc must be in
+    // every job, CR-pageMap in the churn job. Retention (A-4): two retention-only
+    // jobs (direct, paged R_PAGED.retention) each post a non-null retention
+    // { layout, paged, universe, cycles, tracked, collected, size, after,
+    // sizeAfterGc, findings, leaks, pagedMismatch, dumpBad, clearBad, ok }; every
     // other job posts null. CR-limit / CR-paged are extras (must flip). Torture
     // passes no --allow-natives-syntax: tf=UNCHECKED (C-11). A build without
     // the RoaringSet export fails closed: roaring=null on the GATE line, exit 1.
     const { RoaringSet } = await import('../LogLogN.js');
-    const R_FAMILIES = { ops: 28, gap: 3, conv: 6, clear: 1 };
-    const R_LANES = Object.values(R_FAMILIES).reduce((a, b) => a + b, 0);    // 38
-    const R_CONTROLS = ['CR-dupSrc', 'CR-box', 'CR-has', 'CR-conv', 'CR-abConv', 'CR-gcKick', 'CR-retain'];
+    const R_FAMILIES = { ops: 28, gap: 3, conv: 6, clear: 1, churn: 1 };   // === worker FAMILY_LANES
+    const R_G1 = ['ops', 'gap', 'conv', 'clear'];
+    const R_LANES = 2 * R_G1.reduce((a, f) => a + R_FAMILIES[f], 0);       // 76: 38 direct + 38 paged
+    const R_CHURN = R_FAMILIES.churn;                                       // 1: churn.page, outside the 76
+    const R_CONTROLS = ['CR-dupSrc', 'CR-box', 'CR-has', 'CR-conv', 'CR-abConv', 'CR-gcKick', 'CR-retain', 'CR-pageMap'];
     const R_HI_BOX = ['successor', 'predecessor', 'min', 'max'];
     const R_HI_OPS = ['has', 'successor', 'predecessor', 'min', 'max'];
     const R_RET_CYCLES = 4096;
     const R_RET_TRACKED = 2 * R_RET_CYCLES;     // instance + its dump() per cycle
-    const R_RET_PAGED = { maxPages: 4, pageBits: 1 };
+    // === worker PAGED_KNOBS (SPEC S-4): every paged job strictly paged under C-5
+    const R_PAGED = {
+        ops: { maxPages: 4, pageBits: 1 }, gap: { maxPages: 4, pageBits: 8 }, conv: { maxPages: 4, pageBits: 1 },
+        clear: { maxPages: 4, pageBits: 1 }, hi: { maxPages: 4, pageBits: 8 }, churn: { maxPages: 254, pageBits: 8 },
+        retention: { maxPages: 2, pageBits: 8 },
+    };
+    const R_RET_UNIVERSE = { direct: 1048576, paged: 4294967296 };
+
+    // Key-order-free JSON (object keys sorted at every depth). Cold.
+    function rCanon(v) {
+        return JSON.stringify(v, (k, x) => (x !== null && typeof x === 'object' && !Array.isArray(x)
+            ? Object.fromEntries(Object.keys(x).sort().map((q) => [q, x[q]])) : x));
+    }
 
     // A name matches a required control when equal, or when it extends it
     // with a separator ('CR-box.ops', 'CR-box ops', 'CR-box:ops'). Cold.
@@ -2587,17 +2612,18 @@ async function main() {
         if (l.restoreOk !== true) return 'restore ' + l.restoreOk;
         if (l.kindsOk !== true) return 'kinds ' + l.kindsOk;
         const wantWork = fam === 'ops' || fam === 'gap';
-        const wantEdges = fam === 'conv' || fam === 'clear';
+        const wantEdges = fam === 'conv' || fam === 'clear' || fam === 'churn';
         if (wantWork ? l.workOk !== true : l.workOk !== null) return 'work ' + l.workOk;
         if (wantEdges ? l.edgesOk !== true : l.edgesOk !== null) return 'edges ' + l.edgesOk;
+        if (fam === 'churn' ? l.poolOk !== true : l.poolOk !== null) return 'poolOk ' + l.poolOk;
         if (tf === 'UNCHECKED' ? l.optOk !== null : l.optOk !== true) return 'opt ' + l.optOk + ' (tf ' + tf + ')';
         if (l.ok !== true) return 'worker verdict ' + l.ok;
         return null;
     }
 
     async function roaringTiers(rw) {
-        const agg = { lanesOk: 0, ctlOk: 0, ctlWant: R_CONTROLS.length + R_HI_BOX.length,
-            hiEx: [null, null, null, null], leak: null, tf: 'null' };
+        const agg = { lanesOk: 0, churnOk: 0, churnMaxMs: null, ctlOk: 0, ctlWant: R_CONTROLS.length + 2 * R_HI_BOX.length,
+            hiEx: { direct: [null, null, null, null], paged: [null, null, null, null] }, leak: null, tf: 'null' };
         const f0 = fails.length;
         const consts = [['NS_K', rw.NS_K, NS_K], ['NS_W', rw.NS_W, NS_W], ['NS_MAX_EXCESS', rw.NS_MAX_EXCESS, NS_MAX_EXCESS]];
         for (const c of consts) {
@@ -2607,6 +2633,10 @@ async function main() {
         const fl = rw.FAMILY_LANES;
         if (fl === null || typeof fl !== 'object' || JSON.stringify(fl) !== JSON.stringify(R_FAMILIES)) {
             fails.push('R FAMILY_LANES ' + JSON.stringify(fl) + ' !== torture ' + JSON.stringify(R_FAMILIES));
+        }
+        const pk = rw.PAGED_KNOBS;
+        if (pk === null || typeof pk !== 'object' || rCanon(pk) !== rCanon(R_PAGED)) {
+            fails.push('R PAGED_KNOBS ' + rCanon(pk) + ' !== torture R_PAGED ' + rCanon(R_PAGED));
         }
         if (typeof rw.startRoaringTorture !== 'function' || !Number.isInteger(rw.KILL_MS) || !(rw.KILL_MS > 0)) {
             fails.push('R worker contract: startRoaringTorture / KILL_MS missing');
@@ -2618,9 +2648,15 @@ async function main() {
         const rets = [];
         const tfs = new Set();
         const tR = Date.now();
-        const rJobs = Object.keys(R_FAMILIES).concat(['hi']).map((f) => ({ fam: f, paged: null, label: 'R direct-' + f }));
-        rJobs.push({ fam: 'retention', paged: null, label: 'R direct-retention' });
-        rJobs.push({ fam: 'retention', paged: R_RET_PAGED, label: 'R paged-retention' });
+        const rJobs = [];
+        for (const lay of ['direct', 'paged']) {
+            for (const f of R_G1.concat(['hi'])) {
+                rJobs.push({ fam: f, layout: lay, paged: lay === 'direct' ? null : R_PAGED[f], label: 'R ' + lay + '-' + f });
+            }
+        }
+        rJobs.push({ fam: 'churn', layout: 'paged', paged: R_PAGED.churn, label: 'R paged-churn' });
+        rJobs.push({ fam: 'retention', layout: 'direct', paged: null, label: 'R direct-retention' });
+        rJobs.push({ fam: 'retention', layout: 'paged', paged: R_PAGED.retention, label: 'R paged-retention' });
         for (const rj of rJobs) {
             const fam = rj.fam;
             const label = rj.label;
@@ -2633,7 +2669,7 @@ async function main() {
                     job.error !== null ? line1(job.error) : 'worker posted no result';
                 fails.push(label + ': ' + why);
                 console.log(label + ' ' + why + ' ' + wall + ' | FAIL');
-                if (fam === 'hi') for (const op of R_HI_BOX) fails.push('control hi.' + op + ' absent: hi job FAILED');
+                if (fam === 'hi') for (const op of R_HI_BOX) fails.push('control ' + rj.layout + ' hi.' + op + ' absent: hi job FAILED');
                 continue;
             }
             const fj = fails.length;
@@ -2669,10 +2705,10 @@ async function main() {
                         }
                         continue;
                     }
-                    agg.hiEx[i - 1] = ex;
+                    agg.hiEx[rj.layout][i - 1] = ex;
                     if (sound && hl !== null && h.shareOk === true && ex !== null && ex >= NS_MAX_EXCESS) agg.ctlOk++;
                     else {
-                        fails.push('control hi.' + op + ' PASSED its check (excess ' + ex + ' B/' + NS_K + ', want >= ' +
+                        fails.push('control ' + rj.layout + ' hi.' + op + ' PASSED its check (excess ' + ex + ' B/' + NS_K + ', want >= ' +
                             NS_MAX_EXCESS + ', shareOk ' + (hl === null ? 'null' : h.shareOk) + '): R hi lane is blind');
                     }
                 }
@@ -2688,14 +2724,18 @@ async function main() {
                 if (ls !== null) {
                     for (const l of ls) {
                         const nm = l !== null && typeof l === 'object' && typeof l.name === 'string' ? l.name : '?';
-                        if (nm === '?' || laneNames.has(nm)) {
-                            fails.push(label + ': lane name ' + nm + ' missing or duplicate');
+                        const key = rj.layout + ':' + nm;
+                        if (nm === '?' || laneNames.has(key)) {
+                            fails.push(label + ': lane name ' + key + ' missing or duplicate');
                             continue;
                         }
-                        laneNames.add(nm);
-                        const why = rLaneWhy(l, fam, r.tf);
-                        if (why === null) agg.lanesOk++;
-                        else fails.push(label + ' lane ' + nm + ': ' + why);
+                        laneNames.add(key);
+                        const why = fam === 'churn' && nm !== 'churn.page' ? 'churn lane name ' + nm + ' (want churn.page)' : rLaneWhy(l, fam, r.tf);
+                        if (fam === 'churn') agg.churnMaxMs = typeof l.gcMaxMs === 'number' ? l.gcMaxMs : null;
+                        if (why === null) {
+                            if (fam === 'churn') agg.churnOk++;
+                            else agg.lanesOk++;
+                        } else fails.push(label + ' lane ' + nm + ': ' + why);
                     }
                 }
             }
@@ -2716,7 +2756,7 @@ async function main() {
                 // per-job must-fail set: a control missing from ITS job is a FAIL even when another job posts the name
                 const rWant = ['CR-dupSrc', 'CR-limit'].concat(fam === 'retention' ? ['CR-retain'] :
                     ['CR-paged', 'CR-box.' + fam, 'CR-gcKick'].concat(fam === 'ops' || fam === 'gap' || fam === 'hi' ? ['CR-has.' + fam] : [],
-                        fam === 'conv' ? ['CR-conv', 'CR-abConv'] : []));
+                        fam === 'conv' ? ['CR-conv', 'CR-abConv'] : [], fam === 'churn' ? ['CR-pageMap'] : []));
                 for (const w of rWant) {
                     const n = r.controls.filter((c) => c !== null && typeof c === 'object' && c.name === w).length;
                     if (n !== 1) fails.push(label + ': control ' + w + ' instances ' + n + ' (want 1 in this job)');
@@ -2726,7 +2766,7 @@ async function main() {
             else if (fam !== 'retention') {
                 if (r.retention !== null) fails.push(label + ': retention posted by a ' + fam + ' job');
             } else if (r.retention === null) fails.push(label + ': retention null in a retention job -> FAIL');
-            else rets.push({ label, ret: r.retention, layout: rj.paged === null ? 'direct' : 'paged' });
+            else rets.push({ label, ret: r.retention, layout: rj.layout });
             if (r.ok !== true) {
                 fails.push(label + ': worker verdict ' + r.ok + ' (fail: ' +
                     (Array.isArray(r.fail) ? r.fail.join(', ') : 'list absent') + ')');
@@ -2738,27 +2778,40 @@ async function main() {
             if (hit.length === 0) fails.push('control ' + want + ' absent: no job posted it -> FAIL');
             else if (hit.every((c) => c.flipped)) agg.ctlOk++;
         }
+        if (agg.lanesOk !== R_LANES || agg.churnOk !== R_CHURN || agg.ctlOk !== agg.ctlWant) {
+            fails.push('R counts: lanes ' + agg.lanesOk + '/' + R_LANES + ' churn ' + agg.churnOk + '/' + R_CHURN +
+                ' ctl ' + agg.ctlOk + '/' + agg.ctlWant + ' -> FAIL');
+        }
         const extra = seen.filter((c) => !R_CONTROLS.some((w) => rCtlMatch(c.name, w)));
-        if (rets.length !== 2) fails.push('R retention: ' + rets.length + ' of 2 layouts posted -> FAIL');
+        if (rets.length !== 2) {
+            fails.push('R retention: ' + rets.length + ' of 2 layouts posted (' + rets.map((x) => x.layout).join(', ') + ') -> FAIL');
+        }
         let leak = rets.length === 0 ? null : 0;
         for (const x of rets) {
             const t = x.ret;
-            const good = typeof t === 'object' && t.layout === x.layout && t.cycles === R_RET_CYCLES &&
+            const knob = x.layout === 'direct' ? null : R_PAGED.retention;
+            const good = typeof t === 'object' && t.layout === x.layout && t.universe === R_RET_UNIVERSE[x.layout] &&
+                rCanon(t.paged) === rCanon(knob) && t.cycles === R_RET_CYCLES &&
                 t.tracked === R_RET_TRACKED && t.collected === R_RET_TRACKED && t.size === 0 && t.after === 0 &&
                 t.sizeAfterGc === 0 && t.findings === 0 && t.leaks === 0 && Number.isInteger(t.warnings) &&
-                t.pagedMismatch === 0 && t.dumpBad === 0 && t.ok === true;
+                t.pagedMismatch === 0 && t.dumpBad === 0 && t.clearBad === 0 && t.ok === true;
             if (leak !== null) leak = Number.isInteger(t.size) ? leak + t.size : null;
             if (!good) {
-                fails.push(x.label + ': retention ' + JSON.stringify(t) + ' (want layout ' + x.layout + ', cycles ' + R_RET_CYCLES +
-                    ', tracked = collected = ' + R_RET_TRACKED + ', size / after / sizeAfterGc / findings / leaks / pagedMismatch / dumpBad 0, ok true)');
+                fails.push(x.label + ': retention ' + JSON.stringify(t) + ' (want layout ' + x.layout + ', universe ' +
+                    R_RET_UNIVERSE[x.layout] + ', paged ' + rCanon(knob) + ', cycles ' + R_RET_CYCLES + ', tracked = collected = ' +
+                    R_RET_TRACKED + ', size / after / sizeAfterGc / findings / leaks / pagedMismatch / dumpBad / clearBad 0, ok true)');
             }
         }
         agg.leak = leak;
         agg.tf = tfs.size === 1 && (tfs.has('UNCHECKED') || tfs.has('CHECKED')) ? [...tfs][0] : 'null';
         if (agg.tf === 'null') fails.push('R tf: jobs disagree or none ran (' + [...tfs].join(', ') + ')');
-        console.log('R RoaringSet lanes=' + agg.lanesOk + '/' + R_LANES + ' ctl=' + agg.ctlOk + '/' + agg.ctlWant +
+        const hiFmt = (a) => a.map((v) => (v === null ? 'null' : v)).join('/');
+        console.log('R RoaringSet lanes=' + agg.lanesOk + '/' + R_LANES + ' churn=' + agg.churnOk + '/' + R_CHURN +
+            ' (churn.page gc maxMs=' + (agg.churnMaxMs === null ? 'null' : agg.churnMaxMs.toFixed(2)) + ' REPORTED)' +
+            ' ctl=' + agg.ctlOk + '/' + agg.ctlWant +
             ' (extra ' + extra.filter((c) => c.flipped).length + '/' + extra.length + ')' +
-            ' hiExcess=' + agg.hiEx.map((v) => (v === null ? 'null' : v)).join('/') + ' B/' + NS_K + ' retention=' + rets.length + '/2 (' + rets.map((x) => x.layout + ' size ' + x.ret.size + ' warnings ' + x.ret.warnings).join(', ') + ')' +
+            ' hiExcess=' + hiFmt(agg.hiEx.direct) + ' hiPaged=' + hiFmt(agg.hiEx.paged) + ' B/' + NS_K +
+            ' retention=' + rets.length + '/2 (' + rets.map((x) => x.layout + ' size ' + x.ret.size + ' warnings ' + x.ret.warnings).join(', ') + ')' +
             ' leak=size ' + leak + '/0 tf=' + agg.tf + ' wall=' + ((Date.now() - tR) / 1000).toFixed(1) + ' s' +
             ' | ' + (fails.length === f0 ? 'ok' : 'FAIL'));
         return agg;
@@ -2814,8 +2867,10 @@ async function main() {
             ' refreshes=+' + veb.refreshes +
             ' bigKeyExcess=' + (veb.bigKeyExcess === null ? 'null' : veb.bigKeyExcess) + ' B/' + NS_K) +
         (roar === null ? ' | roaring=null' :
-            ' | roaring lanes=' + roar.lanesOk + '/' + R_LANES + ' ctl=' + roar.ctlOk + '/' + roar.ctlWant +
-            ' hiExcess=' + roar.hiEx.map((v) => (v === null ? 'null' : v)).join('/') +
+            ' | roaring lanes=' + roar.lanesOk + '/' + R_LANES + ' churn=' + roar.churnOk + '/' + R_CHURN +
+            ' ctl=' + roar.ctlOk + '/' + roar.ctlWant +
+            ' hiExcess=' + roar.hiEx.direct.map((v) => (v === null ? 'null' : v)).join('/') +
+            ' hiPaged=' + roar.hiEx.paged.map((v) => (v === null ? 'null' : v)).join('/') +
             ' leak=size ' + (roar.leak === null ? 'null' : roar.leak) + '/0 tf=' + roar.tf) +
         ' | ' + (ok ? 'ok' : 'FAIL') + ' (sink=' + SINK[0] + ')');
     if (!ok) {

@@ -8,13 +8,15 @@
  * EXACTLY once in the text; a count of 0 or >= 2 FAILS that row (never a skip) and its job never starts.
  *
  * Rows (ported from R0's best-mutants.mjs, anchors re-cut to the shipped text: per-chunk row `m` for `c`, `_q`
- * dropped, so vd-M6 / vf-m3 lose their q-lines; va-m1 / va-m10b / S7 / S8 are set-op mutants -> G3-B4):
- *   47 FUZZ rows    job 'fuzz' at BUDGET (S11: 'fuzz:V' at BUDGET_V): 43 must be KILLED, 4 are reasoned EQUIVALENTS (B1, B2c, B2d, S9) that
+ * dropped, so vd-M6 / vf-m3 lose their q-lines; the 4 set-op mutants va-m1 / va-m10b / S7 / S8 came back in G3-B4
+ * (SPEC C-21), re-cut to _chunkIntersectionSize's per-set rows mA0 / mB0 (C-6) and killed by checkPair inside job
+ * 'fuzz'; va-m10b's two R0 edits are ONE anchor because the shipped pA / pB lines are adjacent):
+ *   51 FUZZ rows    job 'fuzz' at BUDGET (S11: 'fuzz:V' at BUDGET_V): 47 must be KILLED, 4 are reasoned EQUIVALENTS (B1, B2c, B2d, S9) that
  *                   must SURVIVE; a killed "equivalent" FAILS too (its reason is then wrong).
  *    6 CONTRACT rows the 4 NEW throw-site hoists of A-3 (va-m7, the 5th site, is a fuzz row) via job 'a3'; the
  *                   universe-default mutant (A-4) via job 'universe'; the maxSmall-default mutant via the in-file
  *                   'defaults' oracle (byteLength of a default-constructed set vs the C-3 closed form).
- *   TOTAL 53 rows: 49 killed, 4 equivalents, 0 unexplained / ABORT.
+ *   TOTAL 57 rows: 53 killed, 4 equivalents, 0 unexplained / ABORT (SPEC C-10a).
  *
  * Controls: one UNMUTATED run per job kind (fuzz, fuzz:V, a3, universe, defaults) on the same text through the same path
  * (data: URL); each must come back clean, else the file FAILS (a harness bug would otherwise read as a kill).
@@ -47,7 +49,7 @@ const BUDGET = { seeds: 4, ops: 1500 }; // R0's best-mutants.mjs budget (4 seeds
 const BUDGET_V = { seeds: 8, ops: 4000, only: ['V'] };
 const ROW_MS = 300000;                  // per-row kill timer (a hang = killed)
 const POOL = Math.max(2, Math.min(6, availableParallelism() >> 1));
-const EXPECT_KILLED = 49;
+const EXPECT_KILLED = 53;
 const EXPECT_EQUIV = 4;
 
 const EQ_B2 = 'EQUIVALENT: the in-chunk bitmap search runs only for lo in (min, max] (successor) / [min, max) ' +
@@ -56,7 +58,10 @@ const EQ_B2 = 'EQUIVALENT: the in-chunk bitmap search runs only for lo in (min, 
 
 // [id, what, from, to, job, equivalence reason (equivalents only)]
 const ROWS = [
-    // ---- va (11 of 13; va-m1 / va-m10b -> G3-B4) ----
+    // ---- va (13) ----
+    ['va-m1', 'FULL x other count -1 (_chunkIntersectionSize kA FULL)',
+        'if (kA === 6) return stopAtOne ? 1 : other._card[mB0] + 1;',
+        'if (kA === 6) return stopAtOne ? 1 : other._card[mB0];', 'fuzz'],
     ['va-m2', 'has kind 5 base << 12',
         'const base = k === 5 ? slot << 6 : slot << 12;\n        const r = this._lbRun(u16, base, nRuns, lo);\n        return r < nRuns && u16[base + (r << 1)] <= lo;\n',
         'const base = slot << 12;\n        const r = this._lbRun(u16, base, nRuns, lo);\n        return r < nRuns && u16[base + (r << 1)] <= lo;\n', 'fuzz'],
@@ -79,6 +84,9 @@ const ROWS = [
     ['va-m9', 'successor on FULL +1',
         'if (k === 6) return ((c << 16) | lo) >>> 0;\n            const slot = this._slot[m];\n            if (k === 1) {\n                const len = this._card[m] + 1;\n                const base = slot << 6;\n                const j = this._lb16(this._sData, base, len, lo);\n                if (j < len) return',
         'if (k === 6) return ((c << 16) | (lo === 65535 ? lo : lo + 1)) >>> 0;\n            const slot = this._slot[m];\n            if (k === 1) {\n                const len = this._card[m] + 1;\n                const base = slot << 6;\n                const j = this._lb16(this._sData, base, len, lo);\n                if (j < len) return', 'fuzz'],
+    ['va-m10b', 'intersect priority as base (small runs ranked with bitmap)',
+        '        const pA = kA <= 2 ? 0 : (kA === 3 ? 2 : 1);\n        const pB = kB <= 2 ? 0 : (kB === 3 ? 2 : 1);',
+        '        const pA = kA <= 2 ? 0 : (kA === 4 ? 1 : 2);\n        const pB = kB <= 2 ? 0 : (kB === 4 ? 1 : 2);', 'fuzz'],
     ['va-m11', 'runOptimize skips FULL detection',
         'if (card === 65536) {\n                if (k !== 6) this._toFull(m, k, slot);',
         'if (card === 65536) {\n                if (k === 99) this._toFull(m, k, slot);', 'fuzz'],
@@ -144,7 +152,7 @@ const ROWS = [
     ['B2d', '_bmpPrevLEQ empty-L2 guard dropped',
         '                l2v = sum[sBase + 64] | 0;\n                if (l2v === 0) return -1;\n',
         '                l2v = sum[sBase + 64] | 0;\n', 'fuzz', EQ_B2],
-    // ---- merge seams (S1..S6, S9..S12; S7 / S8 -> G3-B4) ----
+    // ---- merge seams (S1..S12) ----
     ['S1', 'add-empty SINGLE without headers (_addChunk)',
         '        this._slot[m] = lo;\n        this._card[m] = 0;\n        this._cMin[m] = lo;\n        this._cMax[m] = lo;\n',
         '        this._slot[m] = lo;\n        this._card[m] = 0;\n', 'fuzz'],
@@ -159,6 +167,12 @@ const ROWS = [
         '        const prevAdj = r > 0 && (u16[base + ((r - 1) << 1)] + u16[base + ((r - 1) << 1) + 1] + 1 === lo);',
         '        if (r === 0) this._cMin[m] = lo;\n        else if (r === nRuns) this._cMax[m] = lo;\n        const prevAdj = r > 0 && (u16[base + ((r - 1) << 1)] + u16[base + ((r - 1) << 1) + 1] + 1 === lo);', 'fuzz'],
     ['S6', '_deleteFull min header dropped', '        if (lo === 0) this._cMin[m] = 1;\n', '        if (lo === -1) this._cMin[m] = 1;\n', 'fuzz'],
+    ['S7', 'SINGLE intersection asks its own set (own row mA0, other\'s kind)',
+        'if (kA === 7) return other._chunkHasLo(mB0, kB, this._slot[mA0]);',
+        'if (kA === 7) return this._chunkHasLo(mA0, kB, this._slot[mA0]);', 'fuzz'],
+    ['S8', '_chunkHasLo small runs base << 12',
+        '        const base = k === 5 ? slot << 6 : slot << 12;\n        const r = this._lbRun(u16, base, nRuns, lo);\n        return r < nRuns && u16[base + (r << 1)] <= lo ? 1 : 0;',
+        '        const base = slot << 12;\n        const r = this._lbRun(u16, base, nRuns, lo);\n        return r < nRuns && u16[base + (r << 1)] <= lo ? 1 : 0;', 'fuzz'],
     ['S9', 'bitmap delete demotes before the header re-derive',
         '            if (lo === this._cMin[m]) this._cMin[m] = this._bmpNextGEQ(slot, lo);\n            else if (lo === this._cMax[m]) this._cMax[m] = this._bmpPrevLEQ(slot, lo);\n            const newCard = this._card[m] - 1;\n            if (newCard < DEMOTE_BITMAP) {\n                this._demoteBitmapToArray(m, slot);\n            } else {\n                this._card[m] = newCard;\n            }',
         '            const newCard = this._card[m] - 1;\n            if (newCard < DEMOTE_BITMAP) {\n                this._demoteBitmapToArray(m, slot);\n            } else {\n                this._card[m] = newCard;\n            }\n            if (lo === this._cMin[m]) this._cMin[m] = this._bmpNextGEQ(slot, lo);\n            else if (lo === this._cMax[m]) this._cMax[m] = this._bmpPrevLEQ(slot, lo);', 'fuzz',
@@ -225,7 +239,7 @@ const FLOOR_ROW = /^FAIL .* seed all op -: coverage floor < 100: /;
 /** The mutant text does not parse: the import threw a SyntaxError (worker and runDefaults post e.stack). */
 function isAbort(r) {
     return r.error === null && r.result !== null && typeof r.result === 'object' && r.result.ok === false &&
-        /^SyntaxError/.test(String(r.result.message));
+        /(^|\n)SyntaxError: /.test(String(r.result.message));
 }
 
 /** The worker flagged its own FAIL-row counter as inconsistent: a harness defect. */
@@ -283,8 +297,8 @@ test('RoaringMutants: every anchor occurs exactly once in ../LogLogN.js (census)
         if (CENSUS) console.log('# census ' + r.id + ' ' + COUNTS[i]);
         if (COUNTS[i] !== 1) bad.push(r.id + ' count ' + COUNTS[i]);
     });
-    assert.equal(ROWS.length, 53, '47 fuzz + 6 contract rows');
-    assert.equal(ROWS.filter((r) => r.job === 'fuzz' || r.job === 'fuzz:V').length, 47);
+    assert.equal(ROWS.length, 57, '51 fuzz + 6 contract rows');
+    assert.equal(ROWS.filter((r) => r.job === 'fuzz' || r.job === 'fuzz:V').length, 51);
     assert.equal(ROWS.filter((r) => r.reason !== null).length, EXPECT_EQUIV);
     assert.equal(new Set(ROWS.map((r) => r.id)).size, ROWS.length, 'unique ids');
     assert.ok(ROWS.every((r) => r.from !== r.to), 'every row changes the text');
@@ -300,7 +314,11 @@ if (!CENSUS) {
             assert.ok(!isInternal(r), 'control ' + k + ' harness defect (internal: failures counter)');
             assert.equal(killedOf(k, r), false, 'control ' + k + ' reads as killed: ' + whyOf(k, r));
             if (k === 'fuzz' || k === 'fuzz:V') {
-                assert.ok(r.result.rows.length >= (k === 'fuzz' ? 115 : 28), 'control ' + k + ' ran ' + r.result.rows.length + ' rows');
+                // one row per scenario / section (a floor miss REPLACES its scenario's row): the count is the harness
+                // structure, independent of seeds / ops / base (G3-B4 evidence g3/b4-rowcount.log); re-pin when a section changes
+                const want = k === 'fuzz' ? 125 : 34;
+                assert.equal(r.result.rows.length, want, 'control ' + k + ' ran ' + r.result.rows.length + ' rows' +
+                    ', pinned ' + want + ' = one row per roaringFuzz.mjs scenario / section: re-pin (SPEC C-10a) when one is added or removed');
                 console.log('# control ' + k + ': ' + r.result.rows.length + ' rows, ' + realFails(r).length + ' FAIL, ' + r.result.failing + ' floor rows (budget artifacts), in-worker ' + (r.result.wallMs / 1000).toFixed(1) + ' s');
             } else {
                 assert.deepEqual(r.result.failures, []);

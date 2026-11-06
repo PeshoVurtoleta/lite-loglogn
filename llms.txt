@@ -17,8 +17,8 @@ strict O(log log U) member (queries only; its updates are O(w)); YFastTrie keeps
 the O(log log U) query at O(n) space (updates: O(log log U) probes plus at most
 2w-1 word moves, split / merge / borrow amortized); vEBTree (0.5.0) is
 the worst-case member: O(log log U) for every operation, O(1) min / max, O(U) space;
-RoaringSet (0.6.0) is the compressed member: 65,536-key chunks in the smallest fitting
-container over a universe up to 2^32, pools fixed at construction, a stated byte cost.
+RoaringSet (0.6.0) is the compressed member: 65,536-key chunks, each in the container kind
+that fits its keys, over a universe up to 2^32, pools fixed at construction, a stated byte cost.
 Every hot op of StratifiedBitset, XFastTrie, YFastTrie, vEBTree and RoaringSet allocates
 zero bytes after construction (keys < 2^30; see the boxing note).
 
@@ -52,7 +52,7 @@ XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published; RoaringS
   min / max; O(U) SPACE, the whole universe allocated up front; 0 B/op on every
   hot method (keys < 2^30).
 - RoaringSet (0.6.0) -- Roaring-style compressed ordered set over [0, U), U <= 2^32:
-  65,536-key chunks, each in the smallest fitting container (SINGLE / FULL 0 B,
+  65,536-key chunks, each in the container kind that fits its keys (SINGLE / FULL 0 B,
   small array, array, bitmap with a summary, runs, small runs), preallocated pools
   that never grow, a direct or paged chunk table chosen at construction; successor /
   predecessor / min / max, addRange, cold counting set ops; SPACE fixed by the
@@ -381,10 +381,12 @@ maxSmall [0, 65535], maxLarge [1, 65534], pageBits [1, 15], maxPages [1, ceil(C 
 integer in [1, N] for this universe and pageBits; got ...`). Every pool is preallocated
 once and never grows. Methods: `has(x)` -> boolean, `add(x)` -> this (idempotent),
 `addRange(lo, hi)` -> this (keys [lo, hi), 0 <= lo <= hi <= U; prechecks, throws before
-any write; a bad bound is RangeError), `delete(x)` -> boolean, `successor(x)` /
+any write; a bad bound is RangeError; each touched chunk ends in the kind runOptimize would
+pick, except that the first partial chunk can end as a large-slot array (fewer keys than twice its runs) where
+small runs would fit, which runOptimize keeps), `delete(x)` -> boolean, `successor(x)` /
 `predecessor(x)` -> number | undefined (STRICT), `min()` / `max()` -> number |
-undefined, `runOptimize()` -> this (cold; add never re-encodes, call it after clustered
-ingestion), `intersects(other)` -> boolean and `intersectionSize(other)` /
+undefined, `runOptimize()` -> this (cold; idempotent, a second call changes no chunk; add never
+re-encodes, call it after clustered ingestion), `intersects(other)` -> boolean and `intersectionSize(other)` /
 `unionSize(other)` / `differenceSize(other)` -> number (cold counting ops, nothing
 materialized; other must be a RoaringSet of the same universe, any layout / pageBits,
 else TypeError / RangeError), `clear()` -> void (cold), `dump()` -> RoaringSetDump
@@ -412,7 +414,7 @@ the write order and counts only each chunk's final container, so under pool pres
 succeed where the equivalent add loop would throw part-way, and a range can throw where its final
 state would fit.
 
-Layout: each 65,536-key chunk is held by the smallest container that fits (SINGLE and
+Layout: each 65,536-key chunk is held in the container kind that fits its keys (SINGLE and
 FULL cost 0 B; small array 2..64 keys; array up to 4,096; bitmap; runs; small runs <=
 32 runs), with promote / demote hysteresis. The chunk table is DIRECT (11 B per chunk)
 or PAGED (a directory plus pooled 2^pageBits-row pages, page 0 a shared zero page),
@@ -445,8 +447,8 @@ measurements" below (REPORTED, gates nothing).
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 1158 tests, 1157 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail,
-  2026-11-06, Node v26.8.2; also npm run verify = test + test:types + torture + test:perf): exact counts (words for
+- DETERMINISTIC (npm test = 1168 tests, 1167 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail,
+  2026-11-06, Node v26.8.2, LogLogN.js a58bd6cb; counts include one DocSync control test added after the 1167-test boundary run; also npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset and vEBTree, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
   0 divergences), space pins, tier parity, bytecode-size gates, a parity pin of
@@ -469,7 +471,8 @@ measurements" below (REPORTED, gates nothing).
   lane fires an inner reseed (X2 covers kicks and reseeds).
   vEBTree lanes V1-V5 (QUIET verify run 2026-11-03, load1 1.63 vs baseline 2.21, 12
   cores, Darwin arm64, Node v26.8.2 / V8 14.6.202.34; V1 / V2 / V5 identical in 3
-  logged runs, V3 / V4 / CV5-CV7 in 2; count gates, not timing): V1 2,000,000 mixed
+  logged runs, V3 / V4 / CV5-CV7 in 2; count gates, not timing; CV7 depends on a JIT inlining decision, a non-flip at tf=UNCHECKED is
+  INCONCLUSIVE, exit 2 NO-VERDICT): V1 2,000,000 mixed
   ops at U = 2^16 -> alloc 0 B/op, transient 0.000 B/op, gc major 0 / minor 0; V2a
   1,000,000 ops at U = 2^28 (byteLength 33,718,804) -> 0 B/op, V2b Worker 200,000
   ops abGrowth 0; V3 (Worker) U = 2^25 + 3, 3,493,888 delete-heavy ops, 1,746,944 deletes each
@@ -492,8 +495,9 @@ measurements" below (REPORTED, gates nothing).
   RoaringSet (DETERMINISTIC; the same GATE line of `npm run torture`, 1 run, Node v26.8.2, count
   gates): `roaring lanes=93/93 churn=1/1 ctl=19/19 hiExcess=2097144/2097144/1048568/1048568
   hiPaged=2097144/2097144/1048568/1048568 rangeExcess=-32/-32 leak=size 0/0 tf=UNCHECKED`: 93 lanes (direct and paged, plus 5 mixed)
-  at 0 B/op, the page-churn lane, 19 must-fail controls flipping (the 8 high-key box controls
-  read > 0 by design, their magnitude is REPORTED), a leak census of 0. Bytecode (V8 14.6,
+  at 0 B/op, the page-churn lane, 19 must-fail controls flipping (the 8 hi.* box controls
+  box only while the call is not inlined, a JIT decision this run does not check (tf=UNCHECKED): a measured
+  non-flip is INCONCLUSIVE, exit 2 NO-VERDICT; their magnitude is REPORTED), a leak census of 0. Bytecode (V8 14.6,
   pinned in test/RoaringBytecode.test.js): has 452, add 838, delete 899, successor 610,
   predecessor 727, min 56, max 56 B (successor / predecessor / add / delete are over the
   460 B inlining limit, so a returned key >= 2^31 can box).

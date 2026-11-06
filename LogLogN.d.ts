@@ -362,7 +362,7 @@ export interface RoaringSetDump {
 /**
  * RoaringSet -- a compressed ordered set over a FIXED universe [0, U), 1 <= U <= 2^32,
  * Roaring-style: the key space splits into 2^16-key chunks, each held by the
- * smallest fitting container -- SINGLE (1 key, 0 B), small array (2..64 keys,
+ * container kind that fits its keys -- SINGLE (1 key, 0 B), small array (2..64 keys,
  * 128 B small slot), array (up to 4,096 keys, 8 KB large slot), bitmap (8 KB +
  * a 66-word summary), runs (8 KB large slot), small runs (<= 32 runs, 128 B small
  * slot), FULL (all 65,536 keys, 0 B). Promote / demote use hysteresis (a small
@@ -446,7 +446,10 @@ export class RoaringSet {
      * Adds every key in [lo, hi), 0 <= lo <= hi <= U (integers); lo === hi adds nothing. The set
      * equals that of `add(x)` for each x in [lo, hi); each touched chunk ends in the container kind
      * `runOptimize()` would choose for the final key set at the post-call pool state (fully covered chunks
-     * become FULL, 0 B). Precounts the slots and pages it needs, in the write order, and throws
+     * become FULL, 0 B), with one exception: when the small pool is empty as the first partial chunk is
+     * decided and the last partial chunk returns a small slot afterwards, the first chunk can end as a
+     * large-slot array (n < 2r) where small runs would fit; `runOptimize()` keeps that array.
+     * Precounts the slots and pages it needs, in the write order, and throws
      * RangeError before any write if the pools cannot hold them (set unchanged):
      * `... addRange metadata page pool exhausted (needs N new pages, F free of maxPages M) ...` or
      * `... <pool> container pool exhausted (capacity C) ...`. It counts only each chunk's final
@@ -472,11 +475,16 @@ export class RoaringSet {
     max(): number | undefined;
 
     /**
-     * Cold, O(live chunks). A 65,536-key chunk becomes FULL; an array with fewer runs than half its keys,
-     * or a bitmap with <= 2,047 runs, becomes runs (small runs when <= 32 runs and a small slot is free);
-     * a runs slab of <= 32 runs moves to a small slot, else becomes an array when smaller. Other
-     * containers are kept. Never throws; allocates nothing (when the small pool is empty a
-     * small-runs candidate stays in a large slot). Returns this. See the class comment for the cadence.
+     * Cold, O(live chunks). Re-encodes chunks by these rules only (no other chunk moves; a large-slot array
+     * never becomes a small array): a chunk holding all 65,536 keys becomes FULL (0 B); a large-slot array
+     * becomes runs (small runs when <= 32 runs and a small slot is free) when 2 x runs < keys and
+     * runs <= 2,048; a bitmap becomes an array when it holds <= 4,096 keys and fewer than 2 x runs keys,
+     * else runs (small runs when <= 32 runs and a small slot is free) when runs <= 2,047, else it stays a
+     * bitmap; a runs chunk moves to small runs when <= 32 runs and a small slot is free, else to an array
+     * when 2 x keys < 4 x runs. A second call changes no chunk (idempotent). Allocates nothing, never
+     * throws. Returns this. Cadence: `add()` never re-encodes, so call it at a chunk boundary
+     * (`key >>> 16` changes) once at least 4,096 keys were added since the last call; see the README
+     * section "runOptimize() cadence".
      */
     runOptimize(): this;
 

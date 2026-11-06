@@ -11,7 +11,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`RoaringSet` (0.6.0): a compressed ordered set over a fixed universe.**
   `new RoaringSet(universe, maxSmall = 1024, maxLarge = 256, maxPages = all,
   pageBits = 8)`, positional, universe REQUIRED in [1, 2^32]. The key space splits
-  into 65,536-key chunks, each held by the smallest container that fits: SINGLE and
+  into 65,536-key chunks, each held in the container kind that fits its keys: SINGLE and
   FULL (0 B), small array (2..64 keys), array (up to 4,096), bitmap (with a 66-word
   summary), runs, small runs (<= 32 runs), with promote / demote hysteresis. Methods
   `has`, `add`, `addRange`, `delete`, `successor` / `predecessor` (STRICT), `min`,
@@ -53,7 +53,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (integers); lo === hi adds nothing. The set equals that of `add(x)` for each x in
   [lo, hi); each touched chunk ends in the container kind `runOptimize()` would choose
   for its final key set at the post-call pool state (fully covered chunks become FULL,
-  0 B). A read-only precount of the metadata pages and container slots runs first and
+  0 B); one exception: the first partial chunk can end as a large-slot array (n < 2r) where small
+  runs would fit, which `runOptimize()` keeps (see the end-state fix below). A read-only precount of the metadata pages and container slots runs first and
   throws RangeError before any write when the pools cannot hold the result (set
   unchanged): `[lite-loglogn] RoaringSet addRange metadata page pool exhausted (needs
   N new pages, F free of maxPages M); increase maxPages at construction` (`needs 1 new
@@ -73,7 +74,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`addRange` end-state fix (before release).** A range whose first partial chunk was decided
   before the last partial chunk returned a small slot ended that chunk as runs where
   `runOptimize()` would pick small runs; every touched chunk now ends in
-  `runOptimize()`'s kind at the post-call pool state (the cold `addRange` body only).
+  `runOptimize()`'s kind at the post-call pool state (the cold `addRange` body only). One
+  exception remains and is documented: when the small pool is empty as the first partial chunk is
+  decided and the last partial chunk returns a small slot afterwards, that first chunk can end as a
+  large-slot array (n < 2r) where small runs would fit; `runOptimize()` keeps that array.
+- **`runOptimize` bitmap rule (before release).** A bitmap chunk now becomes an array when it holds
+  <= 4,096 keys and fewer than 2 x runs keys, else runs (small runs when <= 32 runs and a small slot is
+  free) when it has <= 2,047 runs, else it stays a bitmap; a second call changes no chunk
+  (idempotent). Before, a bitmap of 2,400 keys in 2,000 runs (400 two-key runs plus 1,600 singletons)
+  went to runs on the first call and to an array on the second; now it is an array after one call.
+  Both kinds take one 8 KB large slot, so pool use is unchanged. The README container table now
+  gives the bitmap range as 2,049 .. 65,535 keys (created at the 4,097th, demotes when a delete
+  leaves 2,048).
 - **`test/RoaringBytecode.test.js` (9 tests).** RoaringSet's hot bodies and its two
   bitmap scan helpers, one --print-bytecode child per name on a driver that runs a
   direct and a paged instance; each header must lie in the RoaringSet region. Exact
@@ -111,8 +123,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RoaringSetChunkDump` (with `test/types/loglogn.test-d.ts` uses and
   `@ts-expect-error` negatives); README, `llms.txt` and `GUIDE.md` gain RoaringSet
   sections with the exact byteLength rows pinned by `test/DocSync.test.js`.
-- **Gates at this tree (DETERMINISTIC).** `npm test`: 1158 tests, 1157 pass, 1 skipped
-  (the opt-in DEEP small-scope run), 0 fail (2026-11-06, Node v26.8.2).
+- **Gates at this tree (DETERMINISTIC).** `npm test`: 1168 tests, 1167 pass, 1 skipped
+  (the opt-in DEEP small-scope run), 0 fail (2026-11-06, Node v26.8.2; the 1167-test boundary run on a
+  PRELIMINARY host, load1 5.29 -> 15.32, plus the one DocSync control test added after it).
+
+### Changed
+
+- **Torture verdict for JIT-dependent box controls (before release).** The vEBTree control CV7 and the
+  eight RoaringSet hi.* controls (successor / predecessor / min / max, per layout) only flip when V8
+  makes a particular inlining decision, which a run at `tf=UNCHECKED` does not verify. A non-flip there
+  now prints INCONCLUSIVE and torture exits 2 (NO-VERDICT) instead of FAIL; with the TurboFan check
+  (`tf=CHECKED`) a non-flip stays FAIL, and any FAIL exits 1 first. CR-box (both channels), CV9, CV2 and
+  every explicit-allocation box control keep FAIL. The lanes themselves are unchanged.
 
 ## [0.5.0] - 2026-11-03
 

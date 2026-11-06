@@ -212,7 +212,7 @@ test('DocSync fixtures (a): a "vEBTree is planned" line flips the stale gate', (
 });
 
 test('DocSync fixtures (a): the pre-0.5.0 package.json description flips the stale gate', () => {
-    // inline copy of the pre-0.5.0 (unchanged since 9f87693) description tail; .handoff is gitignored, so it is never read here
+    // inline copy of the pre-0.5.0 (identical since 9f87693) description tail; .handoff is gitignored, so it is never read here
     const OLD = 'Zero-dependency, zero-GC sub-logarithmic bounded-integer predecessor/successor structures. ' +
         '0 B/op, bounds gated by exact counts. vEBTree (worst-case O(log log U)) is planned. ' +
         'Tree-shakeable named exports.';
@@ -505,9 +505,9 @@ for (const f of ['README.md', 'llms.txt']) {
 // --- (d) stale gate on the live files ---------------------------------------------------
 
 for (const f of ['README.md', 'llms.txt', 'GUIDE.md', 'LogLogN.d.ts']) {
-    // The README line "Later tiers (...RoaringSet) are queued in ROADMAP.md" is the ONE exemption (B6d deletes it and this argument).
-    test('DocSync (R d): ' + f + ' never calls RoaringSet queued / 0.7.0' + (f === 'README.md' ? ' (except the one \'Later tiers ... are queued\' line, B6d)' : ''), () => {
-        const hits = staleRHitsExcept(read(f), f === 'README.md' ? README_B6D_LINE : '');
+    // No exemption for any file: the old README "Later tiers (...RoaringSet) are queued" line is gone (see the must-fail control below).
+    test('DocSync (R d): ' + f + ' never calls RoaringSet queued / 0.7.0', () => {
+        const hits = staleRHitsExcept(read(f), '');
         assert.deepEqual(hits, [], f + ' stale line(s): ' + hits.join(', '));
     });
 }
@@ -724,13 +724,21 @@ test('DocSync fixtures (R c): a changed formula (8,484, <=, maxPages + 2, 20; di
     assert.ok(rsp(GOOD_R.replace('by 11 (maxPages + 1)', 'by 11 (maxPages + 2)')).length >= 1);
 });
 
-test('DocSync fixtures (R d): the README exemption covers only the one known line', () => {
+test('DocSync fixtures (R d): stale-line fixtures (no README exemption remains)', () => {
     const known = README_B6D_LINE;
     assert.deepEqual(staleRHitsExcept(known, README_B6D_LINE), []);
     assert.equal(staleRHitsExcept(known + '\nRoaringSet ships in 0.7.0', README_B6D_LINE).length, 1);
     assert.equal(staleRHitsExcept('Note: ' + known, README_B6D_LINE).length, 1);
     assert.equal(staleRHitsExcept(known + '\n' + known, README_B6D_LINE).length, 1);
     assert.equal(staleRHitsExcept(known + ' RoaringSet ships in 0.7.0', README_B6D_LINE).length, 1);
+});
+
+test('DocSync fixtures (R d): must-fail control -- the live README with the old "Later tiers ... RoaringSet ... queued" line put back gives >= 1 hit', () => {
+    const readme = read('README.md');
+    const NOW = 'Later tiers (SegmentedU for wider keys, EliasFano) are queued in [`ROADMAP.md`](./ROADMAP.md).';
+    assert.equal(readme.split(NOW).length, 2, 'README anchor line present exactly once');
+    assert.deepEqual(staleRHitsExcept(readme, ''), [], 'the live README is clean');
+    assert.ok(staleRHitsExcept(readme.replace(NOW, README_B6D_LINE), '').length >= 1, 'the stale line would FAIL the unexempted gate');
 });
 
 test('DocSync fixtures (R d): STALE_R flags RoaringSet with queued / 0.7.0 in either order, not planned', () => {
@@ -891,6 +899,8 @@ export function roaringPhrases(O, kind) {
         'integer, ' + uLo + ' .. 2^32, REQUIRED',
         'a SINGLE key (0 B), a small array (' + sm + ' keys), an array (up to ' + ar + ' keys), a bitmap, runs, small runs (<= ' + sr + ' runs) or FULL (all ' + ck + ' keys, 0 B)',
         'Each ' + ck + '-key chunk',
+        'small runs when <= ' + sr + ' runs and a small slot is free', // the runOptimize rule's one numeric clause (README API row)
+        'an array when it holds <= ' + ar + ' keys',
         'at ' + O.perChunk + ' B per row',
         'splitting a small-runs run past ' + sr + ' runs needs a large one',
         'Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a non-inlined call site (as `has`)', // C-17 ruled text
@@ -899,7 +909,7 @@ export function roaringPhrases(O, kind) {
         'universe REQUIRED, an integer in [' + uLo + ', 2^32], else RangeError',
         'maxSmall = ' + O.defSmall + ', maxLarge = ' + O.defLarge + ', maxPages = all, pageBits = ' + dB + ')',
         'maxSmall [' + sLo + ', ' + sHi + '], maxLarge [' + lLo + ', ' + lHi + '], pageBits [' + bLo + ', ' + bHi + '], maxPages [' + pLo + ', ceil(C / 2^pageBits)] (' + tail + ')',
-        'each ' + ck + '-key chunk is held by the smallest container that fits (SINGLE and FULL cost 0 B; small array ' + sm + ' keys; array up to ' + ar + '; bitmap; runs; small runs <= ' + sr + ' runs)',
+        'each ' + ck + '-key chunk is held in the container kind that fits its keys (SINGLE and FULL cost 0 B; small array ' + sm + ' keys; array up to ' + ar + '; bitmap; runs; small runs <= ' + sr + ' runs)',
         'a delete splitting a small-runs run past ' + sr + ' runs needs a large slot',
     ]);
 }

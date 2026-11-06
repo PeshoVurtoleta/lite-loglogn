@@ -116,8 +116,9 @@ holds the keys in [c * 65536, c * 65536 + 65535]. Every decision below is quoted
   paged empty floor is +5,464 B over direct. Paging costs +1 read on 175 of 211 changed rows, +2
   on 21, +3 on 8, +4 on 6, and -1 on 1; a page free moves 768 words.
 
-**Container kinds (D-R2, D-R4, V-a, V-b1, V-d, V-e, V-f).** Each chunk is held by the smallest
-fitting kind: SINGLE (1 key, 0 B pool), small array (2 .. 64 keys, a 128 B small slot), array
+**Container kinds (D-R2, D-R4, V-a, V-b1, V-d, V-e, V-f).** Each chunk is held in the kind
+its key count selects (`add` never re-encodes; `runOptimize` applies fixed rules (audit O-2), and a
+large-slot array may stay where small runs would fit, P-3): SINGLE (1 key, 0 B pool), small array (2 .. 64 keys, a 128 B small slot), array
 (up to 4,096 keys, an 8 KB large slot), bitmap (8 KB plus a 66-word summary), runs (a large
 slot), small runs (<= 32 runs, a 128 B small slot) and FULL (all 65,536 keys, 0 B). The
 `dump()` kind names are single, small, array, bitmap, runs, smallRuns, full.

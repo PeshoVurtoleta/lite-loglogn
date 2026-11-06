@@ -8,6 +8,9 @@
 # burst handoff (session state, never shipped)
 /.handoff/
 
+# independent audits (findings + reproductions, never shipped)
+/audit/
+
 # a SIGKILLed XftWitness / YftWitness run leaves its mutant copy behind
 /test/_xftw-mutant-*
 /test/_yftw-mutant-*

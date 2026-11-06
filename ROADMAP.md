@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1..G3 done, G5 / G6 partly; G4 next (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1..G7 done 2026-11-06; pre-release audit, then 0.6.0 (section 10)
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [IN PROGRESS: G1 + G2 landed 2026-11-04, G3 done + G5 paged torture + G6 RoaringSet docs + audit F1 fix + G5-B4 lanes 2026-11-05; G4 next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [GROUPS DONE: G1 + G2 2026-11-04, G3 / G4 / G5 2026-11-05, G6 / G7 2026-11-06; pre-release audit, then the 0.6.0 release]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1270,6 +1270,20 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   the post-call pool state (audit F1, engine post-pass; RoaringRange fixpoint gate). Torture gains the set-op,
   mixed-pair and addRange lanes (93 lanes, 18 jobs, 19 controls; timed verdict pending a quiet window). G4-B1 count
   ledger and G7-B1 witness:roar are parked with their fixes ruled. Next: those two, then the G4 shrink, then Demo.
+- Burst 5 (2026-11-05): the torture kill timer gets headroom (120 s -> 410 s); the G4-B1 count ledger (46 rows x 2
+  layouts, exact against the R0 drafts, a fail-closed Meter) and the G7 witness:roar harness with its gate test
+  (A16 sizing floor + parked-chunk census) landed after their literal fix rounds. Next: the G4 shrink (planned,
+  ready), then the G4 bytecode pins, the G7 REPORTED run and the G6 docs.
+- Burst 6 (2026-11-05): the G4 shrink landed (successor / predecessor and the bitmap search helpers lose their dead
+  miss exits: successor 647 -> 610 B, predecessor 785 -> 727 B of bytecode, count ledger unmoved), with a bytecode
+  gate pinning all 9 RoaringSet hot names and white-box header / summary checks on the addRange streams; the
+  program SPEC was re-consolidated. G4 is complete. Next: the G7 REPORTED timing run in a quiet window, then the G6
+  docs, then the 0.6.0 release.
+- Burst 7 (2026-11-06): the G7 REPORTED witness:roar run landed in a QUIET window (1 run, exit 0, 144 of 147 cells
+  conclusive; vs StratifiedBitset, direct RoaringSet has x6.06, add x8.35, delete x8.17, successor x1.95, predecessor
+  x1.46, min x0.64, max x0.62) after a harness fix that gives the x2 control its own StratifiedBitset; the G6 docs
+  landed (README deep dive + roster + zero-GC rows, llms.txt, GUIDE, CHANGELOG, d.ts, ADR 0010). All RoaringSet groups
+  are done. Next: the pre-release audit, then the 0.6.0 release.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

@@ -15,8 +15,8 @@
  * rounds rotated by r. Statistic per column: the MEDIAN over rounds of the per-round ratio column / SB
  * (StratifiedBitset, the reference), its IQR. CONTROL: SB-AA (a second identical SB) median ratio in
  * [0.9, 1.1], else the cell is INCONCLUSIVE (never a number in the digest). x2 CONTROL: at (w 16, n 4096,
- * successor) a column doing SB.successor twice per query must read [1.6, 2.4] (the harness can resolve a
- * 2x step), else exit 1; when that cell's SB-AA control drifted the x2 control is unjudged: exit 2. Keys and queries < min(U, 2^30) (Smis: no timed body boxes a returned key).
+ * successor) a column doing SB.successor twice per query, on its OWN StratifiedBitset (same keys, built only in
+ * that group, never the SB instance; SPEC A18), must read [1.6, 2.4] (the harness can resolve a 2x step), else exit 1; when that cell's SB-AA control drifted the x2 control is unjudged: exit 2. Keys and queries < min(U, 2^30) (Smis: no timed body boxes a returned key).
  * Ops: has / add / delete / successor / predecessor / min / max (add / delete: the toggle schedule).
  *
  * LAYOUTS (S-3, C-15): each layout runs in its OWN child process (paged feedback must not pollute the
@@ -39,8 +39,10 @@
  * NON-STRICT successor over the sorted keys must be flagged); every cell's K rounds run inside ONE GC
  * window (gc.major 0, arrayBuffers growth 0 B; the empty / retain-1 MB / forced-gc() controls first);
  * ISOLATION (D builds no paged set, P no direct set, M's mix-D / mix-P share one runner in every cell,
- * every other column has its own runner); RETENTION (a lite-leak tracker per group: after the group's
- * drop + gc + settle, tracker.size() 0).
+ * every other column has its own runner); the x2 instance check (at the x2 cell, before timing: SB-x2 owns an
+ * instance no std column holds, and that instance passes size + the member-hit pre-pass); RETENTION (a lite-leak
+ * tracker per group, exact count per group incl. the x2 group's SB-x2: after the group's drop + gc + settle,
+ * tracker.size() 0).
  *
  * --smoke: K 1, warm-up 1, Q 256, reps 1, w [16, 32], n [64, 4096]: every structure / op / cell is
  * built, pre-passed and executed once inside its GC window; no timing number is printed.
@@ -50,7 +52,7 @@
  * anything else (bad flag with a did-you-mean hint and no banner, RoaringSet not exported, pool sizing or
  * its R0 large-pool pin, a missing R0_SMALL key, a parked chunk / unknown kind / card-sum miss in the census, a
  * malformed child result (x2 control, inconclusive count), pre-pass, foil not flagged, classifier without teeth, x2 control outside [1.6, 2.4]
- * with SB-AA ok, GC window, ISOLATION, RETENTION, a child exit). Importing this module has NO side effects: the CLI runs only when this
+ * with SB-AA ok, SB-x2 missing / sharing a column's instance / holding another set, GC window, ISOLATION, RETENTION, a child exit). Importing this module has NO side effects: the CLI runs only when this
  * file is the entry script. The pure exports are gated by test/RoarWitness.test.js (B2). ASCII only.
  */
 
@@ -108,8 +110,11 @@ const R0_SMALL = Object.freeze({
 });
 // the census: a large-slot chunk (kind 2 array, 3 bitmap, 4 runs) with <= PARK_MAX keys is PARKED
 const PARK_MAX = 64;
-// instances per group (RETENTION census): SB + SB-AA + the RoaringSet column(s); SB-x2 reuses SB
+// instances per group (RETENTION census): SB + SB-AA + the RoaringSet column(s); + 1 in the x2 group (SB-x2's own
+// StratifiedBitset, SPEC A18). perGroup() is the exact want per group: a missing or untracked SB-x2 FAILs RETENTION.
 const PER_GROUP = Object.freeze({ D: 3, P: 3, M: 4 });
+function isX2Group(L, w, n) { return L === 'D' && w === X2_CELL.w && n === X2_CELL.n; }
+function perGroup(L, w, n) { return PER_GROUP[L] + (isX2Group(L, w, n) ? 1 : 0); }
 
 class RoarFail extends Error {}
 
@@ -743,7 +748,8 @@ async function parentMain(o) {
         if (L === 'M') shared = r.iso.shared;
     }
     const groupsWant = G.D.length + G.P.length + G.M.length;
-    const trackedWant = { D: G.D.length * PER_GROUP.D, P: G.P.length * PER_GROUP.P, M: G.M.length * PER_GROUP.M };
+    const trackedWant = { D: 0, P: 0, M: 0 };
+    for (const L of LAYOUTS) for (const g of G[L]) trackedWant[L] += perGroup(L, g.w, g.n);
     const trWant = trackedWant.D + trackedWant.P + trackedWant.M;
 
     const cellsOk = cellsBy.D === cellsWant.D && cellsBy.P === cellsWant.P && cellsBy.M === cellsWant.M;
@@ -877,7 +883,8 @@ async function gcControls(P) {
 // ---------------------------------------------------------------- child
 function noop() {}
 
-// the columns one layout builds per group (SB-x2 is a second runner on SB at the x2 cell only)
+// the columns one layout builds per group, plus SB-x2's own StratifiedBitset in the x2 group only (same keys;
+// never a column of the std cells; null elsewhere). Returns { cols, x2 }.
 function buildGroup(L, lib, sh, pools, census, tracker) {
     const add = (obj) => { for (let i = 0; i < sh.n; i++) obj.add(sh.keys[i]); return obj; };
     const rs = (label, wantPaged) => {
@@ -896,7 +903,12 @@ function buildGroup(L, lib, sh, pools, census, tracker) {
     if (L === 'P') cols.push({ label: 'RS-P', obj: rs('RS-P', true) });
     if (L === 'M') { cols.push({ label: 'mix-D', obj: rs('mix-D', false) }); cols.push({ label: 'mix-P', obj: rs('mix-P', true) }); }
     for (const c of cols) tracker.track(c.obj, noop, 'roar-' + L + '-' + c.label, { audit: true });
-    return cols;
+    let x2 = null;
+    if (isX2Group(L, sh.w, sh.n)) {
+        x2 = add(new lib.StratifiedBitset(sh.U));
+        tracker.track(x2, noop, 'roar-' + L + '-SB-x2', { audit: true });
+    }
+    return { cols, x2 };
 }
 
 // cold folds for the member-hitting pre-pass (and the foil): the same function flags the foil
@@ -908,6 +920,8 @@ function hitFold(obj, op, q, Q) {
 function hitCheck(obj, sh, Q) {
     return hitFold(obj, 'successor', sh.qHas, Q) === sh.oracle.successorHit && hitFold(obj, 'predecessor', sh.qHas, Q) === sh.oracle.predecessorHit;
 }
+// every built key is a member (with size === n: the set is exactly the keys)
+function hasAll(obj, sh) { for (let i = 0; i < sh.n; i++) if (!obj.has(sh.keys[i])) return false; return true; }
 // a NON-STRICT successor (>= x) and a correct predecessor over the sorted keys: hitCheck MUST flag it
 function makeFoil(sk) {
     return {
@@ -925,7 +939,8 @@ async function runGroup(L, lib, plan, g, ctx, tracker) {
     const sh = makeShape(g.w, g.n0, Q);
     if (sh.seed !== g.seed || sh.n !== g.n) throw new RoarFail('plan: group w=' + g.w + ' n=' + g.n + ' seed / n mismatch vs makeShape');
     const t0 = tracker.size();
-    const cols0 = buildGroup(L, lib, sh, g.pools, ctx.census, tracker);
+    const built = buildGroup(L, lib, sh, g.pools, ctx.census, tracker);
+    const cols0 = built.cols;
     const tracked = tracker.size() - t0;
     const tagBase = L + ' w' + sh.w + ' n' + sh.n;
     for (const c of cols0) {
@@ -933,16 +948,20 @@ async function runGroup(L, lib, plan, g, ctx, tracker) {
             throw new RoarFail('pre-pass ' + tagBase + ' ' + c.label + ': size ' + c.obj.size + ' or member-hit successor / predecessor fold != sorted-array oracle');
         }
     }
+    if (built.x2 !== null && (built.x2.size !== sh.n || !hasAll(built.x2, sh) || !hitCheck(built.x2, sh, Q))) {
+        throw new RoarFail('pre-pass ' + tagBase + ' SB-x2: size ' + built.x2.size + ', a missing key or member-hit successor / predecessor fold != sorted-array oracle');
+    }
     say(P + 'GROUP w=' + sh.w + ' n=' + sh.n + (sh.n !== g.n0 ? ' (n ' + g.n0 + ' capped at U/4)' : '') + ' | keys < ' +
         (sh.L === sh.U ? 'U' : '2^30') + ' | seed 0x' + sh.seed.toString(16).padStart(8, '0') + ' | toggle B ' + sh.B + ' M ' + sh.M +
-        ' batches/cycle ' + sh.bpc + ' | ' + cols0.map((c) => c.label).join(', ') + ' built, member-hit pre-pass ok | tracked ' + tracked);
+        ' batches/cycle ' + sh.bpc + ' | ' + cols0.map((c) => c.label).join(', ') + (built.x2 !== null ? ' + SB-x2 (own instance, x2 cell only)' : '') +
+        ' built, member-hit pre-pass ok | tracked ' + tracked);
     const recs = [];
     const TM = ctx.TM, TT = ctx.TT, OUT = ctx.OUT, SINK = ctx.SINK;
     const ovh = ctx.ovh;
     for (const op of OPS) {
         const toggle = op === 'add' || op === 'delete';
         const q = op === 'has' ? sh.qHas : op === 'successor' ? sh.qSucc : sh.qPred;
-        const isX2 = L === 'D' && sh.w === X2_CELL.w && sh.n === X2_CELL.n && op === X2_CELL.op;
+        const isX2 = isX2Group(L, sh.w, sh.n) && op === X2_CELL.op;
         const cols = [];
         let mixFn = null;
         for (const c of cols0) {
@@ -955,7 +974,20 @@ async function runGroup(L, lib, plan, g, ctx, tracker) {
             }
             cols.push({ label: c.label, obj: c.obj, fn, reps: 1, x2: false });
         }
-        if (isX2) cols.push({ label: 'SB-x2', obj: cols0[0].obj, fn: makeRunner('x2', op, tagBase + ' ' + op + ' SB-x2'), reps: 1, x2: true });
+        if (isX2) {
+            cols.push({ label: 'SB-x2', obj: built.x2, fn: makeRunner('x2', op, tagBase + ' ' + op + ' SB-x2'), reps: 1, x2: true });
+            // fail closed before timing (SPEC A18): SB-x2 is a StratifiedBitset no std column holds, and SB-x2 and SB
+            // both hold exactly the built keys (the add / delete cells ran whole toggle cycles on SB): size === n,
+            // every key a member, member-hit successor / predecessor folds == the sorted-array oracle
+            const xo = cols[cols.length - 1].obj;
+            if (!(xo instanceof lib.StratifiedBitset)) throw new RoarFail('x2 control ' + tagBase + ': SB-x2 is not its own StratifiedBitset');
+            const sharedWith = cols0.find((c) => c.obj === xo);
+            if (sharedWith !== undefined) ctx.fails.push('x2 control ' + tagBase + ': SB-x2 shares the ' + sharedWith.label + ' instance (it must own one)');
+            if (xo.size !== sh.n || !hasAll(xo, sh) || !hitCheck(xo, sh, Q) || cols0[0].obj.size !== sh.n || !hasAll(cols0[0].obj, sh) || !hitCheck(cols0[0].obj, sh, Q)) {
+                throw new RoarFail('x2 control ' + tagBase + ': SB-x2 (size ' + xo.size + ') and SB (size ' + cols0[0].obj.size +
+                    ') do not both hold the oracle set (size + every key + member-hit folds)');
+            }
+        }
         const C = cols.length;
         // ISOLATION census: M's mix pair shares one runner; every other column owns its runner
         const fset = new Set(cols.map((c) => c.fn));
@@ -1122,7 +1154,8 @@ async function childMain(o) {
         const r = await runGroup(L, lib, plan, g, ctx, tracker);
         for (const c of r.recs) out.cells.push(c);
         out.ret.tracked += r.tracked;
-        if (r.tracked !== PER_GROUP[L]) out.fails.push('retention: group w=' + g.w + ' n=' + g.n + ' tracked ' + r.tracked + ' (want ' + PER_GROUP[L] + ')');
+        const want = perGroup(L, g.w, g.n);
+        if (r.tracked !== want) out.fails.push('retention: group w=' + g.w + ' n=' + g.n + ' tracked ' + r.tracked + ' (want ' + want + ')');
         let live = tracker.size();
         for (let k = 0; k < 20 && live > 0; k++) {
             gcFn();

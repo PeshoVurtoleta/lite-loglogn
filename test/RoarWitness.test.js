@@ -59,6 +59,15 @@ const KEY = "'32:4096': 462, ";
 const CTRL = 'return m >= CTRL_LO && m <= CTRL_HI;';
 const X2 = 'return m >= X2_LO && m <= X2_HI;';
 const FILT = 'controlOk(aa.ratioMedian)';
+// SPEC A18 (C-14): SB-x2 runs on its OWN StratifiedBitset, tracked by RETENTION (x2 group D w=16 n=4096 only)
+const X2OBJ = "obj: built.x2, fn: makeRunner('x2'";
+const X2TRACK = "        tracker.track(x2, noop, 'roar-' + L + '-SB-x2', { audit: true });\n";
+const X2BUILD = 'x2 = add(new lib.StratifiedBitset(sh.U));';
+// same size, one key swapped for a non-member (size + Q member-hit folds alone could miss it)
+const X2SWAP = '{ x2 = new lib.StratifiedBitset(sh.U); const h = sh.n >> 1; for (let i = 0; i < sh.n; i++) if (i !== h) x2.add(sh.keys[i]); ' +
+    'let k = sh.keys[h] + 1; while (sh.keys.includes(k)) k++; x2.add(k); }';
+// the build-time SB-x2 pre-pass switched off, so the swapped set reaches the x2-cell check
+const X2PRE = [['if (built.x2 !== null && (built.x2.size !== sh.n || !hasAll(built.x2, sh) || !hitCheck(built.x2, sh, Q))) {', 'if (false) {']];
 // PLAN A-3 / A-4 / A-5 must-fails in ONE copy (each check prints its own verdict line): mix-P own runner,
 // the P child's n=64 set built direct, one module-level reference, one 4 KB retain inside a timed window
 const COMBO = [
@@ -86,6 +95,11 @@ function start() {
         ctrl: mut('mut-controlOk-true', CTRL, 'return true;', ['--smoke']),
         x2: mut('mut-x2Ok-true', X2, 'return true;', ['--smoke']),
         combo: mut('mut-iso-ret-gc', COMBO[0][0], COMBO[0][1], ['--smoke'], COMBO.slice(1)),
+        x2shared: mut('mut-x2-on-SB', X2OBJ, "obj: cols0[0].obj, fn: makeRunner('x2'", ['--smoke']),
+        x2untracked: mut('mut-x2-untracked', X2TRACK, '', ['--smoke']),
+        x2other: mut('mut-x2-other-set', X2BUILD, X2SWAP, ['--smoke']),
+        x2otherCell: mut('mut-x2-other-set-cell', X2BUILD, X2SWAP, ['--smoke'], X2PRE),
+        x2class: mut('mut-x2-roaringset', X2BUILD, "x2 = rs('RS-D', false);", ['--smoke']),
     };
     return started;
 }
@@ -219,9 +233,19 @@ test('A-4 GC budget: 56/56 windows, major 0, arrayBuffers +0 B', { timeout: T },
     assert.match(r.out, /^GC windows 56\/56, major 0, arrayBuffers \+0 B \| controls 3\/3 children -- ok$/m);
 });
 
-test('A-5 retention: groups 8/8, tracked 26 (D 12 / P 6 / M 8), worst 0', { timeout: T }, async () => {
+test('A-5 retention: groups 8/8, tracked 27 (D 13 / P 6 / M 8), worst 0', { timeout: T }, async () => {
     const r = await start().real;
-    assert.match(r.out, /^RETENTION: groups 8\/8, instances tracked 26 \(D 12 \/ P 6 \/ M 8\), collected 26, errors 0, worst tracker\.size\(\) 0 -- ok$/m);
+    assert.match(r.out, /^RETENTION: groups 8\/8, instances tracked 27 \(D 13 \/ P 6 \/ M 8\), collected 27, errors 0, worst tracker\.size\(\) 0 -- ok$/m);
+});
+
+test('A18 the x2 group builds SB-x2 its own instance: GROUP + RETENTION tracked 4 at D w=16 n=4096, 3 at the other D groups', { timeout: T }, async () => {
+    const r = await start().real;
+    assert.match(r.out, /^\[D\] GROUP w=16 n=4096 \| .* \| SB, SB-AA, RS-D \+ SB-x2 \(own instance, x2 cell only\) built, member-hit pre-pass ok \| tracked 4$/m);
+    assert.match(r.out, /^\[D\] RETENTION group w=16 n=4096: tracked 4, tracker\.size\(\) 0 after drop \+ gc \+ settle -- ok$/m);
+    for (const g of ['w=16 n=64', 'w=32 n=64', 'w=32 n=4096']) {
+        assert.match(r.out, new RegExp('^\\[D\\] RETENTION group ' + g + ': tracked 3, tracker\\.size\\(\\) 0 after drop \\+ gc \\+ settle -- ok$', 'm'), g);
+    }
+    assert.match(r.out, /^\[D\] CELL w=16 n=4096 op=successor \| SB ok \| SB-AA ok \| RS-D ok \| SB-x2 ok \| /m);
 });
 
 test('bad flag: exit 1, FAIL with did-you-mean, no banner / provenance', { timeout: T }, async () => {
@@ -266,6 +290,45 @@ test('must-fail (e) mix-P own runner + P direct set + module ref + window retain
     assert.match(r.out, /^ISOLATION: D paged instances 0, P direct instances 1, mixed shared runners 0\/14, .* -- FAIL$/m);
     assert.match(r.out, /^GC windows 56\/56, major 0, arrayBuffers \+4096 B \| controls 3\/3 children -- FAIL$/m);
     assert.match(r.out, /^RETENTION: .*, worst tracker\.size\(\) 1 -- FAIL$/m);
+    assert.doesNotMatch(r.out, /SMOKE ok/);
+});
+
+test('must-fail (f) A18 SB-x2 back on the SB instance -> exit 1, named shared-instance FAIL', { timeout: T }, async () => {
+    const r = await start().x2shared;
+    assert.equal(r.status, 1, r.out.slice(-800));
+    assert.match(r.out, /^FAIL child D: x2 control D w16 n4096: SB-x2 shares the SB instance \(it must own one\)$/m);
+    assert.match(r.out, /^RETENTION: groups 8\/8, instances tracked 27 \(D 13 \/ P 6 \/ M 8\), .* -- ok$/m); // the only miss is the share
+    assert.doesNotMatch(r.out, /SMOKE ok/);
+});
+
+test('must-fail (g) A18 SB-x2 built but not tracked -> exit 1, RETENTION FAIL (group want 4, D want 13)', { timeout: T }, async () => {
+    const r = await start().x2untracked;
+    assert.equal(r.status, 1, r.out.slice(-800));
+    assert.match(r.out, /^FAIL child D: retention: group w=16 n=4096 tracked 3 \(want 4\)$/m);
+    assert.match(r.out, /^RETENTION: groups 8\/8, instances tracked 26 \(D 12 \/ P 6 \/ M 8\), collected 26, errors 0, worst tracker\.size\(\) 0 -- FAIL$/m);
+    assert.doesNotMatch(r.out, /SMOKE ok/);
+});
+
+const both = (r) => r.out + r.err;
+test('must-fail (h) A18 SB-x2 same size, one key swapped -> exit 1, build-time SB-x2 pre-pass FAIL', { timeout: T }, async () => {
+    const r = await start().x2other;
+    assert.equal(r.status, 1, both(r).slice(-800));
+    assert.match(both(r), /^\[witness-roar\] FAIL pre-pass D w16 n4096 SB-x2: size 4096, a missing key or member-hit successor \/ predecessor fold != sorted-array oracle$/m);
+    assert.match(r.out, /^FAIL child D: exit 1, no result JSON$/m);
+    assert.doesNotMatch(r.out, /SMOKE ok/);
+});
+
+test('must-fail (h2) A18 the swapped set with the build-time pre-pass off -> exit 1, x2-cell content FAIL', { timeout: T }, async () => {
+    const r = await start().x2otherCell;
+    assert.equal(r.status, 1, both(r).slice(-800));
+    assert.match(both(r), /^\[witness-roar\] FAIL x2 control D w16 n4096: SB-x2 \(size 4096\) and SB \(size 4096\) do not both hold the oracle set \(size \+ every key \+ member-hit folds\)$/m);
+    assert.doesNotMatch(r.out, /SMOKE ok/);
+});
+
+test('must-fail (i) A18 SB-x2 built as a RoaringSet -> exit 1, class FAIL', { timeout: T }, async () => {
+    const r = await start().x2class;
+    assert.equal(r.status, 1, both(r).slice(-800));
+    assert.match(both(r), /^\[witness-roar\] FAIL x2 control D w16 n4096: SB-x2 is not its own StratifiedBitset$/m);
     assert.doesNotMatch(r.out, /SMOKE ok/);
 });
 

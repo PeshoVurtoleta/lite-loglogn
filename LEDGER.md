@@ -291,7 +291,7 @@ and Fable 5.1 (high). Neither found an engine wrong answer or a zero-GC breach (
 seeded ops on 980 sets; Fable: a seeded model, all 49 set-op kind pairs, 0 B/call controls).
 Sources: audit/2026-11-06/TRIAGE.md; SPEC A19 (C-27 amended, C-28, C-29).
 
-### #47 -- runOptimize() was not idempotent *(RULED 2026-11-06: engine fix before 0.6.0)*
+### #47 -- runOptimize() was not idempotent *(FIXED 2026-11-06, f97f1b0)*
 - The bitmap branch re-encoded as runs whenever runs <= 2047, with no array compare
   (LogLogN.js:3153 at 0bc05f40); the next call turned the same chunk into an array (:3207).
   Repro: 2,400 keys in 2,000 runs: bitmap -> runs -> array. `_rangeKind` k = 3 mirrors it.
@@ -299,29 +299,36 @@ Sources: audit/2026-11-06/TRIAGE.md; SPEC A19 (C-27 amended, C-28, C-29).
   calls it 3x with no compare between passes, roaringFuzz's "idempotent" row is a FULL chunk,
   and the F1 fixpoint gate checks addRange's result (test/RoaringRange.test.js:247, :927;
   test/helpers/roaringFuzz.mjs:928 at b90e054).
-- Sources: audit/2026-11-06/opus-5.5_FINDINGS.md O-2; TRIAGE.md; SPEC C-28.
+- Fixed: the bitmap branch and `_rangeKind` k = 3 pick an array when card <= 4096 and card <
+  2 x runs (SPEC C-28, ties in A20); an idempotence gate fails on 0bc05f40 (f97f1b0).
+- Sources: audit/2026-11-06/opus-5.5_FINDINGS.md O-2; TRIAGE.md; SPEC C-28, A20; f97f1b0.
 - Rule: a normalising operation is gated by f(f(x)) == f(x) on seeded states, not by one call.
 
-### #48 -- A contract exception lived only in the ADR *(RULED 2026-11-06: docs)*
+### #48 -- A contract exception lived only in the ADR *(FIXED 2026-11-06, f97f1b0 / 787df11)*
 - addRange can leave its first partial chunk as a large-slot array (n < 2r) where an add loop
   + runOptimize() gives small runs; runOptimize() keeps it, so the fixpoint gate holds. ADR
   0010 P-3 recorded the exception; the d.ts, JSDoc, README, llms.txt and CHANGELOG stated C-8
   without it.
-- Sources: opus-5.5_FINDINGS.md O-3; SPEC C-27 (A19 amendment).
+- Sources: opus-5.5_FINDINGS.md O-3; SPEC C-27 (A19 amendment), A20 (JSDoc + RoaringRange row in
+  f97f1b0); 787df11 (d.ts / README / llms / CHANGELOG / ADR).
 - Rule: an exception is written wherever the rule is written, in the same unit.
 
-### #49 -- A doc-gate exemption outlived its line *(RULED 2026-11-06: test fix)*
+### #49 -- A doc-gate exemption outlived its line *(FIXED 2026-11-06, 787df11)*
 - DocSync still exempted README_B6D_LINE ("Later tiers (..., RoaringSet) are queued") after
   G6-B6d removed the line (b90e054); re-inserting the stale line left DocSync (R d) green.
-- Sources: opus-5.5_FINDINGS.md O-4 (mutant run in a temp copy).
+- Sources: opus-5.5_FINDINGS.md O-4 (mutant run in a temp copy); 787df11.
 - Rule: deleting a doc line deletes its exemption, and a must-fail proves the gate closed.
 
-### #50 -- A DETERMINISTIC control flipped on host load *(RULED 2026-11-06: tiered verdict)*
+### #50 -- A DETERMINISTIC control flipped on host load *(FIXED 2026-11-06, 97e806c / 787df11)*
 - torture's vEBTree CV7 box control read 72 B instead of 1,048,584 B in 1 of 2 runs on
   identical bytes (load1 ~40-50 vs 5-8), so `npm run torture` exited 1; README / llms said
   these count gates "do not depend on" host load. The lane tier is UNCHECKED (tf=UNCHECKED).
-- Sources: fable-5.1_FINDINGS.md F-1 (two logged runs); NEXT.md FILLER 33; SPEC C-29.
-- Rule: an UNCHECKED tier + a non-flipping control = INCONCLUSIVE (exit 2), never FAIL or PASS.
+- Fixed for the true JIT-inlining controls only (vEBTree CV7, RoaringSet hi.*); CR-box, CV9 and CV2
+  allocate at every tier, so their non-flip is a blind lane and stays FAIL (SPEC A21, 97e806c).
+- Sources: fable-5.1_FINDINGS.md F-1 (two logged runs); NEXT.md FILLER 33; SPEC C-29, A21;
+  97e806c (torture verdict); 787df11 (README / llms provenance).
+- Rule: an UNCHECKED tier + a non-flipping JIT-dependent control = INCONCLUSIVE (exit 2), never
+  FAIL or PASS; a control that allocates at every tier is not JIT-dependent.
 
 ### #51 -- Two blind auditors, disjoint findings *(process, 2026-11-05 / 2026-11-06)*
 - 2026-11-06: Opus 5.5 found O-1..O-5, Fable 5.1 found F-1; zero overlap. 2026-11-05: the

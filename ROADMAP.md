@@ -343,7 +343,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1..G7 done 2026-11-06; pre-release audit, then 0.6.0 (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1..G7 + pre-release audit done 2026-11-06; 0.6.0 release next (section 10)
                  |
                  v
               Demo  (once 3-4 members exist)
@@ -1088,7 +1088,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [GROUPS DONE: G1 + G2 2026-11-04, G3 / G4 / G5 2026-11-05, G6 / G7 2026-11-06; pre-release audit, then the 0.6.0 release]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [GROUPS DONE: G1 + G2 2026-11-04, G3 / G4 / G5 2026-11-05, G6 / G7 2026-11-06; pre-release audit + fixes done 2026-11-06; 0.6.0 release next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1284,6 +1284,11 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   x1.46, min x0.64, max x0.62) after a harness fix that gives the x2 control its own StratifiedBitset; the G6 docs
   landed (README deep dive + roster + zero-GC rows, llms.txt, GUIDE, CHANGELOG, d.ts, ADR 0010). All RoaringSet groups
   are done. Next: the pre-release audit, then the 0.6.0 release.
+- Audit fix burst (2026-11-06): the pre-release audit's 6 findings are fixed. runOptimize() turns a bitmap of
+  <= 4,096 keys with fewer keys than twice its runs into an array, else runs at <= 2,047 runs, and a second call
+  changes no chunk (addRange mirrors it); torture's JIT box controls (vEBTree CV7, the 8 RoaringSet hi.*) report
+  INCONCLUSIVE, exit 2, at an unchecked tier instead of FAIL (CR-box and CV9 keep FAIL); README / llms / d.ts /
+  CHANGELOG / ADR 0010 corrected (bitmap range, addRange first-chunk exception, runOptimize rules). Next: 0.6.0.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

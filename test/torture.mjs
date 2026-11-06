@@ -70,6 +70,15 @@
  * one violation, metric gc.maxMs). It is not one of T3's five controls.
  * Exit 0 only if every tier passes and every control flips. Never widen a
  * budget to make this pass -- a budget that moves is not a gate.
+ * TIERED VERDICT (SPEC C-29, scope A21): ONLY the JIT-inlining box controls --
+ * CV7 bigSucc (V4) and the 8 R hi.successor / predecessor / min / max (per
+ * layout), whose >= 2^31 result boxes only while the call is not inlined --
+ * that do not flip on a MEASURED value (a number below NS_MAX_EXCESS, never
+ * null / NaN) while their lane's sibling checks pass and the tier is UNCHECKED
+ * are INCONCLUSIVE, not FAIL: exit 2 with a NO-VERDICT line. A CHECKED tier
+ * keeps FAIL; any other tier value is FAIL. Any FAIL wins: exit 1. CR-box
+ * (both channels), CV2, CV9 and every explicit-allocation box control (C2 /
+ * CX2 / CY2, the CR-* engine mutants) allocate at every tier and keep FAIL.
  *
  * ENTRY CONTRACT: --expose-gc is mandatory (the GC gate is meaningless without
  * it); the devDeps are imported AFTER the guard so a fresh clone that skipped
@@ -258,6 +267,17 @@ async function main() {
     }
 
     const fails = [];
+    // C-29: JIT-dependent box controls that did not flip at an UNCHECKED tier,
+    // each { text, workerFail } (workerFail = the R worker's own fail[] entry it
+    // explains, or null). Never a pass: a non-empty list with no FAIL is exit 2.
+    const incs = [];
+    // In-process tier, a superset of the R worker's tf test (worker: execArgv only, exact flag): CHECKED iff
+    // natives syntax is present (execArgv, or NODE_OPTIONS: either one counts,
+    // fail closed). No in-process lane reads an optimization status, so CHECKED
+    // here only keeps a non-flip a FAIL; it never lowers a verdict.
+    const NATIVES = /--allow[-_]natives[-_]syntax/;
+    const TF_IN = process.execArgv.some((a) => NATIVES.test(a)) ||
+        NATIVES.test(String(process.env.NODE_OPTIONS || '')) ? 'CHECKED' : 'UNCHECKED';
 
     // The T0 / X0 gc-budget lane: gc() + settle, then `ops` calls of fn inside
     // one GcProfiler window (heap sampled every 8,192 ops), settle, verdict
@@ -2447,6 +2467,12 @@ async function main() {
 
         // CV7 (measured inside vTier4 on V4's own instance).
         const cv7Flip = v4.c7 !== null && v4.c7 >= NS_MAX_EXCESS;
+        // C-29: the 2^31 return boxes only while successor() is not inlined into
+        // vBigSucc (a JIT decision no in-process lane checks). A measured miss
+        // (a number below the limit on >= 8 valid windows) with V4's own lane ok
+        // at tf UNCHECKED is a CV7 NO-VERDICT (exit 2); null / NaN / V4 FAIL / CHECKED stay FAIL.
+        const cv7Inc = !cv7Flip && TF_IN === 'UNCHECKED' && v4Ok && typeof v4.c7 === 'number' &&
+            v4.c7 < NS_MAX_EXCESS && Number.isInteger(v4.c7valid) && v4.c7valid >= 8;
 
         // CV9 v3WorkerBox (measured inside the V3 Worker after V3's own lanes, on
         // V3's instance, same isolate and nsBase): one [i] every 8th op on V3's
@@ -2477,14 +2503,14 @@ async function main() {
             ' CV6 retainOnRefresh.alloc=' + (cv6Bpc === null ? 'null' : Math.round(cv6Bpc)) + ' B/op held=' +
             cv6Held + (e6c === null ? '' : ' error=' + line1(e6c)) + ' ' + (cv6Flip ? 'flipped' : 'PASSED') +
             ' CV7 bigSucc.nsExcess=' + (v4.c7 === null ? 'null' : v4.c7) + ' B/' + NS_K +
-            ' valid=' + v4.c7valid + ' ' + (cv7Flip ? 'flipped' : 'PASSED') +
+            ' valid=' + v4.c7valid + ' ' + (cv7Flip ? 'flipped' : cv7Inc ? 'INCONCLUSIVE' : 'PASSED') +
             ' CV8 retained.size=' + live8 + ' ' + (cv8Flip ? 'flipped' : 'PASSED') +
             ' CV9 v3WorkerBox.nsExcess=' + box9 + ' B/' + NS_K + ' raw=' +
             (Number.isInteger(box9) && Number.isInteger(base3) ? box9 + base3 : 'null') +
             ' (limit ' + NS_BASE_MAX + ') valid=' + boxValid9 + (r3 === null ? ' error=' + line1(e3) : '') + ' ' +
             (cv9Flip ? 'flipped' : 'PASSED') +
-            ' | ' + (cv1Flip && cv2Flip && cv3Flip && cv4Flip && cv5Flip && cv6Flip && cv7Flip && cv8Flip &&
-                cv9Flip ? 'ok' : 'FAIL'));
+            ' | ' + (cv1Flip && cv2Flip && cv3Flip && cv4Flip && cv5Flip && cv6Flip && (cv7Flip || cv7Inc) && cv8Flip &&
+                cv9Flip ? (cv7Flip ? 'ok' : 'INCONCLUSIVE') : 'FAIL'));
         if (!cv1Flip) fails.push('control CV1 retain PASSED its check (alloc ' + cv1Bpc + ' B/op): V1 alloc lane is blind');
         if (!cv2Flip) fails.push('control CV2 box PASSED its check: V1 transient lane is blind');
         if (!cv3Flip) {
@@ -2506,9 +2532,14 @@ async function main() {
                 (e6c === null ? '' : ', worker FAIL: ' + e6c) +
                 '): V3 alloc lane is blind');
         }
-        if (!cv7Flip) {
+        if (cv7Inc) {
+            const t7 = 'control CV7 bigSucc nsExcess=' + v4.c7 + ' B/' + NS_K + ' valid=' + v4.c7valid +
+                ' (want >= ' + NS_MAX_EXCESS + ') tf=' + TF_IN + ': the box depends on a JIT decision (C-29) | NO-VERDICT';
+            incs.push({ text: t7, workerFail: null });
+            console.log('INCONCLUSIVE ' + t7);
+        } else if (!cv7Flip) {
             fails.push('control CV7 bigSucc PASSED its check (nsExcess ' + v4.c7 + ', valid ' + v4.c7valid +
-                '): V4 transient lane is blind');
+                ', tf ' + TF_IN + '): V4 transient lane is blind');
         }
         if (!cv8Flip) fails.push('control CV8 retained PASSED its check (size ' + live8 + '): V5 is blind');
         if (!cv9Flip) {
@@ -2571,7 +2602,12 @@ async function main() {
     // { layout, paged, universe, cycles, tracked, collected, size, after,
     // sizeAfterGc, findings, leaks, pagedMismatch, dumpBad, clearBad, rangeBad, ok }; every
     // other job posts null. CR-limit / CR-paged are extras (must flip). Torture
-    // passes no --allow-natives-syntax: tf=UNCHECKED (C-11). A build without
+    // passes no --allow-natives-syntax: tf=UNCHECKED (C-11). C-29 tiered verdict
+    // (scope A21: the hi.* controls only; CR-box and every other control keep
+    // FAIL): at r.tf UNCHECKED a hi box control that misses on a measured excess
+    // (its lane sound, shareOk) is INCONCLUSIVE (exit 2), and the worker's own
+    // verdict is excused only when EVERY fail[] entry is one of this job's
+    // INCONCLUSIVE hi lanes; CHECKED keeps FAIL. A build without
     // the RoaringSet export fails closed: roaring=null on the GATE line, exit 1.
     const { RoaringSet } = await import('../LogLogN.js');
     // === worker FAMILY_LANES, key order included (JSON.stringify compare)
@@ -2640,8 +2676,9 @@ async function main() {
     async function roaringTiers(rw) {
         const agg = { lanesOk: 0, churnOk: 0, churnMaxMs: null, ctlOk: 0, ctlWant: R_CONTROLS.length + 2 * R_HI_BOX.length,
             hiEx: { direct: [null, null, null, null], paged: [null, null, null, null] }, rangeEx: { direct: null, paged: null },
-            leak: null, tf: 'null' };
+            leak: null, tf: 'null', ctlInc: 0 };
         const f0 = fails.length;
+        const i0 = incs.length;
         const consts = [['NS_K', rw.NS_K, NS_K], ['NS_W', rw.NS_W, NS_W], ['NS_MAX_EXCESS', rw.NS_MAX_EXCESS, NS_MAX_EXCESS]];
         for (const c of consts) {
             if (c[1] !== c[2]) fails.push('R constant ' + c[0] + ': worker ' + c[1] + ' !== torture ' + c[2]);
@@ -2695,6 +2732,7 @@ async function main() {
                 continue;
             }
             const fj = fails.length;
+            const ij = incs.length;
             if (Array.isArray(r.lines)) for (const s of r.lines) console.log(label + ' ' + s);
             else fails.push(label + ': lines field absent');
             if (r.NS_K !== NS_K || r.NS_W !== NS_W || r.NS_MAX_EXCESS !== NS_MAX_EXCESS) {
@@ -2729,7 +2767,15 @@ async function main() {
                     }
                     agg.hiEx[rj.layout][i - 1] = ex;
                     if (sound && hl !== null && h.shareOk === true && ex !== null && ex >= NS_MAX_EXCESS) agg.ctlOk++;
-                    else {
+                    else if (r.tf === 'UNCHECKED' && sound && hl !== null && h.shareOk === true && ex !== null &&
+                        ex < NS_MAX_EXCESS) {
+                        // C-29: the >= 2^31 result boxes only while the call is not inlined (JIT decision)
+                        agg.ctlInc++;
+                        const tH = 'control ' + rj.layout + ' hi.' + op + ' excess=' + ex + ' B/' + NS_K + ' (want >= ' +
+                            NS_MAX_EXCESS + ', ' + label + ') tf=' + r.tf + ': the box depends on a JIT decision (C-29) | NO-VERDICT';
+                        incs.push({ text: tH, workerFail: 'hi.' + op });
+                        console.log('INCONCLUSIVE ' + tH);
+                    } else {
                         fails.push('control ' + rj.layout + ' hi.' + op + ' PASSED its check (excess ' + ex + ' B/' + NS_K + ', want >= ' +
                             NS_MAX_EXCESS + ', shareOk ' + (hl === null ? 'null' : h.shareOk) + '): R hi lane is blind');
                     }
@@ -2794,20 +2840,24 @@ async function main() {
                 if (r.retention !== null) fails.push(label + ': retention posted by a ' + fam + ' job');
             } else if (r.retention === null) fails.push(label + ': retention null in a retention job -> FAIL');
             else rets.push({ label, ret: r.retention, layout: rj.layout });
-            if (r.ok !== true) {
+            // the worker's verdict, excused only when every fail[] entry is one of THIS job's INCONCLUSIVE hi lanes
+            const excused = incs.slice(ij).map((x) => x.workerFail);
+            const rFailInc = r.ok === false && Array.isArray(r.fail) && r.fail.length > 0 && excused.length > 0 &&
+                r.fail.every((x) => excused.includes(x));
+            if (r.ok !== true && !rFailInc) {
                 fails.push(label + ': worker verdict ' + r.ok + ' (fail: ' +
                     (Array.isArray(r.fail) ? r.fail.join(', ') : 'list absent') + ')');
             }
-            console.log(label + ' job ' + wall + ' | ' + (fails.length === fj ? 'ok' : 'FAIL'));
+            console.log(label + ' job ' + wall + ' | ' + (fails.length !== fj ? 'FAIL' : incs.length === ij ? 'ok' : 'INCONCLUSIVE'));
         }
         for (const want of R_CONTROLS) {
             const hit = seen.filter((c) => rCtlMatch(c.name, want));
             if (hit.length === 0) fails.push('control ' + want + ' absent: no job posted it -> FAIL');
             else if (hit.every((c) => c.flipped)) agg.ctlOk++;
         }
-        if (agg.lanesOk !== R_LANES || agg.churnOk !== R_CHURN || agg.ctlOk !== agg.ctlWant) {
+        if (agg.lanesOk !== R_LANES || agg.churnOk !== R_CHURN || agg.ctlOk + agg.ctlInc !== agg.ctlWant) {
             fails.push('R counts: lanes ' + agg.lanesOk + '/' + R_LANES + ' churn ' + agg.churnOk + '/' + R_CHURN +
-                ' ctl ' + agg.ctlOk + '/' + agg.ctlWant + ' -> FAIL');
+                ' ctl ' + agg.ctlOk + (agg.ctlInc === 0 ? '' : ' + inconclusive ' + agg.ctlInc) + '/' + agg.ctlWant + ' -> FAIL');
         }
         const extra = seen.filter((c) => !R_CONTROLS.some((w) => rCtlMatch(c.name, w)));
         if (rets.length !== 2) {
@@ -2836,13 +2886,13 @@ async function main() {
         const rangeFmt = hiFmt([agg.rangeEx.direct, agg.rangeEx.paged]);
         console.log('R RoaringSet lanes=' + agg.lanesOk + '/' + R_LANES + ' churn=' + agg.churnOk + '/' + R_CHURN +
             ' (churn.page gc maxMs=' + (agg.churnMaxMs === null ? 'null' : agg.churnMaxMs.toFixed(2)) + ' REPORTED)' +
-            ' ctl=' + agg.ctlOk + '/' + agg.ctlWant +
+            ' ctl=' + agg.ctlOk + '/' + agg.ctlWant + (agg.ctlInc === 0 ? '' : ' inconclusive=' + agg.ctlInc) +
             ' (extra ' + extra.filter((c) => c.flipped).length + '/' + extra.length + ')' +
             ' hiExcess=' + hiFmt(agg.hiEx.direct) + ' hiPaged=' + hiFmt(agg.hiEx.paged) + ' B/' + NS_K +
             ' rangeExcess=' + rangeFmt + ' B/' + NS_K +
             ' retention=' + rets.length + '/2 (' + rets.map((x) => x.layout + ' size ' + x.ret.size + ' warnings ' + x.ret.warnings).join(', ') + ')' +
             ' leak=size ' + leak + '/0 tf=' + agg.tf + ' wall=' + ((Date.now() - tR) / 1000).toFixed(1) + ' s' +
-            ' | ' + (fails.length === f0 ? 'ok' : 'FAIL'));
+            ' | ' + (fails.length !== f0 ? 'FAIL' : incs.length === i0 ? 'ok' : 'INCONCLUSIVE'));
         return agg;
     }
 
@@ -2855,7 +2905,10 @@ async function main() {
     }
 
     // ---- verdict + GATE line ----------------------------------------------
+    // C-29: any FAIL -> exit 1 (wins over INCONCLUSIVE); else any INCONCLUSIVE
+    // box control -> exit 2 NO-VERDICT; else 0.
     const ok = fails.length === 0;
+    const noVerdict = ok && incs.length > 0;
     console.log(
         'GATE leak=size ' + live2 + '/0 findings=' + findings2.length +
         ' warnings=' + box2.warns.length +
@@ -2897,16 +2950,21 @@ async function main() {
             ' bigKeyExcess=' + (veb.bigKeyExcess === null ? 'null' : veb.bigKeyExcess) + ' B/' + NS_K) +
         (roar === null ? ' | roaring=null' :
             ' | roaring lanes=' + roar.lanesOk + '/' + R_LANES + ' churn=' + roar.churnOk + '/' + R_CHURN +
-            ' ctl=' + roar.ctlOk + '/' + roar.ctlWant +
+            ' ctl=' + roar.ctlOk + '/' + roar.ctlWant + (roar.ctlInc === 0 ? '' : ' inconclusive=' + roar.ctlInc) +
             ' hiExcess=' + roar.hiEx.direct.map((v) => (v === null ? 'null' : v)).join('/') +
             ' hiPaged=' + roar.hiEx.paged.map((v) => (v === null ? 'null' : v)).join('/') +
             ' rangeExcess=' + (roar.rangeEx.direct === null ? 'null' : roar.rangeEx.direct) + '/' +
             (roar.rangeEx.paged === null ? 'null' : roar.rangeEx.paged) +
             ' leak=size ' + (roar.leak === null ? 'null' : roar.leak) + '/0 tf=' + roar.tf) +
-        ' | ' + (ok ? 'ok' : 'FAIL') + ' (sink=' + SINK[0] + ')');
+        ' | ' + (ok ? (noVerdict ? 'NO-VERDICT' : 'ok') : 'FAIL') + ' (sink=' + SINK[0] + ')');
+    for (const x of incs) console.error('  INCONCLUSIVE ' + x.text);
     if (!ok) {
         for (const f of fails) console.error('  ' + f);
         process.exitCode = 1;
+    } else if (noVerdict) {
+        console.log('NO-VERDICT torture: ' + incs.length + ' JIT-dependent box control(s) did not flip at an UNCHECKED ' +
+            'tier (C-29), no FAIL: exit 2, not a pass.');
+        process.exitCode = 2;
     }
 }
 

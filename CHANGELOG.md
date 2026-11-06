@@ -6,6 +6,114 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`RoaringSet` (0.6.0): a compressed ordered set over a fixed universe.**
+  `new RoaringSet(universe, maxSmall = 1024, maxLarge = 256, maxPages = all,
+  pageBits = 8)`, positional, universe REQUIRED in [1, 2^32]. The key space splits
+  into 65,536-key chunks, each held by the smallest container that fits: SINGLE and
+  FULL (0 B), small array (2..64 keys), array (up to 4,096), bitmap (with a 66-word
+  summary), runs, small runs (<= 32 runs), with promote / demote hysteresis. Methods
+  `has`, `add`, `addRange`, `delete`, `successor` / `predecessor` (STRICT), `min`,
+  `max`, `runOptimize`, the counting set ops `intersects`, `intersectionSize`,
+  `unionSize`, `differenceSize`, `clear`, `dump`; getters `size`, `universe`,
+  `paged`, `byteLength`. No iterator, no rank / select. Appended after `vEBTree`;
+  the StratifiedBitset / XFastTrie / YFastTrie region stays byte-identical
+  (`test/ParityPrefix.test.js`).
+- **Layouts and space.** The chunk table is DIRECT (11 B per chunk) or PAGED (a
+  directory plus pooled 2^pageBits-row pages, page 0 a shared zero page), chosen once
+  at construction by a strict bytes rule; the default constructor is direct at every
+  U. Every pool is preallocated and never grows, so `byteLength` is a closed form in
+  the constructor arguments (DETERMINISTIC, `test/DocSync.test.js`): U = 2^32, default
+  pools, direct 3,036,180 B; `(0, 1, all, 8)` direct 746,270 B; `(0, 1, 1, 8)` paged
+  31,524 B.
+- **Failure modes.** A bad key touches nothing (`has` / `delete` false, `successor` /
+  `predecessor` undefined, `add` RangeError). Pool exhaustion throws RangeError
+  BEFORE any write, set unchanged: `[lite-loglogn] RoaringSet small/large container
+  pool exhausted (capacity N); increase pool capacity at construction` (pool name
+  `small/large` or `large`) and, paged only, `... metadata page pool exhausted
+  (maxPages N); increase maxPages at construction`; so `add` AND `delete` can throw on
+  a valid key.
+- **Zero-GC (DETERMINISTIC).** Every hot method allocates 0 B for keys < 2^30. A
+  returned key >= 2^31 on Node (>= 2^30 pointer-compressed) can box when the call is
+  not inlined.
+- **ADR 0010 (`decisions/0010-roaringset.md`).** The chunk kinds, the direct / paged
+  crossover rule, the bitmap summary, the rejected alternatives and the gates.
+- **RoaringSet counting set ops: `intersects(other)`, `intersectionSize(other)`,
+  `unionSize(other)`, `differenceSize(other)`.** Cold, O(chunks both sets hold): a
+  top-pyramid AND walk, then one kernel per container-kind pair (array x array
+  galloping, array x bitmap probe, array x runs, runs x runs, runs x bitmap, bitmap x
+  bitmap through the bitmap summary; SINGLE / FULL shortcuts). Either layout on either
+  side (direct x paged, any pageBits). `other` not a RoaringSet -> TypeError; a
+  different universe -> RangeError (`universe mismatch: expected N, got M`). Neither
+  set changes. Allocates nothing for counts < 2^30; a count >= 2^31 on Node
+  (>= 2^30 pointer-compressed) returns boxed (expected, not measured). Set ops COUNT;
+  they never build a set.
+- **`RoaringSet#addRange(lo, hi)`.** Adds every key in [lo, hi), 0 <= lo <= hi <= U
+  (integers); lo === hi adds nothing. The set equals that of `add(x)` for each x in
+  [lo, hi); each touched chunk ends in the container kind `runOptimize()` would choose
+  for its final key set at the post-call pool state (fully covered chunks become FULL,
+  0 B). A read-only precount of the metadata pages and container slots runs first and
+  throws RangeError before any write when the pools cannot hold the result (set
+  unchanged): `[lite-loglogn] RoaringSet addRange metadata page pool exhausted (needs
+  N new pages, F free of maxPages M); increase maxPages at construction` (`needs 1 new
+  page` when N = 1), or the add() slot text `<pool> container pool exhausted
+  (capacity C)`. Because the precount counts only each chunk's FINAL container, under
+  pool pressure addRange can succeed where the equivalent add loop would throw
+  part-way; and because it follows the write order, a range can throw where its final
+  state would fit. A bad bound (not a number, not an integer, lo < 0, lo > hi,
+  hi > U) throws RangeError with nothing touched. Allocates nothing for bounds < 2^30;
+  a bound >= 2^31 boxes at a non-inlined call site (as has).
+- **Hot-body shrink.** The dead miss exits of the bitmap search and of the successor /
+  predecessor container searches are dropped: successor 647 -> 610 B and predecessor
+  785 -> 727 B of bytecode (V8 14.6.202.34, Node v26.8.2); `_bmpNextGEQ` 411 -> 363 B,
+  `_bmpPrevLEQ` 373 -> 332 B; has / add / delete / min / max unchanged (452 / 838 / 899
+  / 56 / 56 B). Exact read, write and move counts are identical before and after on
+  both layouts.
+- **`addRange` end-state fix (before release).** A range whose first partial chunk was decided
+  before the last partial chunk returned a small slot ended that chunk as runs where
+  `runOptimize()` would pick small runs; every touched chunk now ends in
+  `runOptimize()`'s kind at the post-call pool state (the cold `addRange` body only).
+- **`test/RoaringBytecode.test.js` (9 tests).** RoaringSet's hot bodies and its two
+  bitmap scan helpers, one --print-bytecode child per name on a driver that runs a
+  direct and a paged instance; each header must lie in the RoaringSet region. Exact
+  pins on V8 14.6 (has 452, add 838, delete 899, successor 610, predecessor 727,
+  min 56, max 56, _bmpNextGEQ 363, _bmpPrevLEQ 332 B); fails closed on an unpinned
+  V8. On any V8, has / min / max <= 460 B and add / delete / successor / predecessor
+  > 460 B. Must-fail controls: padded has, a vEBTree#has header outside the region,
+  the removed _bmpNextGEQ -1 exit re-inserted (363 -> 378 B), and a cold class-body
+  reference to RoaringSet (add 838 -> 840, delete 899 -> 903 B).
+- **RoaringSet tests (DETERMINISTIC).** `test/RoaringSet.test.js`,
+  `RoaringFuzz.test.js` and `RoaringPagedFuzz.test.js` (seeded differential fuzz
+  against a Set model), `RoaringVectors.test.js` (pinned traces),
+  `RoaringDirectParity.test.js`, `RoaringPagedSpace.test.js` (byteLength rows incl. the
+  tie and 254 / 255 rows), `RoaringCount.test.js` (exact read / write / move ledger),
+  `RoaringSetOps.test.js` (600 seeded pairs vs a JS Set model, 7 x 7 kind-pair floors,
+  direct x paged, error contract), `RoaringRange.test.js` (400 seeded ranges vs the add
+  loop + `runOptimize`, chunk edges, fail-closed pool / page precount, the end-state
+  rows), and `RoaringMutants.test.js` / `RoaringPagedMutants.test.js` (55 mutant rows
+  in RoaringMutants: 53 killed, 2 reasoned equivalents, 0 unexplained).
+- **Torture: the RoaringSet R section.** `npm run torture` runs paged and direct
+  jobs, the set-op and addRange lanes, a page-churn lane and two retention jobs; the
+  GATE line carries `roaring lanes=93/93 churn=1/1 ctl=19/19 hiExcess=2097144/2097144/
+  1048568/1048568 hiPaged=2097144/2097144/1048568/1048568 rangeExcess=-32/-32 leak=size 0/0 tf=UNCHECKED` (count gates, 1 run,
+  Node v26.8.2). Its 19 must-fail controls (11 named + 4 high-key box controls per
+  layout) all flip; the high-key controls must read > 0, their magnitude is REPORTED.
+  Total torture must-fail controls: 29 older + 19.
+- **`npm run witness:roar` (REPORTED).** `test/witness-roar.mjs`: RoaringSet vs
+  StratifiedBitset, 147 cells, interleaved K = 15 rounds with an A/A control and a
+  x2 control cell, each layout in its own child process, pools sized through the
+  public API; smoke-gated in `npm test` by `test/RoarWitness.test.js`. The x2 control
+  runs on its own StratifiedBitset instance. One QUIET run (2026-11-06, exit 0, 144 of
+  147 cells conclusive, x2 control x1.695): the digest is in `llms.txt` and the README;
+  gates nothing.
+- **Type block and docs.** `LogLogN.d.ts` declares `RoaringSet`, `RoaringSetDump` and
+  `RoaringSetChunkDump` (with `test/types/loglogn.test-d.ts` uses and
+  `@ts-expect-error` negatives); README, `llms.txt` and `GUIDE.md` gain RoaringSet
+  sections with the exact byteLength rows pinned by `test/DocSync.test.js`.
+- **Gates at this tree (DETERMINISTIC).** `npm test`: 1158 tests, 1157 pass, 1 skipped
+  (the opt-in DEEP small-scope run), 0 fail (2026-11-06, Node v26.8.2).
+
 ## [0.5.0] - 2026-11-03
 
 ### Added

@@ -3,14 +3,14 @@
 A repo-only decision guide for the sub-logarithmic family: which member, which
 bitset, reach-for / avoid, and how to measure the bound and the space price
 yourself. StratifiedBitset (0.2.0),
-XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are the four members. It is NOT an API
+XFastTrie (0.3.0), YFastTrie (0.4.0), vEBTree (0.5.0) and RoaringSet (0.6.0) are the five members. It is NOT an API
 encyclopedia (that is the README + `LogLogN.d.ts`); it answers "which member,
 is my bound real, and what does it cost in space?"
 
 Every number below names its tier: DETERMINISTIC (gated in `npm test` /
 `npm run verify`) or REPORTED (a measurement with provenance, gates nothing).
 This package has no CI, so every timing claim (`npm run witness`,
-`witness:tier`, `witness:xft`, `witness:yft`, `witness:veb`) is REPORTED, not a gated STATISTICAL claim.
+`witness:tier`, `witness:xft`, `witness:yft`, `witness:veb`, `witness:roar`) is REPORTED, not a gated STATISTICAL claim.
 
 ---
 
@@ -54,6 +54,9 @@ START -- what do you need on a BOUNDED integer universe?
 |
 +-- Worst-case O(log log U) with a compact universe
     and you want the classic structure?              -> vEBTree (wc, O(U) space)              [0.5.0]
+|
++-- A big universe (up to 2^32), clustered or sparse keys,
+    and a byte cost you want to state up front?       -> RoaringSet (pooled chunks, fixed bytes) [0.6.0]
 ```
 
 ## Picker table
@@ -64,6 +67,7 @@ START -- what do you need on a BOUNDED integer universe?
 | Fastest query, sparse set in a huge universe, space and update cost accepted | XFastTrie | O(log log U) query; O(w) update | O(n*w), preallocated at a FIXED capacity | 0.3.0 |
 | O(log log U) query at O(n) space | YFastTrie | O(log log U) query; update O(log log U) probes + at most 2w-1 word moves, split / merge / borrow amortized | O(n), preallocated at a FIXED capacity | 0.4.0 |
 | Classic worst-case, compact universe | vEBTree | O(log log U) worst-case | O(U) | 0.5.0 |
+| Clustered or sparse keys in up to 2^32, space fixed by pools | RoaringSet | chunk table + one container search per op (counted, ADR 0010); min / max O(1) reads | fixed by the constructor arguments (exact `byteLength`) | 0.6.0 |
 
 ---
 
@@ -100,8 +104,8 @@ START -- what do you need on a BOUNDED integer universe?
   `node ~/.claude/hooks/quiet-lock.mjs run "loglogn witness" -- npm run witness`
   (exit 0 pass / 1 fail / 2 inconclusive host); `npm run witness:w32` adds the
   opt-in w = 32 (about 554 MB); `npm run witness:tier` is the peel A/B;
-  `npm run witness:xft`, `witness:yft` and `witness:veb` are the lanes of the
-  other three members (below).
+  `npm run witness:xft`, `witness:yft`, `witness:veb` and `witness:roar` are the
+  lanes of the other four members (below).
 - Witness headline (REPORTED, 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1
   3.66 -> 3.71, 1 run): at w = 28 the member beat a local binary search at all 9
   n from 1e3 to 1e7 (15/0 each; member 11.74-17.84 ns/op, binary search
@@ -226,6 +230,55 @@ START -- what do you need on a BOUNDED integer universe?
   (add+delete 1.89 .. 6.77, C7 successor 1.94 .. 5.05); the PAR successor cells at
   w 28 and 32, the w 32 PRED predecessor cell and SH1 successor past max at w 16 are
   mixed across runs. The README has every cell.
+
+---
+
+## RoaringSet
+
+### Reach for it
+
+- A large universe (up to 2^32) holding clustered keys (consecutive runs), ranges, or a
+  sparse spread, where the cost you want to state is BYTES you choose at construction:
+  every pool is preallocated once and never grows, `byteLength` is a closed form in the
+  constructor arguments (DETERMINISTIC, pinned in `test/DocSync.test.js`). A SINGLE or
+  FULL 65,536-key chunk costs 0 B, so a dense range is cheap: `addRange(lo, hi)` for
+  each run of consecutive keys, then `runOptimize()` at a chunk boundary.
+- A small paged floor at a huge U: with minimal pools and `maxPages` 1 the 2^32 set
+  is 31,524 B against 746,270 B direct (DETERMINISTIC, `byteLength`). The default
+  constructor is direct at every U.
+- Cold counting set ops over two sets (`intersects`, `intersectionSize`, `unionSize`,
+  `differenceSize`): nothing is materialized, either layout on either side.
+- 0 B/op hot paths for keys < 2^30 (DETERMINISTIC: torture GATE `roaring lanes=93/93
+  churn=1/1 ctl=19/19`). A key >= 2^31 returned by `successor` /
+  `predecessor` / `min` / `max` can box when the call is not inlined: successor, predecessor,
+  add and delete are over the 460 B inlining limit (has 452 B, min / max 56 B are
+  within; bytecode pinned in `test/RoaringBytecode.test.js` on V8 14.6).
+
+### Avoid it
+
+- A dense small universe, or when you need a proven O(log log U) bound: that is
+  vEBTree (worst-case) or StratifiedBitset (fewer reads outside min / max). RoaringSet's
+  bound is counted per op (`test/RoaringCount.test.js`, lower bounds from a search), not
+  an O(log log U) statement.
+- Growth: a fixed pool throws on exhaustion (`add` AND `delete` can throw on a valid
+  key, before any write); you size `maxSmall` / `maxLarge` / `maxPages` up front. The
+  default pools alone cost 2,306,824 B at U = 2^32.
+- Speed on `has` / `add` / `delete`: in the one witness:roar run (REPORTED, below) they
+  were slower than StratifiedBitset in the digest columns.
+- Rank / select, `forEach`, an iterator: not shipped; walk with `successor`.
+
+### Pick it by hand
+
+- Contract and space (DETERMINISTIC): `npm test` (`RoaringSet`, `RoaringFuzz`,
+  `RoaringMutants`, `RoaringSetOps`, `RoaringRange`, `RoaringPagedSpace`,
+  `RoaringCount`, `RoaringBytecode`, `DocSync`); `new RoaringSet(U, ...).byteLength`.
+- Zero-GC (DETERMINISTIC): `npm run torture` (the R section).
+- Speed (REPORTED, release-time, quiet host): `npm run witness:roar` vs StratifiedBitset;
+  1 run on 2026-11-06 (Apple M4 Pro, Node v26.8.2, QUIET, load1 2.53 -> 2.92, 144 of
+  147 cells conclusive). Digest ratios (lower median over conclusive cells, > 1 =
+  slower than StratifiedBitset; RS-D direct w 16..32, RS-P paged w 32): has x6.06 /
+  x2.12, add x8.35 / x4.01, delete x8.17 / x7.66, successor x1.95 / x1.04, predecessor
+  x1.46 / x0.83, min x0.64 / x0.50, max x0.62 / x0.49. The README has the full table.
 
 ---
 

@@ -162,6 +162,13 @@ slot), small runs (<= 32 runs, a 128 B small slot) and FULL (all 65,536 keys, 0 
   the kind `runOptimize` would choose at the post-call pool state; it precounts slots and pages
   and throws RangeError before any write; a bad bound throws with nothing touched (C-8). The
   `runOptimize` cadence is documented, not automatic (no hot-path tax on `add`).
+  Two consequences of the write-order precount, both documented in the d.ts: under pool pressure
+  `addRange` can succeed where the equivalent `add` loop would throw part-way, and a range can throw
+  where its final state would fit. Also (the same family as the `runOptimize` kind-2 keep rule):
+  with the small pool empty when the first partial chunk cF is decided, and the last partial chunk
+  returning a small slot afterwards, cF can end as a large-slot array with n <= 64 keys (n < 2r);
+  `runOptimize` keeps such an array (2r >= n), so the end-state fixpoint holds as written, at 8 KB
+  where small runs would take 128 B.
 - P-4 (ruled). R2 rank is a cold `buildRank()` that freezes the set (no tax on `add` /
   `delete`); not in R1.
 - P-5 (ruled). A shrink of `successor` / `predecessor` (dead -1 exits first) is a planned task: the
@@ -169,7 +176,10 @@ slot), small runs (<= 32 runs, a 128 B small slot) and FULL (all 65,536 keys, 0 
   (C-9, lands with G4). R0 draft sizes (before the shrink): `successor` 621, `predecessor` 759,
   `add` 946, `delete` 960 B direct (paged draft: `successor` 647, `predecessor` 785), all over the
   460 B limit; `has` 439 and `min` / `max` 45 are within. The shipped bytecode figures are the G4
-  pins, not these.
+  pins, not these. G4 (V8 14.6, Node v26.8.2, 2026-11-05): has 452, add 838, delete 899,
+  successor 610, predecessor 727, min / max 56 B; `_bmpNextGEQ` 363, `_bmpPrevLEQ` 332 B
+  (`test/RoaringBytecode.test.js`); the shipped class has one body for both layouts (647 / 785 B
+  before the shrink).
 - P-6 / P-7 (ruled). Version slot 0.6.0; this record is `decisions/0010-roaringset.md`.
 - Q-4 (ruled). Positional constructor `(universe, maxSmall = 1024, maxLarge = 256, maxPages = all,
   pageBits = 8)`; universe REQUIRED in [1, 2^32]; maxSmall [0, 65535]; maxLarge [1, 65534];
@@ -208,12 +218,15 @@ pointer-compressed); P-1 documents it, as vEBTree CV7 does.
 
 No hardware, dates or ops-per-second are cited.
 
-- Roaring bitmaps (Lemire et al., Software: Practice and Experience, 2018; originating papers Chambi
-  et al. and Lemire et al., both 2016): the array / bitmap / run container design over 2^16-key
-  chunks is the origin of the chunk size and of the array / bitmap / run kinds here (SINGLE, small
-  and FULL are this package's own). This record does NOT adopt its serialization format or its
-  growable allocation. Cited from general knowledge, not from an R0 source; no number is taken from
-  it.
+- Roaring bitmaps: Lemire, Kaser, Kurz, Deri, O'Hara, Saint-Jacques, Ssi-Yan-Kai, "Roaring Bitmaps: Implementation of an
+  Optimized Software Library", Software: Practice and Experience, 2018; the earlier papers are
+  Chambi, Lemire, Kaser, Godin, "Better bitmap performance with Roaring bitmaps", Software: Practice
+  and Experience, 2016, and Lemire, Ssi-Yan-Kai, Kaser, "Consistently faster and smaller compressed
+  bitmaps with Roaring", Software: Practice and Experience 46(11), 2016 (not re-checked against the papers in
+  this cycle: titles, authors, venues and years are from general knowledge). The array / bitmap / run
+  container design over 2^16-key chunks is the origin of the chunk size and of the array / bitmap /
+  run kinds here (SINGLE, small and FULL are this package's own). This record does NOT adopt its
+  serialization format or its growable allocation. No number is taken from it.
 - The package's own FastBit1024 grown one level is the bitmap summary (D-R2): a bounded
   `successor` inside a bitmap, an edge over the standard bitmap scan.
 
@@ -225,14 +238,16 @@ No hardware, dates or ops-per-second are cited.
 - Every behavior change carries a gate that FAILS on the old code (revert check against the
   frozen 'before' build `.handoff/frozen/LogLogN.65b7d53-55efef65.js`); a mutant anchor whose
   count is not 1 is a FAIL.
-- Mutant kill sets (what the test gates now): RoaringMutants = 47 fuzz rows (43 killed, 4 reasoned
-  equivalents B1, B2c, B2d, S9, 0 unexplained or ABORT) plus 6 CONTRACT rows outside the 47 (the 4
-  new throw-site hoists, the universe-default mutant, and the maxSmall-default mutant), the first
-  5 killed by an oracle child, the maxSmall-default one in the test process (a default-constructed
-  byteLength), with one unmutated control per job kind (a mutant that does not parse is an ABORT
-  and FAILS its row): 49 of 53 killed, 4 equivalents (C-10a). After the G4 shrink B2c / B2d will
-  be dropped with their code and the broken anchors B2a / va-m9 will be re-cut: 49 of 51 killed, 2
-  equivalents (B1, S9) (C-9).
+- Mutant kill sets (what the test gates now): RoaringMutants = 55 mutant rows: 49 fuzz rows (47
+  killed, 2 reasoned equivalents B1 and S9) plus 6 CONTRACT rows outside the 49 (the 4 throw-site
+  hoists, the universe-default mutant, and the maxSmall-default mutant), the first 5 killed by an
+  oracle child, the maxSmall-default one in the test process (a default-constructed byteLength),
+  with one unmutated control per job kind (a mutant that does not parse is an ABORT and FAILS its
+  row): 53 of 55 killed, 2 equivalents, 0 unexplained (C-10a; `test/RoaringMutants.test.js`
+  EXPECT_KILLED 53 / EXPECT_EQUIV 2). History: before the G4 shrink the roster held B2c / B2d
+  (dead-exit mutants) and was 49 of 53 killed, 4 equivalents; the shrink dropped those two with
+  their code, the broken anchors B2a / va-m9 were re-cut, and the 4 set-op mutants (va-m1 / va-m10b /
+  S7 / S8) came back with G3-B4 (C-9, C-21).
 - The crossover mutant `<` -> `<=` is killed by the TIE row (U 184,942,592, `(0, 1, 10, pb8)`);
   the 254 / 255 rows kill the zero-page mutant (C-13).
 - Exact byteLength: a test-owned formula (K = 8,460 plus the Q-1 rule) against the engine in
@@ -286,7 +301,7 @@ REPORTED gates nothing. Gates marked "lands with G<n>" do not exist yet at the t
 record and are not claimed to pass.
 
 - G1 (the engine, DETERMINISTIC): `test/RoaringSet.test.js`; `test/RoaringFuzz.test.js` (seeded
-  fuzz against the Set model); `test/RoaringMutants.test.js` (49 of 53 killed, 4 reasoned
+  fuzz against the Set model); `test/RoaringMutants.test.js` (53 of 55 killed, 2 reasoned
   equivalents, C-10a); `test/RoaringVectors.test.js` (pinned traces). Lands with G1.
 - G2 (layout, DETERMINISTIC): `test/RoaringPagedSpace.test.js` (byteLength rows incl. the TIE and
   254 / 255 rows); `test/RoaringDirectParity.test.js` (the direct set against its frozen
@@ -311,5 +326,9 @@ record and are not claimed to pass.
 - Gates REPORTED only: box B/op (~32 / ~16), the `ni.*` lanes and the TurboFan check (R0 logs),
   every timing figure above.
 - README and llms.txt timing comes only from this cycle's G7 run (C-16); none, no numbers.
+- Measured (REPORTED, one run, gates nothing): `npm run witness:roar` on the shipped engine,
+  2026-11-06, QUIET host, Apple M4 Pro, Node v26.8.2; the digest and its provenance are in the
+  README's witness:roar block and in `llms.txt`. In that run RoaringSet read slower than
+  StratifiedBitset on has / add / delete in every digest column and faster on min / max.
 - Consequence for users: the byte cost is a constructor argument and the default constructor
   is direct at every U; sizing `maxPages` is how a caller buys the small paged floor.

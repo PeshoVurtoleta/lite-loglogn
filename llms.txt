@@ -16,9 +16,11 @@ count n); StratifiedBitset itself is O(log_32 U), and XFastTrie is the first
 strict O(log log U) member (queries only; its updates are O(w)); YFastTrie keeps
 the O(log log U) query at O(n) space (updates: O(log log U) probes plus at most
 2w-1 word moves, split / merge / borrow amortized); vEBTree (0.5.0) is
-the worst-case member: O(log log U) for every operation, O(1) min / max, O(U) space.
-Every hot op of StratifiedBitset, XFastTrie, YFastTrie and vEBTree allocates zero
-bytes after construction (keys < 2^30; see the boxing note).
+the worst-case member: O(log log U) for every operation, O(1) min / max, O(U) space;
+RoaringSet (0.6.0) is the compressed member: 65,536-key chunks in the smallest fitting
+container over a universe up to 2^32, pools fixed at construction, a stated byte cost.
+Every hot op of StratifiedBitset, XFastTrie, YFastTrie, vEBTree and RoaringSet allocates
+zero bytes after construction (keys < 2^30; see the boxing note).
 
 It is the O(log log U) sibling of @zakkster/lite-o1 (the constant) and
 @zakkster/lite-logn (the logarithm in n): lite-loglogn holds the double
@@ -31,7 +33,8 @@ are a labeled SegmentedU variant, never a silent BigInt hot path. The SPACE pric
 is a co-headline on every member, stated with the same prominence as the time bound.
 
 Roster (one member per release, append-only). StratifiedBitset (0.2.0),
-XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published:
+XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published; RoaringSet
+(0.6.0) is the fifth member:
 
 - StratifiedBitset (0.2.0) -- array-embedded 32-ary bit pyramid. O(log_32 U)
   successor / predecessor; min / max read Lc words (Lc = levels <= 7);
@@ -48,6 +51,12 @@ XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published:
   worst-case O(log log U) has / add / delete / successor / predecessor, O(1)
   min / max; O(U) SPACE, the whole universe allocated up front; 0 B/op on every
   hot method (keys < 2^30).
+- RoaringSet (0.6.0) -- Roaring-style compressed ordered set over [0, U), U <= 2^32:
+  65,536-key chunks, each in the smallest fitting container (SINGLE / FULL 0 B,
+  small array, array, bitmap with a summary, runs, small runs), preallocated pools
+  that never grow, a direct or paged chunk table chosen at construction; successor /
+  predecessor / min / max, addRange, cold counting set ops; SPACE fixed by the
+  constructor arguments; 0 B/op on every hot method (keys < 2^30).
 
 ## Exports (from the single main file LogLogN.js)
 
@@ -60,6 +69,10 @@ XFastTrie (0.3.0), YFastTrie (0.4.0) and vEBTree (0.5.0) are published:
   successor / predecessor in O(n) space.
 - `vEBTree` -- class. An integer set over the fixed universe [0, U), U in
   [2, 2^32]; worst-case O(log log U) operations in O(U) space; no capacity, no seed.
+- `RoaringSet` -- class. A compressed ordered integer set over the fixed universe
+  [0, U), U in [1, 2^32]; positional pools (maxSmall, maxLarge, maxPages, pageBits)
+  fixed at construction; byteLength is a closed form in the arguments. `dump()`
+  returns a `RoaringSetDump` (types `RoaringSetDump` / `RoaringSetChunkDump`).
 
 ### StratifiedBitset
 
@@ -383,7 +396,7 @@ NaN, negative, >= U, null, string, Symbol, BigInt, boxed Number) touches nothing
 delete -> false, successor / predecessor -> undefined, add -> RangeError `[lite-loglogn]
 key must be an integer in [0, U); got ...`. `-0` aliases key 0. A returned key >= 2^31
 (>= 2^30 on a pointer-compressed engine) may box a HeapNumber when the call is not
-inlined.
+inlined. addRange: Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a non-inlined call site (as has).
 
 Failure modes (all throw BEFORE any write, set unchanged): container pool exhaustion,
 `[lite-loglogn] RoaringSet small/large container pool exhausted (capacity N); increase
@@ -393,7 +406,11 @@ N); increase maxPages at construction`. So add AND delete can throw on a valid k
 delete from a FULL chunk needs a slot, and a delete splitting a small-runs run past 32
 runs needs a large slot. addRange throws when the pools cannot hold the slots / pages it
 needs (its page-pool text: `[lite-loglogn] RoaringSet addRange metadata page pool exhausted
-(needs N new page(s), F free of maxPages M); increase maxPages at construction`).
+(needs N new page(s), F free of maxPages M); increase maxPages at construction`; a slot
+shortfall throws the add() container-pool text). The precount follows
+the write order and counts only each chunk's final container, so under pool pressure addRange can
+succeed where the equivalent add loop would throw part-way, and a range can throw where its final
+state would fit.
 
 Layout: each 65,536-key chunk is held by the smallest container that fits (SINGLE and
 FULL cost 0 B; small array 2..64 keys; array up to 4,096; bitmap; runs; small runs <=
@@ -423,12 +440,13 @@ pinned in test/DocSync.test.js): direct = 8,460 + 11 C + 130 maxSmall + 8,456
 The empty floor is a pool-sizing choice: at U = 2^32 the default pools alone are 2,306,824 B
 (DETERMINISTIC: the 2^32 default row minus 8,460 minus the direct table 11 C = 720,896).
 
-Timing for RoaringSet is REPORTED only (R0 measurements: RESEARCH.md 12.13); this file quotes none.
+Timing for RoaringSet is REPORTED only: the one witness:roar run is under "Gates and
+measurements" below (REPORTED, gates nothing).
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 852 tests, 851 pass, 1 skipped, 0 fail, 2026-11-03, Node v26.8.2; also
-  npm run verify = test + test:types + torture + test:perf): exact counts (words for
+- DETERMINISTIC (npm test = 1158 tests, 1157 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail,
+  2026-11-06, Node v26.8.2; also npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset and vEBTree, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
   0 divergences), space pins, tier parity, bytecode-size gates, a parity pin of
@@ -461,7 +479,8 @@ Timing for RoaringSet is REPORTED only (R0 measurements: RESEARCH.md 12.13); thi
   1,048,584 B / 65,536 calls = 16 B per call; CV9: one box every 8th op on V3's
   step inside the V3 Worker; V3's Worker and CV9 were checked in torture x3 on
   2026-11-03, PRELIMINARY host, count gates). Torture must-fail controls in all:
-  5 + 6 + 9 + 9 = 29 across T3, X4, Y4, CV. `--yft --smoke` is gated in npm test by YftWitness (counts / strings
+  5 + 6 + 9 + 9 = 29 across T3, X4, Y4, CV, plus the RoaringSet R section's 19 (11 named
+  controls + 4 high-key box controls on each of the two layouts). `--yft --smoke` is gated in npm test by YftWitness (counts / strings
   only, five must-fail fakes).
   `npm run test:perf`: PerfGate 15/15 (7 zero-alloc scenarios + 3 must-fail teeth +
   flag pin (2) + detector (1) + arrayBuffers attribution (1) + GATE key-set pin (1)) + XFastTriePerf 17/17
@@ -470,6 +489,14 @@ Timing for RoaringSet is REPORTED only (R0 measurements: RESEARCH.md 12.13); thi
   2026-10-25, PRELIMINARY host load1 6.58; allocation-count gates) + VEBTreePerf
   (21 tests: 10 zero-alloc scenarios, keys < 2^30, + 3 must-fail teeth with
   attribution + flag pin + coverage floor) = 72 tests in test:perf.
+  RoaringSet (DETERMINISTIC; the same GATE line of `npm run torture`, 1 run, Node v26.8.2, count
+  gates): `roaring lanes=93/93 churn=1/1 ctl=19/19 hiExcess=2097144/2097144/1048568/1048568
+  hiPaged=2097144/2097144/1048568/1048568 rangeExcess=-32/-32 leak=size 0/0 tf=UNCHECKED`: 93 lanes (direct and paged, plus 5 mixed)
+  at 0 B/op, the page-churn lane, 19 must-fail controls flipping (the 8 high-key box controls
+  read > 0 by design, their magnitude is REPORTED), a leak census of 0. Bytecode (V8 14.6,
+  pinned in test/RoaringBytecode.test.js): has 452, add 838, delete 899, successor 610,
+  predecessor 727, min 56, max 56 B (successor / predecessor / add / delete are over the
+  460 B inlining limit, so a returned key >= 2^31 can box).
 - REPORTED (no CI for this package: statistical claims are REPORTED only; release-time,
   NOT in verify, 1 run each, exit 0 pass / 1 fail / 2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node
   26.8.2, load1 3.66): member successor vs a local Uint32Array binary search at
@@ -485,6 +512,22 @@ Timing for RoaringSet is REPORTED only (R0 measurements: RESEARCH.md 12.13); thi
   witness:veb` (`--veb`: vEBTree vs StratifiedBitset A/B in 38 scenarios, latency,
   fits and the tail MAX REPORTED) uses the same floor; its numbers are in the
   VEB-WITNESS block above.
+- REPORTED (`npm run witness:roar`, RoaringSet vs StratifiedBitset; 1 run, 2026-11-06, QUIET host
+  (load1 2.53 -> 2.92, baseline 2.21), Apple M4 Pro, Node v26.8.2 / V8 14.6.202.34, `quiet-lock run
+  --strict`, exit 0, 144 of 147 cells conclusive; the 3 INCONCLUSIVE cells are D w16 n64 predecessor,
+  D w28 n4096 delete, D w28 n65536 delete; x2 control cell x1.695, in its [1.6, 2.4] band; gates
+  nothing; from the engine LogLogN.js sha256/8 0bc05f40, harness witness-roar.mjs f78b5048): in
+  this run the lower median over conclusive cells of the cell median ratio to StratifiedBitset
+  (> 1 = slower than StratifiedBitset) was, per op, for RS-D (direct layout, w 16..32) / RS-P
+  (paged, w 32) / mix-D / mix-P (both layouts through one shared call site, w 32):
+  has x6.06 / x2.12 / x1.69 / x2.12; add x8.35 / x4.01 / x2.17 / x3.27; delete x8.17 / x7.66 /
+  x1.77 / x7.66; successor x1.95 / x1.04 / x0.92 / x1.00; predecessor x1.46 / x0.83 / x0.75 /
+  x0.86; min x0.64 / x0.50 / x0.42 / x0.50; max x0.62 / x0.49 / x0.40 / x0.49. Cells per column:
+  RS-D 15 (14 predecessor, 13 delete), RS-P 3, mix-D 3, mix-P 3. Mixed / mono (one shared call
+  site vs one layout per site, w 32): direct has 0.971, add 1.071, delete 1.086, successor 1.029,
+  predecessor 1.063, min 0.856, max 0.841; paged has 0.999, add 0.815, delete 1.000, successor
+  0.968, predecessor 1.033, min 1.005, max 0.996. A measurement of one run, not a law; the
+  highest digest value is RS-D add (x8.35).
 - REPORTED (docs only; same witness run: 2026-10-22, Apple M4 Pro 12 cores, Node 26.8.2, load1 3.66, 1 run): the U-sweep fits better vs w (R^2 0.7293) than vs log2(w)
   (R^2 0.6589); no R^2 floor or slope band is gated. lite-o1 BitSet is faster where
   it applies (4.28-4.82 vs 4.87-7.61 ns/op at n = 4096, w = 16..24).

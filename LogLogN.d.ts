@@ -389,9 +389,9 @@ export interface RoaringSetDump {
  * has / successor / predecessor search 8 / 8 / 9 in a 64-key small array,
  * 14 / 14 / 15 in a 4,096-key array, 25 / 25 / 27 halfwords in a 2,048-run list,
  * 1 / 6 / 6 words in a bitmap; the next / previous live chunk <= 7 top words;
- * min / max 5 reads (6 paged). A conversion is O(container): the worst single
- * op is a run-split spill delete (8,288 reads) and the 4,097th array add (4,117
- * reads, 2,184 writes, 2,114 moves).
+ * min / max 5 reads (6 paged). A conversion is O(container): for example the
+ * 4,097th array add (4,117 reads, 2,118 writes, 2,114 moves, gated in
+ * RoaringCount.test.js).
  *
  * successor / predecessor are STRICT (> x / < x). -0 aliases key 0. A bad key
  * (not a number, not an integer in [0, U)) touches nothing: has / delete ->
@@ -403,8 +403,9 @@ export interface RoaringSetDump {
  * Hot methods allocate 0 bytes for keys < 2^30. A returned key >= 2^31 on Node
  * (>= 2^30 on Chrome / Electron, pointer-compressed) boxes as a HeapNumber when
  * the returning call is not inlined. On V8 14.6 (Node v26.8.2) successor /
- * predecessor are over the 460 B inlining limit (bytecode 621 / 759 B direct,
- * 647 / 785 B paged before the P-5 shrink; ADR 0010), and the measured cost on keys in [2^31, 2^32) is
+ * predecessor are over the 460 B inlining limit (bytecode 610 / 727 B, one body
+ * for both layouts, pinned in test/RoaringBytecode.test.js; 647 / 785 B before
+ * the P-5 shrink; ADR 0010), and the measured cost on keys in [2^31, 2^32) is
  * successor ~32, predecessor ~32, min ~16, max ~16 B per call; has 0 from an
  * inlined call site, ~16 B per call from a non-inlined one (the argument boxes;
  * ADR 0010). The ~x figures are REPORTED (failing lanes, run-to-run jitter). That
@@ -445,9 +446,14 @@ export class RoaringSet {
      * Adds every key in [lo, hi), 0 <= lo <= hi <= U (integers); lo === hi adds nothing. The set
      * equals that of `add(x)` for each x in [lo, hi); each touched chunk ends in the container kind
      * `runOptimize()` would choose for the final key set at the post-call pool state (fully covered chunks
-     * become FULL, 0 B). Precounts the
-     * slots and pages it needs and throws RangeError before any write if the pools cannot hold them (set
-     * unchanged); a bad bound throws RangeError with nothing touched. Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a non-inlined call site (as has). Returns this.
+     * become FULL, 0 B). Precounts the slots and pages it needs, in the write order, and throws
+     * RangeError before any write if the pools cannot hold them (set unchanged):
+     * `... addRange metadata page pool exhausted (needs N new pages, F free of maxPages M) ...` or
+     * `... <pool> container pool exhausted (capacity C) ...`. It counts only each chunk's final
+     * container, so under pool pressure it can succeed where the equivalent add loop would throw
+     * part-way; and because the precount follows the write order, a range can throw where its final
+     * state would fit. A bad bound throws RangeError with nothing touched.
+     * Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a non-inlined call site (as has). Returns this.
      */
     addRange(lo: number, hi: number): this;
     /**

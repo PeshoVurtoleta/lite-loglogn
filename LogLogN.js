@@ -2051,7 +2051,7 @@ function throwRRange(lo, hi, u) {
 /**
  * RoaringSet -- a compressed ordered set over a FIXED universe [0, U),
  * 1 <= U <= 2^32, Roaring-style: the key space splits into 2^16-key chunks,
- * each held by the smallest fitting container (kind ids in `_kind`):
+ * each held in the container kind that fits its keys (kind ids in `_kind`):
  * 7 SINGLE (1 key, its low 16 bits in `_slot`, 0 B), 1 small array (2..64
  * keys, a 128 B small slot), 2 array (up to 4,096 keys, an 8 KB large slot),
  * 3 bitmap (8 KB + a 66-word summary), 4 runs (an 8 KB large slot, <= 2,048
@@ -3094,6 +3094,16 @@ export class RoaringSet {
         this._runs[m] = 0;
     }
 
+    /**
+     * Cold. Re-encodes chunks by these rules only (no other chunk moves; a large-slot array never becomes a
+     * small array): a chunk holding all 65,536 keys becomes FULL (0 B); a large-slot array becomes runs (small
+     * runs when <= 32 runs and a small slot is free) when 2 x runs < keys and runs <= 2,048; a bitmap becomes an
+     * array when it holds <= 4,096 keys and fewer than 2 x runs keys, else runs (small runs when <= 32 runs and a
+     * small slot is free) when runs <= 2,047, else it stays a bitmap; a runs chunk moves to small runs when <= 32
+     * runs and a small slot is free, else to an array when 2 x keys < 4 x runs. A second call changes no chunk.
+     * Allocates nothing, never throws. Returns this.
+     * @returns {this}
+     */
     runOptimize() {
         const u16 = this._lU16;
         const u32 = this._lU32;
@@ -3150,7 +3160,10 @@ export class RoaringSet {
                     runs += popcnt32(v & ~((v << 1) | (prev >>> 31)));
                     prev = v;
                 }
-                if (runs > 0 && runs <= 2047) {
+                // 2 B per key vs 4 B per run (C-28): an array when card <= 4096 and card < 2 runs, a tie -> runs
+                if (card <= 4096 && card < (runs << 1)) {
+                    this._demoteBitmapToArray(m, slot);
+                } else if (runs > 0 && runs <= 2047) {
                     const toSmall = runs <= 32 && this._sTop > 0;
                     const dst = toSmall ? this._sFree[--this._sTop] : this._conv;
                     const out = toSmall ? this._sData : u16;
@@ -3797,10 +3810,13 @@ export class RoaringSet {
     /**
      * Adds every key in [lo, hi), 0 <= lo <= hi <= U (integers); lo === hi adds nothing. The set equals that of
      * `add(x)` for each x in [lo, hi); each touched chunk ends in the container kind `runOptimize()` would choose
-     * for the final key set at the post-call pool state (fully covered chunks become FULL, 0 B). Precounts the
-     * slots and pages it needs and throws RangeError before any write if the pools cannot hold them (set
-     * unchanged); a bad bound throws RangeError with nothing touched. Allocates nothing for bounds < 2^30; a
-     * bound >= 2^31 boxes at a non-inlined call site (as has). Returns this.
+     * for the final key set at the post-call pool state (fully covered chunks become FULL, 0 B), with one
+     * exception: when the small pool is empty as the first partial chunk is decided and the last partial chunk
+     * returns a small slot afterwards, the first chunk can end as a large-slot array (n < 2r) where small runs
+     * would fit; `runOptimize()` keeps that array. Precounts the slots and pages it needs and throws
+     * RangeError before any write if the pools cannot hold them (set unchanged); a bad bound throws
+     * RangeError with nothing touched. Allocates nothing for bounds < 2^30; a bound >= 2^31 boxes at a
+     * non-inlined call site (as has). Returns this.
      * @param {number} lo first key
      * @param {number} hi one past the last key
      * @returns {this}
@@ -3884,8 +3900,8 @@ export class RoaringSet {
     /**
      * Cold, pure (S-3). The kind (Smi 1..7) partial chunk row m (old kind k0) ends in after a range write of
      * the local span [a, b], sA = the small slots free at that point of the precount: the kind the add loop
-     * over [a, b] ends in (K'), then runOptimize's rule on K'. s = a small slot is free OR the chunk already
-     * holds one. n = 65536 or k0 FULL -> FULL; n = 1 -> SINGLE.
+     * over [a, b] ends in (K'), then runOptimize's rule on K' (a bitmap K' with n <= 4,096 and n < 2r -> array,
+     * C-28). s = a small slot is free OR the chunk already holds one. n = 65536 or k0 FULL -> FULL; n = 1 -> SINGLE.
      */
     _rangeKind(m, k0, a, b, sA) {
         if (k0 === 6) return 6;
@@ -3912,6 +3928,7 @@ export class RoaringSet {
         }
         if (k === 2 || k === 3) {
             const r = this._rangeScanR(m, k0, a, b);
+            if (k === 3 && n <= 4096 && n < (r << 1)) return 2;
             if (k === 2 ? (r << 1) < n : r <= 2047) return r <= 32 && s ? 5 : 4;
             return k;
         }

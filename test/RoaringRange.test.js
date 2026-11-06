@@ -25,6 +25,9 @@
  *   set's zero page (all zero); its must-fail controls corrupt one L2 bit, one L1 bit, one _cMax, one _cMin, one
  *   _card, one _runs, the kind (unknown -> fail closed), one model bit, a non-live row's kind, a non-live row's _runs,
  *   one zero-page field (paged), one free-page _cMin (paged) and a run chunk shrunk to 1 key (want SINGLE).
+ * C-28 (audit O-2, SPEC A20): runOptimize()'s bitmap rule at its boundaries (hand-derived rows + two live-text mutants),
+ *   a seeded idempotence stream over 3 layouts (a 2nd runOptimize() leaves dump, byteLength and snap unchanged), the
+ *   addRange end state of a bitmap chunk, and the audit O-3 row (C-27 P-3 exception, pinned on both builds).
  *
  * Seed: printed; override with LOGLOGN_SEED (fail-closed parse, test/helpers/seed.mjs). Bounds, structure and
  * key streams are independent seeded 32-bit-exact PRNG streams.
@@ -1045,6 +1048,335 @@ test('RoaringRange F1 boundary (exact): a 33-run cF stays a run slab although a 
         assert.equal(r.has(65536 + 4 * q), true); assert.equal(r.has(65536 + 4 * q + 2), true); assert.equal(r.has(65536 + 4 * q + 3), false);
     }
     assert.equal(r.has(65536 + 199), false); assert.equal(r.has(65536 + 200), true); assert.equal(r.has(65536 + 65535), true);
+});
+
+// ---- C-28 (audit O-2; maintainer ruling 2026-11-06, SPEC A20): runOptimize() is minimal and idempotent on a bitmap ----
+// Rule (SPEC C-28 / A20.1, hand-derived, never read from the engine): a bitmap chunk becomes an array when it holds
+// <= 4,096 keys and fewer than 2 x runs keys (2 B per key vs 4 B per run); else runs (small runs when <= 32 runs and a
+// small slot is free) when runs <= 2,047; else it stays a bitmap. Ties: keys == 2 runs -> runs; 4,096 keys -> array only
+// with >= 2,049 runs; >= 4,097 keys never -> array. A second runOptimize() changes nothing (dump, byteLength, snap).
+// On 0bc05f40 (the before build) the O-2 repro's first pass gives runs and the second an array; the 4,096 / 4,096 and
+// 4,096 / 2,049 rows stay bitmaps.
+
+const c28Row = (s) => s.dump().chunks.map((c) => c.chunk + ':' + c.kind + ':' + c.count + ':' + c.runs).join(' ');
+const c28State = (s) => JSON.stringify(s.dump()) + '|' + s.byteLength + '|' + snap(s);
+
+// the audit O-2 build (opus-5.5_reproductions.mjs O-2): chunk 0 a bitmap of 2,400 keys in 2,000 runs (400 pairs 6i, 6i + 1
+// and 1,600 singles 6i), its 2,000 keys 40000 + 2i added (4,400 > 4,096: a bitmap) and deleted again (2,400 > 2,048: stays)
+function o2Build(s) {
+    for (let i = 0; i < 400; i++) { s.add(6 * i); s.add(6 * i + 1); }
+    for (let i = 400; i < 2000; i++) s.add(6 * i);
+    for (let i = 0; i < 2000; i++) s.add(40000 + 2 * i);
+    for (let i = 0; i < 2000; i++) s.delete(40000 + 2 * i);
+    return s;
+}
+const o2Keys = () => { const k = []; for (let i = 0; i < 2000; i++) { k.push(6 * i); if (i < 400) k.push(6 * i + 1); } return k.sort((x, y) => x - y); };
+
+// [label, build(C) -> set, expected chunk-0 row after runOptimize (hand-derived), the key list or null]
+const C28_ROWS = [
+    ['O-2 repro 2400 / 2000', (C) => o2Build(new C(65536)), '0:array:2400:0', o2Keys],
+    ['4094 / 2047 (2 x 2047 = 4094: tie -> runs)', (C) => {
+        const s = new C(1 << 20);
+        for (let j = 0; j < 2048; j++) { s.add(3 * j); s.add(3 * j + 1); }
+        s.add(3 * 2048); s.delete(3 * 2048);                     // 4,097 keys -> bitmap; back to 4,096 / 2,048
+        s.delete(3 * 2047); s.delete(3 * 2047 + 1);              // 4,094 keys, 2,047 runs
+        return s;
+    }, '0:runs:4094:2047', null],
+    ['4096 / 2048 (tie, 2,048 runs > 2,047: stays bitmap)', (C) => {
+        const s = new C(1 << 20);
+        for (let j = 0; j < 2048; j++) { s.add(3 * j); s.add(3 * j + 1); }
+        s.add(3 * 2048); s.delete(3 * 2048);
+        return s;
+    }, '0:bitmap:4096:0', null],
+    ['4096 / 2049 (4,096 < 4,098 -> array)', (C) => {
+        const s = new C(1 << 20);
+        for (let j = 0; j < 2047; j++) { s.add(3 * j); s.add(3 * j + 1); }  // 4,094 keys, 2,047 runs
+        s.add(6141); s.add(6143);                                // + 2 isolated keys: 4,096 / 2,049
+        s.add(9000); s.delete(9000);                             // the 4,097th key makes the bitmap
+        return s;
+    }, '0:array:4096:0', () => { const k = []; for (let j = 0; j < 2047; j++) k.push(3 * j, 3 * j + 1); k.push(6141, 6143); return k; }],
+    ['4096 / 4096 (stride 2 -> array)', (C) => {
+        const s = new C(1 << 20);
+        for (let i = 0; i <= 4096; i++) s.add(2 * i);           // 4,097 keys -> bitmap
+        s.delete(8192);                                          // 4,096 keys, 4,096 runs
+        return s;
+    }, '0:array:4096:0', () => { const k = []; for (let i = 0; i < 4096; i++) k.push(2 * i); return k; }],
+    ['4097 / 4097 (> 4,096 keys: stays bitmap)', (C) => {
+        const s = new C(1 << 20);
+        for (let i = 0; i <= 4096; i++) s.add(2 * i);
+        return s;
+    }, '0:bitmap:4097:0', null],
+];
+
+// null when every row matches; else the first divergence (row label, what, got, want)
+function c28Diverge(C) {
+    for (const [label, build, want, keys] of C28_ROWS) {
+        const s = build(C);
+        if (s.dump().chunks[0].kind !== 'bitmap') return { label, what: 'pre-state', got: c28Row(s), want: 'bitmap' };
+        s.runOptimize();
+        if (c28Row(s) !== want) return { label, what: '1st runOptimize', got: c28Row(s), want };
+        const st = c28State(s);
+        s.runOptimize();
+        if (c28State(s) !== st) return { label, what: '2nd runOptimize', got: c28Row(s), want };
+        if (keys !== null) {
+            const ks = keys();
+            let x = s.has(0) ? 0 : s.successor(0);
+            for (let i = 0; i < ks.length; i++, x = s.successor(x)) {
+                if (x !== ks[i]) return { label, what: 'key #' + i, got: x, want: ks[i] };
+            }
+            if (x !== undefined) return { label, what: 'key past the end', got: x, want: undefined };
+            if (s.min() !== ks[0] || s.max() !== ks[ks.length - 1]) return { label, what: 'min / max', got: s.min() + ' / ' + s.max(), want: ks[0] + ' / ' + ks[ks.length - 1] };
+        }
+    }
+    return null;
+}
+
+test('RoaringRange C-28 bitmap rule (exact): O-2 repro, boundaries 4094 / 2047, 4096 / 2048, 4096 / 2049, 4096 / 4096, 4097 / 4097', () => {
+    // O-2 repro, stepwise: the first pass makes the array (not runs), the second changes nothing
+    const s = o2Build(new RoaringSet(65536));
+    assert.equal(c28Row(s), '0:bitmap:2400:0');
+    const sTop = s._sTop, lTop = s._lTop;
+    s.runOptimize();
+    assert.equal(c28Row(s), '0:array:2400:0', 'O-2: 1st runOptimize');
+    assert.equal(s._sTop, sTop, 'bitmap -> array keeps the small pool');
+    assert.equal(s._lTop, lTop, 'bitmap -> array swaps _conv within the large class (no pool pop / push)');
+    assert.equal(poolError(s), null);
+    assert.equal(wbError(s, null, 0), null);
+    const st = c28State(s);
+    s.runOptimize();
+    assert.equal(c28State(s), st, 'O-2: 2nd runOptimize changes nothing');
+    // every row on the live build: kind, count, runs; idempotent; the converted arrays hold exactly their keys
+    const df = c28Diverge(RoaringSet);
+    assert.equal(df, null, JSON.stringify(df));
+});
+
+// live-text mutants (data: URL, anchor count exactly 1): each must diverge at its named row
+const C28_ANCHOR = 'if (card <= 4096 && card < (runs << 1)) {';
+const C28_MUTANTS = [
+    ['dropped `card <= 4096 &&` guard', 'if (card < (runs << 1)) {', '4097 / 4097 (> 4,096 keys: stays bitmap)'],
+    ['`<= 4096` -> `< 4096`', 'if (card < 4096 && card < (runs << 1)) {', '4096 / 2049 (4,096 < 4,098 -> array)'],
+];
+for (const [label, repl, row] of C28_MUTANTS) {
+    test('RoaringRange C-28 must-fail: the ' + label + ' mutant (data: URL of the LIVE LogLogN.js) diverges at ' + row, async () => {
+        const src = readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
+        assert.equal(src.split(C28_ANCHOR).length - 1, 1, 'anchor ' + JSON.stringify(C28_ANCHOR) + ' occurs exactly once');
+        const M = (await import(dataUrl(src.replace(C28_ANCHOR, () => repl)))).RoaringSet;
+        const df = c28Diverge(M);
+        assert.notEqual(df, null, 'the ' + label + ' mutant PASSED the C-28 rows');
+        assert.equal(df.label, row, JSON.stringify(df));
+    });
+}
+
+// one seeded stream: bitmaps of > 4,096 keys built by a stride / mask pattern, then deleted to 2,049 .. 4,096 keys, among
+// random adds / deletes / short ranges; at every runOptimize the first pass's bitmap -> array conversions are counted and a
+// second call must leave dump(), byteLength and snap() unchanged; every 8th check adds the white-box + model check.
+function c28Stream(r, U, focus, seed, steps) {
+    const random = xs32(seed);
+    const rkey = xs32(seed ^ 0x5bd1e995);
+    const out = { checks: 0, conversions: 0, bitmapsBuilt: 0, wbModel: 0, violations: 0, first: [] };
+    const w0 = focus[0] * 65536, w1 = Math.min(U, (focus[focus.length - 1] + 1) * 65536);
+    const flags = new Uint8Array(w1 - w0);
+    const fail = (msg) => { out.violations++; if (out.first.length < 5) out.first.push(msg); };
+    const add = (x) => { r.add(x); flags[x - w0] = 1; };
+    const del = (x) => { r.delete(x); flags[x - w0] = 0; };
+    const PATTERNS = [
+        (x) => (x & 1) === 0,                 // stride 2: n == r
+        (x) => x % 3 === 0,                   // stride 3
+        (x) => x % 3 !== 2,                   // pairs: n == 2r (the tie)
+        (x) => (x & 7) < 5,                   // runs of 5
+        (x) => (x & 3) !== 3,                 // runs of 3
+        () => true,                           // dense, thinned by the deletes below
+    ];
+    for (let step = 0; step < steps; step++) {
+        const c = focus[Math.floor(rkey() * focus.length)];
+        const base = c * 65536;
+        const op = random();
+        try {
+            if (op < 0.3) {
+                // > 4,096 keys by the pattern from a random offset, then delete down to a target in 2,049 .. 4,096;
+                // half the builds empty the chunk first (else older keys can keep it above 4,096)
+                if (rkey() < 0.5) for (let i = 0; i < 65536; i++) if (flags[base - w0 + i] === 1) del(base + i);
+                const pat = PATTERNS[Math.floor(rkey() * PATTERNS.length)];
+                const n = 4100 + Math.floor(rkey() * 900);
+                const off = Math.floor(rkey() * 30000);
+                const keys = [];
+                for (let x = off; keys.length < n && x < 65536; x++) if (pat(x)) keys.push(base + x);
+                for (const x of keys) add(x);
+                const target = 2049 + Math.floor(rkey() * 2048);
+                let cnt = 0;
+                for (let i = 0; i < 65536; i++) cnt += flags[base - w0 + i];
+                // delete pattern keys from a random point (thins the runs too) until the chunk holds the target
+                let i = Math.floor(rkey() * keys.length);
+                const hop = 1 + Math.floor(rkey() * 7);
+                for (let tries = 0; cnt > target && tries < 4 * keys.length; tries++, i = (i + hop) % keys.length) {
+                    if (flags[keys[i] - w0] === 1) { del(keys[i]); cnt--; }
+                }
+                const k = r.dump().chunks.find((e) => e.chunk === c);
+                if (k && k.kind === 'bitmap' && k.count <= 4096) out.bitmapsBuilt++;
+            } else if (op < 0.45) {
+                for (let j = 0; j < 40; j++) add(base + Math.floor(rkey() * 65536));
+            } else if (op < 0.6) {
+                for (let j = 0; j < 40; j++) del(base + Math.floor(rkey() * 65536));
+            } else if (op < 0.7) {
+                const lo = base + Math.floor(rkey() * 65000);
+                const hi = Math.min(lo + Math.floor(rkey() * 400), w1);
+                r.addRange(lo, hi);
+                for (let x = lo; x < hi; x++) flags[x - w0] = 1;
+            } else {
+                const pre = new Map(r.dump().chunks.map((e) => [e.chunk, e.kind]));
+                r.runOptimize();
+                const d1 = r.dump();
+                for (const e of d1.chunks) if (pre.get(e.chunk) === 'bitmap' && e.kind === 'array') out.conversions++;
+                const st = c28State(r);
+                r.runOptimize();
+                out.checks++;
+                if (c28State(r) !== st) {
+                    fail('step ' + step + ': 2nd runOptimize ' + c28Row({ dump: () => d1 }) + ' -> ' + c28Row(r));
+                }
+                if (out.checks % 8 === 0) {
+                    const we = wbError(r, flags, w0);
+                    out.wbModel++;
+                    if (we !== null) fail('step ' + step + ' white-box vs model ' + we);
+                }
+            }
+        } catch (e) { if (!(e instanceof RangeError)) throw e; }
+    }
+    return out;
+}
+
+// measured on the after-build 850b8ddf (fixed seeds, deterministic): conversions 448, checks 1,093, bitmapsBuilt 820,
+// wbModel 133; floors = 80% of each, rounded down (>= 20% margin)
+const C28_FLOOR = { conversions: 358, checks: 874, bitmapsBuilt: 656, wbModel: 106 };
+test('RoaringRange C-28 idempotence stream: a 2nd runOptimize() changes nothing (direct 2^20, FORCED paged pb2, REAL paged 2^32 pb8)', () => {
+    // [label, make(), U, focus chunks, seeds]; 600 steps per seed (fixed seeds: the floors below are cut on them)
+    const ROWS = [
+        ['direct 2^20 s16 l8', () => new RoaringSet(1 << 20, 16, 8), 1 << 20, [3, 4, 5], [28, 2675]],
+        ['FORCED paged 2^20 pb2 mp4 s16 l8', () => new FORCED(1 << 20, 16, 8, 4, 2), 1 << 20, [3, 4, 5], [31, 97]],
+        ['REAL paged 2^32 pb8 mp4 s16 l8', () => new RoaringSet(U32, 16, 8, 4, 8), U32, [255, 256, 257], [77, 4242]],
+    ];
+    const tot = { checks: 0, conversions: 0, bitmapsBuilt: 0, wbModel: 0, violations: 0, paged: 0 };
+    const per = [];
+    const msgs = [];
+    for (const [label, make, U, focus, seeds] of ROWS) {
+        for (const seed of seeds) {
+            const r = make();
+            if (label.includes('paged')) { assert.equal(r.paged, true, label + ' built paged'); tot.paged++; }
+            else assert.equal(r.paged, false, label + ' built direct');
+            const o = c28Stream(r, U, focus, seed, 600);
+            for (const k of ['checks', 'conversions', 'bitmapsBuilt', 'wbModel', 'violations']) tot[k] += o[k];
+            per.push(label + ' seed ' + seed + ' conv ' + o.conversions + ' checks ' + o.checks);
+            for (const m of o.first) msgs.push(label + ' seed ' + seed + ': ' + m);
+        }
+    }
+    console.log('# C-28 idempotence: ' + JSON.stringify(tot) + ' | ' + per.join('; '));
+    assert.equal(tot.violations, 0, 'idempotence violations:\n' + msgs.join('\n'));
+    assert.equal(tot.paged, 4);
+    // floors: measured on the after-build (evidence .handoff/evidence/audit-fix/u-a/b2.md), cut with >= 20% margin
+    assert.ok(tot.conversions >= C28_FLOOR.conversions, 'first-pass bitmap -> array conversions ' + tot.conversions);
+    assert.ok(tot.checks >= C28_FLOOR.checks, 'idempotence checks ' + tot.checks);
+    assert.ok(tot.bitmapsBuilt >= C28_FLOOR.bitmapsBuilt, 'bitmaps of 2,049 .. 4,096 keys built ' + tot.bitmapsBuilt);
+    assert.ok(tot.wbModel >= C28_FLOOR.wbModel, 'white-box + model checks ' + tot.wbModel);
+});
+
+// addRange's end state follows C-28 too (C-8: the kind runOptimize() would choose): a bitmap K' with n <= 4,096 and n < 2r
+// ends as an array (on 0bc05f40 it ends as runs, or stays a bitmap at n = 4,096), a runOptimize() fixpoint equal to the
+// add-loop twin; at the tie n == 2r it ends as runs (the same on 0bc05f40: parity pin)
+const tieBuild = (C) => {
+    const s = new C(1 << 20);
+    for (let j = 0; j < 1500; j++) { s.add(3 * j); s.add(3 * j + 1); }
+    s.add(4500);
+    for (let i = 0; i < 1100; i++) s.add(20000 + 2 * i);         // 4,101 keys -> bitmap
+    for (let i = 0; i < 1100; i++) s.delete(20000 + 2 * i);      // 3,001 keys, 1,501 runs
+    return s;
+};
+const b4096Build = (C) => {
+    const s = new C(1 << 20);
+    for (let j = 0; j < 2047; j++) { s.add(3 * j); s.add(3 * j + 1); }
+    s.add(6141); s.add(6143);
+    s.add(9000); s.delete(9000);                                  // the 4,097th key makes the bitmap
+    s.delete(6143);                                               // 4,095 keys, 2,048 runs
+    return s;
+};
+// [label, build(C), pre-state row, lo, hi, expected row after addRange (hand-derived)]
+const C28_RANGE_ROWS = [
+    ['addRange(50000, 50001)', (C) => o2Build(new C(1 << 20)), '0:bitmap:2400:0', 50000, 50001, '0:array:2401:0'],
+    ['cF addRange(65530, 65536 + 3)', (C) => o2Build(new C(1 << 20)), '0:bitmap:2400:0', 65530, 65536 + 3, '0:array:2406:0 1:small:3:0'],
+    ['tie addRange(4501, 4502): 3,002 == 2 x 1,501 -> runs', tieBuild, '0:bitmap:3001:0', 4501, 4502, '0:runs:3002:1501'],
+    ['4096 addRange(6143, 6144): 4,096 < 2 x 2,049 -> array', b4096Build, '0:bitmap:4095:0', 6143, 6144, '0:array:4096:0'],
+];
+// null when every row matches; else the first divergence (row label, what, got, want)
+function c28RangeDiverge(C) {
+    for (const [label, build, pre, lo, hi, want] of C28_RANGE_ROWS) {
+        const R = build(C), L = build(C);
+        if (c28Row(R) !== pre) return { label, what: 'pre-state', got: c28Row(R), want: pre };
+        R.addRange(lo, hi);
+        if (c28Row(R) !== want) return { label, what: 'addRange', got: c28Row(R), want };
+        const pe = poolError(R), we = wbError(R, null, 0);
+        if (pe !== null || we !== null) return { label, what: 'pools / white-box', got: pe + ' / ' + we, want: null };
+        const st = c28State(R);
+        R.runOptimize();
+        if (c28State(R) !== st) return { label, what: 'runOptimize fixpoint', got: c28Row(R), want };
+        for (let x = lo; x < hi; x++) L.add(x);
+        L.runOptimize();
+        if (JSON.stringify(R.dump()) !== JSON.stringify(L.dump())) return { label, what: 'vs add loop + runOptimize', got: c28Row(R), want: c28Row(L) };
+    }
+    return null;
+}
+
+test('RoaringRange C-28 addRange rows: the O-2 bitmap + one key, a cF range into chunk 1, the n == 2r tie, n = 4,096', () => {
+    for (const [label, build, , lo, hi] of C28_RANGE_ROWS) {
+        const R = build(RoaringSet), L = build(RoaringSet);
+        R.addRange(lo, hi);
+        for (let x = lo; x < hi; x++) L.add(x);
+        L.runOptimize();
+        sameDump(R.dump(), L.dump(), label + ': R vs add loop + runOptimize');
+        assert.equal(R.size, L.size, label);
+    }
+    const df = c28RangeDiverge(RoaringSet);
+    assert.equal(df, null, JSON.stringify(df));
+});
+
+// live-text mutants of the _rangeKind C-28 line (data: URL, anchor count exactly 1): each must diverge at its named row
+const C28_RK_ANCHOR = 'if (k === 3 && n <= 4096 && n < (r << 1)) return 2;';
+const C28_RK_MUTANTS = [
+    ['`n < 2r` -> `n <= 2r`', 'if (k === 3 && n <= 4096 && n <= (r << 1)) return 2;', 'tie addRange(4501, 4502): 3,002 == 2 x 1,501 -> runs'],
+    ['`n <= 4096` -> `n < 4096`', 'if (k === 3 && n < 4096 && n < (r << 1)) return 2;', '4096 addRange(6143, 6144): 4,096 < 2 x 2,049 -> array'],
+];
+for (const [label, repl, row] of C28_RK_MUTANTS) {
+    test('RoaringRange C-28 must-fail: the _rangeKind ' + label + ' mutant (data: URL of the LIVE LogLogN.js) diverges at ' + row, async () => {
+        const src = readFileSync(new URL('../LogLogN.js', import.meta.url), 'utf8');
+        assert.equal(src.split(C28_RK_ANCHOR).length - 1, 1, 'anchor ' + JSON.stringify(C28_RK_ANCHOR) + ' occurs exactly once');
+        const M = (await import(dataUrl(src.replace(C28_RK_ANCHOR, () => repl)))).RoaringSet;
+        const df = c28RangeDiverge(M);
+        assert.notEqual(df, null, 'the ' + label + ' mutant PASSED the C-28 addRange rows');
+        assert.equal(df.label, row, JSON.stringify(df));
+    });
+}
+
+// U-C's O-3 row (audit opus-5.5_reproductions.mjs O-3; SPEC C-27 as amended by A19): the documented P-3 exception. cF is
+// decided while the small pool is empty, cL then leaves the small class and returns the small slot: addRange ends cF as a
+// large-slot array (35 keys) where the add loop + runOptimize() gives small runs (21 runs); runOptimize() keeps the array.
+// Pins documented behavior: passes on 0bc05f40 too.
+test('RoaringRange O-3 pinned (C-27 P-3 exception): cF ends a large array where the add-loop twin ends small runs; runOptimize keeps it', () => {
+    const build = () => {
+        const s = new RoaringSet(2 ** 20, 1, 8);
+        for (let i = 0; i < 60; i++) s.add(65536 + 1000 + 2 * i);
+        s.addRange(0, 10);
+        for (let i = 0; i < 19; i++) s.add(100 + 10 * i);
+        return s;
+    };
+    const a = build(), b = build();
+    a.addRange(65530, 65536 + 5);
+    for (let x = 65530; x < 65536 + 5; x++) b.add(x);
+    b.runOptimize();
+    assert.deepEqual(a.dump().chunks[0], { chunk: 0, kind: 'array', count: 35, runs: 0 });
+    assert.deepEqual(b.dump().chunks[0], { chunk: 0, kind: 'smallRuns', count: 35, runs: 21 });
+    assert.equal(a._sTop, 1, 'a small slot is free after the call');
+    assert.equal(poolError(a), null);
+    const st = c28State(a);
+    a.runOptimize();
+    assert.equal(c28State(a), st, 'runOptimize keeps the array (F6)');
+    assert.equal(a.size, b.size);
 });
 
 test('RoaringRange white-box coverage (C-9): the header / summary checks ran, reached bitmaps and the model', () => {

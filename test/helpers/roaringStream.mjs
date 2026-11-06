@@ -657,7 +657,7 @@ export const TARGETED = [
     {
         // runOptimize's three conversion bounds at the tie and one key / run past it:
         // array -> runs iff 2 runs < card; runs slab -> array iff 2 card < 4 nRuns;
-        // bitmap -> runs iff runs <= 2047.
+        // bitmap -> array iff card <= 4096 and card < 2 runs, else runs iff runs <= 2047.
         name: 'T runOptimize ties (array 2r == card, runs 2card == 4r, bitmap 2047 / 2048 runs)', U: 1 << 20, maxS: 4, maxL: 8,
         run(X) {
             for (let j = 0; j < 40; j++) fill(X, 0, 10 * j, 10 * j + 2);  // chunk 0: 40 runs x 2 = 80 keys (kind 2)

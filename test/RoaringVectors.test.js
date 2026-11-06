@@ -21,9 +21,10 @@
  *   (b) a 1-hex tamper of an in-memory copy of the vector file fails the comparison at
  *       the tampered checkpoint, and the text comparison;
  *   (c) runOptimize tie mutants of the LIVE text (each anchor count exactly 1, data: URL):
- *       array -> runs `<` -> `<=` (the B1 review's mutant), runs -> array `<` -> `<=`, and
- *       bitmap -> runs `runs <= 2047` -> 2048, each diverging at its named checkpoint of
- *       the targeted ties row.
+ *       array -> runs `<` -> `<=` (the B1 review's mutant), runs -> array `<` -> `<=`,
+ *       bitmap -> runs `runs <= 2047` -> 2048, and bitmap -> array (C-28) `card < 2 runs` ->
+ *       `<=` (the 4,096-key / 2,048-run tie becomes an array), each diverging at its named
+ *       checkpoint of the targeted ties row.
  * A live-vs-vector mismatch is a finding (first divergent checkpoint + op count), never
  * a re-cut from the engine.
  */
@@ -54,6 +55,7 @@ const TIE_MUTANTS = [
     ['array -> runs on a tie', 'if ((runs << 1) < card && runs <= 2048) {', 'if ((runs << 1) <= card && runs <= 2048) {', 'array-tie'],
     ['runs -> array on a tie', '} else if ((card << 1) < (nRuns << 2)) {', '} else if ((card << 1) <= (nRuns << 2)) {', 'runs-tie'],
     ['bitmap -> runs at 2048 runs', 'if (runs > 0 && runs <= 2047) {', 'if (runs > 0 && runs <= 2048) {', 'bitmap-2048-runs'],
+    ['bitmap -> array on a tie (C-28)', 'if (card <= 4096 && card < (runs << 1)) {', 'if (card <= 4096 && card <= (runs << 1)) {', 'bitmap-2048-runs'],
 ];
 
 /** C-3 byteLength (direct). */

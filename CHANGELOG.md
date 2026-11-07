@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-06
+
 ### Added
 
 - **`RoaringSet` (0.6.0): a compressed ordered set over a fixed universe.**
@@ -108,8 +110,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Torture: the RoaringSet R section.** `npm run torture` runs paged and direct
   jobs, the set-op and addRange lanes, a page-churn lane and two retention jobs; the
   GATE line carries `roaring lanes=93/93 churn=1/1 ctl=19/19 hiExcess=2097144/2097144/
-  1048568/1048568 hiPaged=2097144/2097144/1048568/1048568 rangeExcess=-32/-32 leak=size 0/0 tf=UNCHECKED` (count gates, 1 run,
-  Node v26.8.2). Its 19 must-fail controls (11 named + 4 high-key box controls per
+  1048568/1048568 hiPaged=2097144/2097144/1048568/1048584 rangeExcess=-32/-16 leak=size 0/0 tf=UNCHECKED` (count gates, 1 run,
+  Node v26.8.2, the 0.6.0 release verify run, LogLogN.js baa2818d). Its 19 must-fail controls (11 named + 4 high-key box controls per
   layout) all flip; the high-key controls must read > 0, their magnitude is REPORTED.
   Total torture must-fail controls: 29 older + 19.
 - **`npm run witness:roar` (REPORTED).** `test/witness-roar.mjs`: RoaringSet vs
@@ -124,8 +126,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `@ts-expect-error` negatives); README, `llms.txt` and `GUIDE.md` gain RoaringSet
   sections with the exact byteLength rows pinned by `test/DocSync.test.js`.
 - **Gates at this tree (DETERMINISTIC).** `npm test`: 1168 tests, 1167 pass, 1 skipped
-  (the opt-in DEEP small-scope run), 0 fail (2026-11-06, Node v26.8.2; the 1167-test boundary run on a
-  PRELIMINARY host, load1 5.29 -> 15.32, plus the one DocSync control test added after it).
+  (the opt-in DEEP small-scope run), 0 fail (2026-11-06, Node v26.8.2, LogLogN.js baa2818d; the 0.6.0
+  release verify run, 1 run, on a PRELIMINARY host, load1 5.04 -> 10.11). The same `npm run verify` exited 0:
+  test:types 0; torture GATE leak 0/0, gc 0/0, alloc 0 B/op, R lanes 93/93, R controls 19/19; test:perf 72/72.
 
 ### Changed
 
@@ -691,7 +694,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   / cross-linked recipe, never a drifting reimplementation). Each carries the
   "Recommended resolution -- PENDING USER RATIFICATION at review" stamp.
 
-[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/PeshoVurtoleta/lite-loglogn/compare/v0.3.0...v0.4.0

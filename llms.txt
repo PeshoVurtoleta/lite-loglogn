@@ -1,6 +1,6 @@
 # @zakkster/lite-loglogn
 
-Version: 0.5.0
+Version: 0.6.0
 License: MIT (c) Zahary Shinikchiev <shinikchiev@yahoo.com>
 Runtime dependencies: none. ESM only. ASCII-only source. sideEffects: false.
 Node: >= 18.
@@ -448,7 +448,7 @@ measurements" below (REPORTED, gates nothing).
 ## Gates and measurements (tiered)
 
 - DETERMINISTIC (npm test = 1168 tests, 1167 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail,
-  2026-11-06, Node v26.8.2, LogLogN.js a58bd6cb; counts include one DocSync control test added after the 1167-test boundary run; also npm run verify = test + test:types + torture + test:perf): exact counts (words for
+  2026-11-06, Node v26.8.2, LogLogN.js baa2818d, the 0.6.0 release verify run, 1 run, PRELIMINARY host; also npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset and vEBTree, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
   0 divergences), space pins, tier parity, bytecode-size gates, a parity pin of
@@ -494,7 +494,7 @@ measurements" below (REPORTED, gates nothing).
   attribution + flag pin + coverage floor) = 72 tests in test:perf.
   RoaringSet (DETERMINISTIC; the same GATE line of `npm run torture`, 1 run, Node v26.8.2, count
   gates): `roaring lanes=93/93 churn=1/1 ctl=19/19 hiExcess=2097144/2097144/1048568/1048568
-  hiPaged=2097144/2097144/1048568/1048568 rangeExcess=-32/-32 leak=size 0/0 tf=UNCHECKED`: 93 lanes (direct and paged, plus 5 mixed)
+  hiPaged=2097144/2097144/1048568/1048584 rangeExcess=-32/-16 leak=size 0/0 tf=UNCHECKED`: 93 lanes (direct and paged, plus 5 mixed)
   at 0 B/op, the page-churn lane, 19 must-fail controls flipping (the 8 hi.* box controls
   box only while the call is not inlined, a JIT decision this run does not check (tf=UNCHECKED): a measured
   non-flip is INCONCLUSIVE, exit 2 NO-VERDICT; their magnitude is REPORTED), a leak census of 0. Bytecode (V8 14.6,

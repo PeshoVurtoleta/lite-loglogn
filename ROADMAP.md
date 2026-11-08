@@ -346,7 +346,7 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
         R0 RoaringSet research + measurement  <-- done 2026-11-04; shipped 0.6.0 2026-11-06 (G1..G7 + pre-release audit); Demo next (section 10)
                  |
                  v
-              Demo  (once 3-4 members exist)  <-- done 2026-11-08 (3d7d9c8, repo-only; rides the next release)
+              Demo  (once 3-4 members exist)  <-- done 2026-11-08 (652fc0a, repo-only; rides the search program's 0.6.1 / 0.7.0)
                  |
                  v
         Benchmark-ADOPT (port lite-o1 Bench v2 + double-log fit + crossover foil + memory kernel)
@@ -355,6 +355,9 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
         FusionTree spike S0-S2 (magic or wall, one research session; .handoff/research/fusion/)  <-- RAN early
                  (2026-11-08, parallel research session): WALL at S3; closed. Spin-off: RoaringSet search
                  PROPOSAL (layouts probes L1-L1c; research burst 2026-11-08; .handoff/research/layouts/)
+                 -> RULED 2026-11-08 (Q1-Q5; RESEARCH.md section 17): RoaringSet search program, planner next.
+                 Batch A: branchless _lb16 (0.6.1 alone); batch B: + T-bit offset LUT per array container, ships
+                 only at >= 1.10x over A on a mixed-size 4:1 stream (then 0.7.0); set-op inline searches LEFT (R2)
                  |
                  v
         RoaringSet R2 spike S0-S2 (rank / select; one research session; .handoff/research/roaring-r2/)

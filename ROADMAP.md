@@ -346,13 +346,15 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
         R0 RoaringSet research + measurement  <-- done 2026-11-04; shipped 0.6.0 2026-11-06 (G1..G7 + pre-release audit); Demo next (section 10)
                  |
                  v
-              Demo  (once 3-4 members exist)
+              Demo  (once 3-4 members exist)  <-- done 2026-11-08 (3d7d9c8, repo-only; rides the next release)
                  |
                  v
         Benchmark-ADOPT (port lite-o1 Bench v2 + double-log fit + crossover foil + memory kernel)
                  |
                  v
-        FusionTree spike S0-S2 (magic or wall, one research session; .handoff/research/fusion/)
+        FusionTree spike S0-S2 (magic or wall, one research session; .handoff/research/fusion/)  <-- RAN early
+                 (2026-11-08, parallel research session): WALL at S3; closed. Spin-off: RoaringSet search
+                 PROPOSAL (layouts probes L1-L1c; research burst 2026-11-08; .handoff/research/layouts/)
                  |
                  v
         RoaringSet R2 spike S0-S2 (rank / select; one research session; .handoff/research/roaring-r2/)
@@ -392,6 +394,12 @@ Blockers, precisely:
   over lane-sized keys vs binary search at small k, which nobody measured. Ladder S0 baseline -> S1 SWAR
   rank -> S2 sketch without PEXT -> S3 full node (only if S2 passes):
   `.handoff/research/fusion/INTAKE-2026-11-07.md`.
+  **Result (2026-11-08, PRELIMINARY; RESEARCH.md section 16):** the ladder ran early, in a research-only
+  session beside the Demo bursts (maintainer ruling: a spike may run in parallel with a code burst on
+  the same package, confined to its research folder). S1 7-bit SWAR rank won 1.5-1.6x at k = 8-16; S2
+  sat on the 1.25x headroom line; S3, the full node, was 1.8-3.4x SLOWER than a linear scan of k <= 5
+  keys: WALL, spike closed (maintainer, 2026-11-08). Its spin-off, the RoaringSet array-container search
+  (branchless lower bound, optional offset LUT), went to a PROPOSAL.
 
 ---
 
@@ -989,7 +997,9 @@ byte-identical. Order and space bound stated up front on each:
 - **FusionTree** (v0.8.0) -- RESEARCH-TRACK: word-level parallelism packs `w` keys into one
   word; O(log_w n) static predecessor. Notoriously subtle (sketch compression, msb-differing-bit)
   and w=32-capped in JS -- ship with the honest "why this is hard and when word-parallelism pays"
-  note, not an early ship.
+  note, not an early ship. **WALLED (spike 2026-11-08, RESEARCH.md section 16):** the full static node
+  is 1.8-3.4x slower than a linear scan of k <= 5 keys (no PEXT); no member is planned, and the v0.8.0
+  slot is free. The honest note now lives in RESEARCH.md section 16.
 - **IntUniverseMap** (v0.9.0) -- a composition: any Tier-1 index + a parallel value/handle
   column, turning membership into an ordered integer->payload map. Inherits the chosen index's
   bound and space.
@@ -1025,6 +1035,8 @@ witness AND its honest caveat. Not a near-term queue -- a reserve:
   the pointer form is lite-logn's). Cross-linked, not duplicated.
 - **DynamicFusionNode** -- O(1) predecessor over ~sqrt(w) keys packed in one word (Patrascu-Thorup);
   deeply exotic, w=32-capped; a research note on "how O(1)-within-a-word predecessor is possible."
+  (2026-11-08: the static fusion node's S3 wall, RESEARCH.md section 16, is evidence against a JS
+  word-packed node; this variant itself was not measured.)
 - **ZFastTrie** *(candidate, 2026-10-22; RESEARCH.md 13.3-13.4)* -- O(log log U) predecessor with
   O(n) space and expected-time updates, the practical successor of x-/y-fast. Needs the LevelTable
   (L-03). "y-fast or z-fast": RULED y-fast for 0.4.0 (2026-10-25); z-fast stays here.

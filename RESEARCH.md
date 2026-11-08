@@ -289,7 +289,7 @@ stratified bitset as the practical array-embedded entry point.**
 
 | Structure        | Headline op(s)                        | Bound (flavor)                 | Note |
 |------------------|---------------------------------------|--------------------------------|------|
-| FusionTree       | predecessor / successor                | O(log_w n) worst-case (static) | Word-level parallelism packs `w` keys into one machine word and compares in O(1); beats a BST only for large `w` and is notoriously subtle (sketch compression, most-significant-differing-bit). Likely a RESEARCH-track member with an honest "why this is hard and when it pays" note, not an early ship. In JS w=32 caps the win; label it. |
+| FusionTree       | predecessor / successor                | O(log_w n) worst-case (static) | Word-level parallelism packs `w` keys into one machine word and compares in O(1); beats a BST only for large `w` and is notoriously subtle (sketch compression, most-significant-differing-bit). Likely a RESEARCH-track member with an honest "why this is hard and when it pays" note, not an early ship. In JS w=32 caps the win; label it. (2026-11-08: spike S0-S3 hit a clear WALL at the full node, 1.8-3.4x slower than a linear scan of k <= 5 keys; no member, no fast path -- section 16.) |
 | IntUniverseMap   | successor + a VALUE column (handle)    | inherits the chosen index      | Any Tier-1 member + a parallel value/handle column so it maps integer keys to payloads (the ordered-int-map use case), not just membership. A composition, shipped once the index members exist. |
 | SegmentedU       | 53-bit / split-word keys              | O(log log U) with a 2-level split | The honest answer to "JS bitwise is 32-bit": split a wider key into a high word (a Tier-1 structure) and low words, or use BigInt on a cold path. A labeled variant, not the default. |
 | EliasFano        | successor / predecessor / select / access | successor O(log(U/n)); select O(1) | **SHIPPED IN lite-o1 1.9.0 (amended 2026-10-20; ADR 0025 there): re-adopt, do not rebuild. Since lite-o1 1.11.2, access is O(1) typical / worst-case O(log n).** The SUCCINCT monotone-sequence member: store a sorted set of n keys from [0, U) in ~`n(2 + log2(U/n))` bits -- near the information-theoretic minimum -- with `select(k)` (the k-th key) in O(1) via a rank/select bitvector and `successor` in O(log(U/n)). Old but gold (Elias 1974 / Fano). The space HERO of the family: where vEB is O(U) and y-fast is O(n) pointers, Elias-Fano is compressed n-proportional bits. STATIC (build-once from a sorted array). The niche: huge sparse sorted-integer sets, inverted-index postings, compressed successor. |
@@ -1688,3 +1688,155 @@ candidate roster with its explicit boundary, the space-honesty hook that defines
 implementations, and the demo direction for the lite-loglogn project. It is an internal research
 reference, modeled on lite-logn/RESEARCH.md and lite-o1/RESEARCH.md, and is a PLAN, not a go: no building
 until the user greenlights it, and every member's load-bearing design is settled with the user first.*
+
+## 16. FusionTree spike (2026-11-08) -- magic or wall: WALL at S3
+
+Method: ROADMAP section 6 "Spike first" (maintainer 2026-11-07). Smallest measurable kernel, add one capability per
+step, a kill criterion fixed before each run, a maintainer ruling between steps. It ran as a research-only session
+beside Demo burst 2 / 3 (maintainer ruling 2026-11-08). Probes, logs and the full per-step notes are in
+`.handoff/research/fusion/PROGRESS.md` (the decision sheet); the input is `.handoff/research/fusion/INTAKE-2026-11-07.md`.
+Nothing here touched LogLogN.js.
+
+Every number is PRELIMINARY: one shared, busy host (load1 2.4 -> 10, baseline 2.21), Node v26.8.2 / V8
+14.6.202.34-node.28, Apple M4 Pro x12. Per-run provenance is in the PROGRESS file. No claim below enters README,
+llms.txt or CHANGELOG.
+
+### 16.1 The ladder
+
+| step | question | result | verdict |
+|---|---|---|---|
+| S0 | best scalar predecessor over k sorted keys, k 2-128, widths 8 / 16 / 32 | crossover k* = 16 at every width; linear for k <= 4, a tie at k = 8, Eytzinger for k >= 16 (1.2-4.8x over linear, 1.5-2.6x over plain branchy binary); branchless binary within noise of Eytzinger up to k = 64; no width effect (all in L1); 0 B/op | DONE |
+| S1 | SWAR rank on Int32 lanes, no sketch | 7-bit keys (4 lanes per word) WIN 1.5-1.6x at k = 8 and 16 (1.80 vs 2.89 ns; 2.37 vs 3.77 ns, both runs within 4%); borderline at k = 32; LOSE from k = 64; 15-bit keys (2 lanes) never win robustly | WIN (narrow) |
+| S2 | sketch without PEXT, k <= 5 32-bit keys | byte-LUT sketch alone 0.63x of S0's best at 256 nodes (no WALL-A); the r-step loop sketch loses to linear there; LUT sketch + one-word rank 0.79 / 0.80x (exactly on the 1.25x line, WALL-B borderline) | borderline |
+| S3 | the full static fusion node, true predecessor, k <= 5 | 2.68x SLOWER than a linear scan of 5 keys at 256 nodes (9.9 vs 3.7 ns), 1.8-3.4x slower in every cell, 1.84x slower even with every table L1-hot; the second half (neighbour choice by clz32, two data-dependent branches, phantom-key mask, second sketch + rank) costs ~7 ns vs ~2.8 ns for the first | WALL (clear) |
+
+Outcome (maintainer, 2026-11-08: "Close spike, hand off"): no FusionTree member and no fusion fast path. The first
+wall is S3, as the literature predicted (INTAKE-2026-11-07 section 1: no published fusion node beats a B-tree-style
+node, even with PEXT). In 32-bit JS the word holds k <= 5 keys, and a linear scan of 5 keys wins.
+
+### 16.2 Findings that outlive the spike
+
+- **Single-compilation A/A bias (harness).** An identical second compilation of the same branchy kernel ran up to
+  ~20% faster or slower, reproducibly, in the same cells across runs (likely code placement / branch-predictor
+  aliasing; UNVERIFIED). One compilation per kernel cannot resolve a gap under ~1.25x. Timing each column as 3
+  independent compilations, warmed in a seeded shuffled order, with the per-round time = the median over copies,
+  shrank the bias to 0.93-1.13. Any suite timing that compiles each kernel once has the same blind spot.
+- **The linear / binary crossover is a property of the PAIR.** Sorted linear vs plain branchy binary crosses at
+  n ~ 40-64 (Int32Array and Smi Array); against branchless binary or Eytzinger, at ~16. LiteKeyframe's `n <= 16`
+  (linear, then branchy binary) is safe but conservative for its pair.
+- **SWAR ordered rank works for 7-bit lanes.** It refutes LiteYggdrasil LEDGER #3 ("SWAR helps equality only, not
+  ordered seek") for 7-bit lanes at k = 8-16. It has no landing site here: raw 7-bit keys are better served by a
+  128-bit bitmap (untested foil), and wider keys need a sketch, which eats the margin (S2).
+- **Outside table recheck (maintainer-supplied, 2026-11-08).** An outside "linear (unsorted) vs binary" ops/s table
+  matches SORTED linear early-exit vs BRANCHY binary: the shape HOLDS, magnitudes are 20-40% lower here at n =
+  12-24; read literally as unsorted membership it is WRONG from n = 16; its flat binary curve is a harness artifact
+  (branchy binary grows 2.31x over n = 12 -> 64 here).
+- **Inlining limits.** The SWAR kernels (108-112 B of bytecode) are over Maglev's < 100 B single-inline limit; every
+  win above holds for TurboFan-inlined code only. The monolithic fusion node exceeded TurboFan's 460 B inline
+  budget and boxed (8 B/op) until factored.
+
+### 16.3 Spin-offs (none is a PROPOSAL)
+
+- RoaringSet array containers (<= 4,096 sorted Uint16, up to 13 branchy probes): current search vs branchless binary
+  vs linear vs a top-bits offset LUT, plus the LUT's write cost. Approved by the maintainer 2026-11-08 as the next
+  probe; spec and results in `.handoff/research/layouts/` (INTAKE-2026-11-08.md, PROGRESS.md), which also records the
+  fact-checked layout research (Khuong-Morin arXiv:1509.05053; Algorithmica "Binary Search").
+- A quiet-window re-run of S0-S3 would drop PRELIMINARY; the S3 wall is ~25x the residual A/A bias, so it would not
+  change the verdict.
+
+## 17. RoaringSet array-container search (layouts probes L1-L1c, 2026-11-08)
+
+Method: the spike-first ladder of section 16 (a kill rule fixed before each run, a maintainer ruling between steps),
+run as a research-only session after the FusionTree spike closed. Input: `.handoff/research/layouts/INTAKE-2026-11-08.md`
+(the fact-checked layout research: Khuong-Morin arXiv:1509.05053, Algorithmica "Binary Search", an unsourced LUT
+answer). Probes, logs and per-step notes: `.handoff/research/layouts/PROGRESS.md`. Same S1 harness as section 16: 3
+independent compilations per column, an A/A column, a SLOW must-fail control, an oracle on every op before timing,
+a 0 B/op lane, and the TurboFan tier checked at start and end. Nothing here touched LogLogN.js (sha256 prefix
+baa2818d = v0.6.0). The PROPOSAL built on it is `.handoff/PROPOSAL-roaring-search.md`.
+
+Tiers. The ladder ran PRELIMINARY (one valid run per probe, load1 5.4-10.7 against a 2.21 baseline). A quiet
+confirm then re-ran the four probes unchanged (byte-identical copies, same flags and defaults; only the output
+paths moved) in ONE `quiet-lock run --strict` hold: host QUIET at the lock (2026-11-08 02:33:15Z, load1 3.21, the
+lock's own check), load1 3.4-3.9 during (the probe's own core included), no other busy node at any probe's start
+or end except L1's start (node pid 60598 at 10.2%: the quiet-lock holder process itself); one run per probe, ~3.5 min in all; logs in `.handoff/research/layouts/confirm/logs/`. The numbers below
+are that QUIET run (1 run each, Node v26.8.2 / V8 14.6.202.34-node.28, Apple M4 Pro x12); the PRELIMINARY run agrees
+except where marked. Memory figures are arithmetic; bytecode lengths are DETERMINISTIC on that Node. Nothing here
+enters README, llms.txt or CHANGELOG.
+
+### 17.1 The question and the baseline
+
+`RoaringSet._lb16` (LogLogN.js:2421) is a branchy lower bound, `m = (l + h) >>> 1`, used by all 16 search calls
+of the small (k = 1, <= 64 keys) and array (k = 2, 2..4,096 keys in a fixed 8 KB slot; 33..4,096 while a small slot is free) containers: has, add,
+delete, successor, predecessor, `_chunkHasLo`, `_rangeScanN` / `_rangeScanR`. At n = 4,096 it makes 12-13 probes,
+about half of them mispredicted on random queries. The probes copy it verbatim (and the has / predecessor tails,
+the container's `copyWithin` writes, `_promoteSmallToArray`'s copy loop and `_demoteBitmapToArray`'s decode).
+
+### 17.2 The ladder (QUIET confirm)
+
+| step | question | result | verdict |
+|---|---|---|---|
+| L1 | read kernels vs `_lb16` at n = 32..4,096, 1 and 64 containers; the LUT's write upkeep | branchless lower bound (bfb) WINs in all 32 read cells: has x0.50-0.73, predecessor x0.49-0.76 (pred n = 4,096: 22.4 vs 43.3 ns L1-hot, 38.3 vs 59.5 ns over 64 containers); a top-bits offset LUT + bfb in the bucket x0.22-0.35 (T = 6) / x0.33-0.49 (T = 4); linear never wins from n = 64; LUT write pair x1.53 at n = 32, x0.99 at n = 4,095 (T = 6, 64 containers) | PASS |
+| L1b | real mixed streams (predecessor or insert + delete pair, random container of 64), 1:1 and 4:1 | bfb alone: mF / mC 0.86-1.03 in uniform pools, 0.88 / 0.72 in the mixed-size pool; a LUT in EVERY array container (mL): mL / mF 0.81-0.84 (1:1) and 0.61-0.69 (4:1) at n >= 128, 0.91 / 0.76 mixed; a 256-key hybrid (mH) >= 1.10x over bfb in the same 7 / 12 cells as PRELIMINARY | KEEP LUT |
+| L1c | the LUT's cost at conversions and in the tightest small <-> array churn cycle; T = 5 / 6 / 7 | churn cycle (build + 32 deletes + 32 re-inserts) CHEAPER with the LUT at T = 5 (-213 of 2,704 ns, x0.92); T = 6 ties (-42 ns, x0.99 [0.98..1.00]); build +121 ns on a 36 ns small -> array copy, +3.5 us on a 4.6 us bitmap -> array decode (T = 5); mixed pool vs bfb: T = 5 x0.90 / x0.77, T = 6 x0.91 / x0.72, T = 7 x0.98 / x0.78 (1:1 / 4:1) | KEEP (b); T open |
+
+Controls (QUIET): L1 A/A drifted in 11 / 48 cells (0.84-1.13; under the 1/4 rule), L1b in 1 / 12 (1.061), L1c
+churn and T sweep in none; SLOW x1.54-x9.00, ok in every cell; every kernel copy 0 B/op; every runner TurboFan at
+start and end; state restored after every lane. All four probes exit 0.
+
+### 17.3 Findings
+
+- **bfb is a drop-in.** Same sorted layout, no upkeep, no memory; every `_lb16` site gains. Reads 1.3-2.0x; once the
+  writes' `copyWithin` is in the stream, 1.0-1.4x (the memmove dominates a write; at n = 32 and 1:1 it is a tie,
+  mF / mC 1.03 in a cell whose A/A drifted to 1.061).
+- **The LUT is the bigger read win and pays for itself.** 2^5 + 1 = 33 Uint16 offsets on the key's top 5 bits =
+  66 B per 8 KB large slot (0.8%; arithmetic). Upkeep is a +1 / -1 on <= 32 offsets per array write, beside the
+  memmove. Over today's search (mC), a LUT in every array container is 0.78-1.00 (1:1) and 0.53-0.61 (4:1) in
+  uniform pools, 0.80 / 0.53 in the mixed pool. Small containers (64-key slots) are out of scope.
+- **A threshold only helps below it, and only by losing.** The 256-key hybrid gives the LUT's win away in n <= 128
+  pools (mH / mF 1.00 vs mL / mF 0.84 / 0.65 at n = 128) and is within the A/A band of mL everywhere else (QUIET
+  mixed pool: 0.92 vs 0.91 at 1:1, 0.78 vs 0.76 at 4:1). The PRELIMINARY run showed a wider mixed-pool gap at 4:1
+  (0.83 vs 0.71) that the QUIET run does not reproduce.
+- **T is 5 or 6, not settled.** At 1:1 T = 5 and T = 6 tie (mL5 / mL6 0.986 [0.96..1.00]); at 4:1 T = 6 is faster
+  (1.083 [1.03..1.14]; PRELIMINARY: a tie, 1.000). T = 5 has the cheaper writes: the churn row (-213 vs -42 ns), the
+  65-key build (+121 vs +177 ns) and half the table (66 vs 130 B). T = 7 loses at both mixes in QUIET (PRELIMINARY 4:1: a tie, 1.012; up to 128 increments
+  per write; build x9.4 on the 65-key promotion). T = 4 reads slower than T = 6 in every L1 cell.
+- **A one-pass build looks cheaper on long containers (NO verdict: l1d exit 2, PENDING).** `l1d-build.mjs` (derived
+  from l1c-churn by count-checked replacements) adds a one-pass build over the sorted keys (t[u] set at each bucket
+  boundary; no count chain, no prefix sum). Its run exits 2: the b65 cell's A/A drifted (0.925, 1 of 2 cells), so no
+  claim at 65 keys (+107 vs +118 ns, inside the drift). The b2048 cell's own controls passed (A/A 0.979, SLOW x2.40):
+  one-pass +1,405 ns vs count-then-prefix +3,114 ns on the 2,048-key demotion, 0.45x the build cost.
+- **The probes never inline the LUT write.** `wL` (two LUT searches + two upkeep loops, 532 B of bytecode) is over
+  TurboFan's 460 B per-callee limit, so every LUT write in L1 / L1b paid a real call (biased AGAINST the LUT).
+  Candidate method bodies (`confirm/bc-sizes.mjs`): `_lb16` today 61 B, the bfb body 98 B (2 B under Maglev's
+  100 B single-inline limit), a T = 5 LUT search helper 153 B, the +1 upkeep loop 54 B.
+- **The writer inventory is small.** An array container is entered at 5 sites (`_promoteSingle` large path,
+  `_promoteSmallToArray`, `_demoteBitmapToArray`, runOptimize run -> array, `_rangePart` with an array target) and
+  written in place at 2 (`add`, `delete`); every exit (to small, bitmap, run, single, full via addRange, clear) leaves a dead
+  table and costs nothing. A torture invariant "stored LUT == LUT recomputed from the keys" covers all of them.
+- **Prior art agrees.** Khuong-Morin: for small n, sorted order with a good (branchless) binary search is best;
+  Eytzinger wins for larger STATIC arrays only. A RoaringSet container is dynamic and <= 8 KB (L1), so Eytzinger
+  would need a rebuild per write: not a candidate. JS has no prefetch, so Algorithmica's prefetched Eytzinger has no
+  analogue here (INTAKE-2026-11-08 section 1).
+
+### 17.4 Not measured
+
+- Run-container conversions: runOptimize run -> array (E4), and the `_addRun` / `_deleteRun` spills, which reach
+  kind 2 through `_demoteBitmapToArray` (E3, up to 4,095 keys). Each build is the same build over the keys written
+  (cost linear in n, as at b65 / b2048); not timed separately.
+- The real engine. Every probe copies RoaringSet's code into a harness; the deciding A/B is the coder batch's, on
+  LogLogN.js itself.
+
+### 17.5 The set-op inline searches (L1e) and the rulings
+
+The two binary searches outside `_lb16` (`_intersectArrayArray`, gallop + window search; `_intersectArrayRun`, over
+run ends) were timed copied vs branchless in the window (`confirm/l1e-inter.mjs`, rule fixed before the run). QUIET, one run (`quiet-lock run --strict`, 03:07:35Z, load1 2.80 at the lock; exit 0; A/A drift 1 / 5 cells),
+branchless window / branchy window: array x array 64 x 4,096 x1.33 [1.31..1.34], 512 x 4,096 x1.00, 4,096 x 4,096
+x0.89 [0.89..0.90]; array x run 256 keys x 2,048 runs x1.15 [1.13..1.15] (that cell's A/A drifted, 1.073), 4,096 keys
+x0.74 [0.73..0.74]; SLOW x2.04-x2.83 ok in every cell, every kernel copy 0 B/op, every runner TF start + end.
+Rule: LEAVE for both functions (each has a cell slower beyond the A/A band). Log: `.handoff/research/layouts/confirm/logs/l1e-q-2026-11-08.{log,json}`.
+The branchless window always walks the whole gallop window, where the branchy one can stop at an equal key.
+
+Rulings (maintainer, 2026-11-08; PROPOSAL section 7): adopt the branchless `_lb16` (a); ship the offset LUT (b) as a
+second batch only if the real engine shows >= 1.10x over (a) on a mixed-size 4:1 stream, with T = 5 vs 6 decided
+there (a tie or split ships T = 5); (a) alone is a patch (0.6.1), (a) + (b) a minor (0.7.0); leave the set-op
+searches as shipped (a size-conditioned variant is an R2 question).

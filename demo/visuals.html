@@ -1,0 +1,933 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lite-loglogn -- speed and space, side by side</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #050a08;
+    --bg: oklch(0.14 0.012 165);
+    --panel: #0c1512;
+    --panel: oklch(0.19 0.016 165);
+    --well: #07110c;
+    --well: oklch(0.16 0.018 160);
+    --edge: #1d2b25;
+    --edge: oklch(0.28 0.022 165);
+    --text: #cfe8d8;
+    --text: oklch(0.91 0.035 160);
+    --dim: #7fa591;
+    --dim: oklch(0.69 0.05 160);
+    --accent: #9fe3bf;
+    --accent: oklch(0.86 0.09 160);
+    --set: #37e08a;
+    --set: oklch(0.80 0.19 152);
+    --space: #46b0ff;
+    --space: oklch(0.72 0.15 245);
+    --hot: #ffcf5a;
+    --hot: oklch(0.87 0.15 85);
+    --bad: #ff6a6a;
+    --bad: oklch(0.70 0.19 25);
+    --btn: #12261c;
+    --btn: oklch(0.24 0.04 160);
+    --btn-hi: #17301f;
+    --btn-hi: oklch(0.28 0.05 155);
+    --btn-edge: #2b5a44;
+    --btn-edge: oklch(0.42 0.07 160);
+    --on: #113355;
+    --on: oklch(0.30 0.08 250);
+    --on-edge: #4466ff;
+    --on-edge: oklch(0.56 0.20 265);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 0.9rem/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 1.5rem 1rem 4rem;
+  }
+  h1 { font-size: 1.2rem; margin: 0 0 0.25rem; color: #eafff2; color: oklch(0.97 0.02 160); letter-spacing: 0.03rem; }
+  h2 { font-size: 0.95rem; margin: 0 0 0.4rem; color: var(--accent); font-weight: 600; }
+  .sub { color: var(--dim); margin: 0 0 0.9rem; text-align: center; max-width: 62rem; }
+  code { color: var(--accent); }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 0.5rem 0.9rem; align-items: center; justify-content: center;
+    width: 100%; max-width: 66rem; margin-bottom: 1rem;
+    border: 1px solid var(--edge); border-radius: 0.6rem; padding: 0.75rem 1rem; background: var(--panel);
+  }
+  label { color: var(--dim); display: inline-flex; gap: 0.4rem; align-items: center; }
+  output { color: var(--accent); min-width: 3.5rem; }
+  select, input[type="number"] {
+    font: inherit; background: var(--well); color: var(--accent);
+    border: 1px solid var(--btn-edge); border-radius: 0.35rem; padding: 0.2rem 0.4rem;
+  }
+  input[type="number"] { width: 7rem; }
+  input[type="range"] { width: 8rem; accent-color: var(--set); }
+  button {
+    font: inherit; font-size: 0.82rem; background: var(--btn); color: var(--accent);
+    border: 1px solid var(--btn-edge); border-radius: 0.35rem; padding: 0.3rem 0.8rem; cursor: pointer;
+  }
+  button.on { background: var(--on); border-color: var(--on-edge); }
+  button:disabled { opacity: 0.45; cursor: progress; }
+  @media (hover: hover) {
+    button:hover:not(:disabled) { background: var(--btn-hi); }
+    button.on:hover:not(:disabled) { background: var(--on); border-color: var(--hot); }
+    canvas:hover { border-color: var(--btn-edge); }
+  }
+  .headline {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; width: 100%; max-width: 66rem;
+  }
+  .headline .dial { min-width: 0; overflow-wrap: anywhere; }
+  .readouts {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: 0.4rem 1rem;
+    width: 100%; max-width: 66rem; margin: 0.75rem 0;
+    border: 1px solid var(--edge); border-radius: 0.6rem; padding: 0.6rem 1rem; background: var(--panel);
+  }
+  .readouts p { margin: 0; color: var(--dim); font-size: 0.8rem; }
+  .readouts b { color: var(--accent); font-weight: 600; }
+  .note { color: var(--hot); }
+  .dial {
+    border: 1px solid var(--edge); border-radius: 0.6rem; background: var(--panel); padding: 0.6rem 0.8rem;
+  }
+  .dlab { color: var(--dim); font-size: 0.75rem; display: flex; justify-content: space-between; gap: 0.5rem; }
+  .tag { color: var(--hot); font-size: 0.68rem; }
+  .dval { font-size: 1.05rem; color: var(--text); margin-top: 0.1rem; }
+  .headline .dval { font-size: 1.35rem; }
+  .dsub, .band, .caveat { color: var(--dim); font-size: 0.72rem; }
+  .bar {
+    position: relative; height: 0.55rem; margin-top: 0.25rem; overflow: hidden;
+    background: var(--well); border: 1px solid var(--edge); border-radius: 0.3rem;
+  }
+  .bar > span { position: absolute; inset: 0 auto 0 0; width: var(--fill, 0%); background: var(--set); opacity: 0.85; }
+  .space .bar > span { background: var(--space); }
+  .maxbar .bar > span { background: var(--hot); }
+  .status { color: var(--dim); margin: 0.25rem 0 0.75rem; min-height: 1.2rem; text-align: center; max-width: 62rem; }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(30rem, 1fr)); gap: 1rem;
+    width: 100%; max-width: 66rem;
+  }
+  .panel { border: 1px solid var(--edge); border-radius: 0.6rem; background: var(--panel); padding: 0.6rem 0.75rem 0.75rem; }
+  .panel.sel { border-color: var(--btn-edge); box-shadow: 0 0 0 1px var(--btn-edge); }
+  .phead { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; margin-bottom: 0.3rem; }
+  .pname { color: #eafff2; color: oklch(0.97 0.02 160); font-size: 0.98rem; }
+  .pkind { color: var(--dim); font-size: 0.72rem; text-align: right; }
+  canvas {
+    display: block; width: 100%; height: auto; touch-action: none;
+    border: 1px solid var(--edge); border-radius: 0.4rem; background: #04120c; background: oklch(0.15 0.025 160);
+  }
+  .dials { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem; }
+  .dials .dial { padding: 0.4rem 0.55rem; background: var(--well); }
+  .maxbar { margin-top: 0.45rem; }
+  .foil { width: 100%; max-width: 66rem; margin-top: 1rem; }
+  .foil .panel { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; align-items: start; }
+  .foil .phead { grid-column: 1 / -1; }
+  .foil .dials { display: contents; }
+  .foil .maxbar { margin-top: 0; border: 1px solid var(--edge); border-radius: 0.6rem; padding: 0.4rem 0.55rem; background: var(--well); }
+  .foot { margin-top: 1.5rem; color: #46604f; color: oklch(0.45 0.04 160); font-size: 0.7rem; text-align: center; max-width: 58rem; }
+  @media (max-width: 40rem) {
+    .foil .panel { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+  <h1>lite-loglogn &mdash; speed and space, side by side</h1>
+  <p class="sub">
+    One shared seeded integer op-stream drives five ordered sets and an O(log n) foil.
+    Every panel is drawn from that member's live snapshot (<code>dump()</code>, or the demo's
+    vEB decoder) &mdash; no shadow state. The speed dial never appears without the space
+    dial beside it. Live timings are <b>live, approximate</b> browser measurements; beside
+    each one, the witness lane line names the harness lane behind the bound and its tier
+    (GATED or REPORTED), with its rounds, widths and n set, copied from the witness harnesses.
+  </p>
+
+  <section class="controls" aria-label="controls">
+    <label>structure <select id="structure"></select></label>
+    <label>workload
+      <select id="kind">
+        <option value="mixed">mixed (add / delete / successor / predecessor)</option>
+        <option value="query">query (successor / predecessor)</option>
+        <option value="churn">churn (add / delete)</option>
+      </select>
+    </label>
+    <label>seed <input id="seed" type="number" step="1"></label>
+    <label>U <input id="ulog" type="range"> <output id="uOut"></output></label>
+    <label>n <input id="nlog" type="range"> <output id="nOut"></output></label>
+    <button id="play" type="button">play</button>
+    <button id="stepBtn" type="button">step</button>
+    <label>speed <input id="speed" type="range"> <output id="speedOut"></output></label>
+    <button id="sweepN" type="button">sweep-n</button>
+    <button id="sweepU" type="button">sweep-U</button>
+  </section>
+
+  <section class="headline" aria-label="headline dials">
+    <div class="dial speed">
+      <div class="dlab"><span>speed &mdash; <span id="hName"></span></span><span class="tag">live, approximate</span></div>
+      <div class="dval" id="hSpeed"></div>
+      <div class="bar"><span id="hSpeedBar"></span></div>
+      <div class="band" id="hBand"></div>
+    </div>
+    <div class="dial space">
+      <div class="dlab"><span>space &mdash; byteLength, bytes/key, bytes/U-slot</span></div>
+      <div class="dval" id="hSpace"></div>
+      <div class="dsub" id="hSpaceSub"></div>
+      <div class="bar"><span id="hSpaceBar"></span></div>
+    </div>
+  </section>
+
+  <section class="readouts" aria-label="readouts">
+    <p>universe <b id="universe"></b> <span class="note" id="keycap"></span></p>
+    <p>crossover vs foil <b id="cross"></b></p>
+    <p>double-log fit <b id="fit"></b></p>
+    <p>timer resolution <b id="res"></b></p>
+  </section>
+
+  <p class="status" id="status">loading -- serve with <code>npm run demo:serve</code> (module imports need http)</p>
+
+  <div class="grid" id="grid"></div>
+
+  <section class="foil" id="foilLane" aria-label="O(log n) foil"></section>
+
+  <template id="panelTpl">
+    <article class="panel">
+      <header class="phead"><span class="pname"></span><span class="pkind"></span></header>
+      <canvas></canvas>
+      <div class="dials">
+        <div class="dial speed">
+          <div class="dlab"><span>speed</span><span class="tag">live, approximate</span></div>
+          <div class="dval sval"></div>
+          <div class="bar"><span class="sbar"></span></div>
+          <div class="band"></div>
+        </div>
+        <div class="dial space">
+          <div class="dlab"><span>space</span></div>
+          <div class="dval pval"></div>
+          <div class="dsub psub"></div>
+          <div class="bar"><span class="pbar"></span></div>
+        </div>
+      </div>
+      <div class="maxbar">
+        <div class="dlab"><span>MAX <span class="mtext"></span></span><span class="tag">live, approximate</span></div>
+        <div class="bar"><span class="mbar"></span></div>
+        <div class="caveat"></div>
+      </div>
+    </article>
+  </template>
+
+  <p class="foot">
+    Repo-only dev artifact; never in the npm tarball. Panels re-derive a successor query's
+    path from the snapshot alone (no public probe counters exist): hover a panel to aim the
+    probe. RoaringSet's dump holds chunk counts, not keys, so its path brackets the answer
+    unless the chunk is full. Live numbers are REPORTED only: measured in this browser on
+    this machine, and never copied into the README.
+  </p>
+
+<script type="module">
+import {
+  MEMBERS, FOIL, KEY_CAP, VEB_U_MAX, SB_U_MAX, N_MAX, BATCH, mulberry32,
+  createEngine, step, runBatch, snapshot, bytesOf, sizeOf, crossover, fitLog2w,
+} from './Visualize.mjs';
+import { RENDERERS, XFT_GUTTER } from './renderers.mjs';
+import * as WITNESS from './witness-data.mjs';
+import { Treap } from '/node_modules/@zakkster/lite-logn/LogN.js';
+
+// --- element refs, cached once at init (lite-law: $-prefixed consts) ----------
+const $structure = document.getElementById('structure');
+const $kind = document.getElementById('kind');
+const $seed = document.getElementById('seed');
+const $ulog = document.getElementById('ulog');
+const $uOut = document.getElementById('uOut');
+const $nlog = document.getElementById('nlog');
+const $nOut = document.getElementById('nOut');
+const $play = document.getElementById('play');
+const $step = document.getElementById('stepBtn');
+const $speed = document.getElementById('speed');
+const $speedOut = document.getElementById('speedOut');
+const $sweepN = document.getElementById('sweepN');
+const $sweepU = document.getElementById('sweepU');
+const $hName = document.getElementById('hName');
+const $hSpeed = document.getElementById('hSpeed');
+const $hSpeedBar = document.getElementById('hSpeedBar');
+const $hBand = document.getElementById('hBand');
+const $hSpace = document.getElementById('hSpace');
+const $hSpaceSub = document.getElementById('hSpaceSub');
+const $hSpaceBar = document.getElementById('hSpaceBar');
+const $universe = document.getElementById('universe');
+const $keycap = document.getElementById('keycap');
+const $cross = document.getElementById('cross');
+const $fit = document.getElementById('fit');
+const $res = document.getElementById('res');
+const $status = document.getElementById('status');
+const $grid = document.getElementById('grid');
+const $foilLane = document.getElementById('foilLane');
+const $panelTpl = document.getElementById('panelTpl');
+
+// --- page constants -------------------------------------------------------------
+const U_LOG2_MIN = 16;                 // U dial: 2^16 .. 2^32
+const U_LOG2_MAX = 32;
+const U_SWEEP_STEP = 4;                // sweep-U: 2^16, 2^20, ..., 2^32
+const N_LOG2_MIN = 8;                  // n dial: 2^8 .. N_MAX
+const N_LOG2_MAX = Math.round(Math.log2(N_MAX));
+const SNAP_BYTES_MAX = 67108864;       // a dump() that copies more than 64 MiB is not drawn live
+const CANVAS_W = 900;
+const CANVAS_H = 280;
+const RING_N = 64;                     // per-lane timing ring (power of 2)
+const RING_MASK = RING_N - 1;
+const WIN = 16;                        // the MAX bar's window, in ops
+const WIN_K = 4;                       // MAX windows timed per lane per frame
+const COLD_MASK = 7;                   // cold tick every 8th frame (~7.5 Hz at 60 Hz)
+const FRAME_WRAP = 0x3fffffff;
+const NS_PER_MS = 1e6;
+const SW_REPS = 31;                    // timed batches per sweep point (median)
+const SW_WARM = 4;
+const NAMES = Object.freeze({
+  sb: 'StratifiedBitset', xft: 'XFastTrie', yft: 'YFastTrie', veb: 'vEBTree', roar: 'RoaringSet',
+});
+const BOUNDS = Object.freeze({
+  sb: 'O(log_32 U) successor, O(U/w) space',
+  xft: 'O(log log U) successor, O(n w) space',
+  yft: 'O(log log U) amortized, O(n) space',
+  veb: 'O(log log U) successor, O(U) space',
+  roar: 'compressed chunks, O(live chunks) space',
+});
+const CAVEATS = Object.freeze({
+  yft: 'y-fast is amortized: a bucket split / merge lands in one window -- the MAX bar shows it, the mean hides it.',
+});
+const FOIL_KEY = FOIL;
+
+// --- the lanes: the five panels (MEMBERS order) + the foil ---------------------------
+const PANEL_KEYS = [];
+for (let i = 0; i < MEMBERS.length; i++) {
+  const k = MEMBERS[i];
+  if (typeof k === 'string' && RENDERERS[k] !== undefined) PANEL_KEYS.push(k);
+}
+const NP = PANEL_KEYS.length;
+const LANE_KEYS = PANEL_KEYS.concat([FOIL_KEY]);
+const NL = LANE_KEYS.length;
+const FOIL_LANE = NP;
+
+const NS_RING = new Float64Array(NL * RING_N);
+const MAX_RING = new Float64Array(NL * RING_N);
+const SORT_BUF = new Float64Array(RING_N);
+const LANE_LIVE = new Uint8Array(NL);
+const DIRTY = new Uint8Array(NL);
+const SPEED_Q = new Int32Array(NL);
+const MAX_Q = new Int32Array(NL);
+const SPACE_B = new Float64Array(NL);
+const SPACE_N = new Float64Array(NL);
+const PROBE = new Float64Array(2);          // [0] pointer clientX, [1] probe key
+const SW_N = new Float64Array(N_LOG2_MAX - N_LOG2_MIN + 1);
+const SW_MEM = new Float64Array(SW_N.length);
+const SW_FOIL = new Float64Array(SW_N.length);
+const SW_W = new Float64Array(((U_LOG2_MAX - U_LOG2_MIN) / U_SWEEP_STEP) + 1);
+const SW_NS = new Float64Array(SW_W.length);
+const SW_SAMP = new Float64Array(SW_REPS);
+const PCT = [];
+for (let k = 0; k <= 100; k++) PCT.push(k + '%');
+const SPEED_TXT = [];
+const SPACE_TXT = [];
+const SPACE_SUB_TXT = [];
+for (let i = 0; i < NL; i++) { SPEED_TXT.push('n/a'); SPACE_TXT.push('n/a'); SPACE_SUB_TXT.push(''); }
+
+// --- per-lane DOM, built once from the template ------------------------------------
+const $CANVAS = [];
+const CTX = [];
+const $SVAL = [];
+const $SBAR = [];
+const $PVAL = [];
+const $PSUB = [];
+const $PBAR = [];
+const $MTEXT = [];
+const $MBAR = [];
+const $PANEL = [];
+const PGEOM = { x: 12, y: 8, w: CANVAS_W - 24, h: CANVAS_H - 16, path: null, note: '' };
+const PROBE_W = new Float64Array(NL);       // per panel: the key-space width the rows are drawn across
+for (let i = 0; i < NP; i++) PROBE_W[i] = PANEL_KEYS[i] === 'xft' ? PGEOM.w - XFT_GUTTER : PGEOM.w;   // xftDraw's rows span geom.w - XFT_GUTTER
+
+function laneBand(key) {
+  // witness-data's lane table, found by shape (an exported array or object of lanes
+  // carrying `widths` and `ns`); the first lane whose id / member is the panel key wins.
+  const exp = Object.keys(WITNESS);
+  for (let e = 0; e < exp.length; e++) {
+    const v = WITNESS[exp[e]];
+    if (v === null || typeof v !== 'object') continue;
+    const ids = Array.isArray(v) ? null : Object.keys(v);
+    const len = ids === null ? v.length : ids.length;
+    for (let i = 0; i < len; i++) {
+      const lane = ids === null ? v[i] : v[ids[i]];
+      if (lane === null || typeof lane !== 'object' || !('ns' in lane) || !('widths' in lane)) continue;
+      if (lane.id === key || lane.member === key) return lane;
+    }
+  }
+  return null;
+}
+
+function listText(a) {
+  // a run-constant list; exact powers of two print as 2^k
+  if (!a || typeof a.length !== 'number' || a.length === 0) return 'n/a';
+  let t = '';
+  for (let i = 0; i < a.length; i++) {
+    const v = a[i];
+    const lg = Math.log2(v);
+    t += (i > 0 ? ', ' : '') + (v >= 64 && lg === Math.round(lg) ? '2^' + lg : String(v));
+  }
+  return t;
+}
+
+function bandText(key) {
+  // The witness lane's run CONSTANTS (rounds, widths, n set) -- no measured number.
+  const lane = laneBand(key);
+  if (lane === null) return 'witness lane: n/a (no witness-data lane for ' + key + ')';
+  return 'witness lane ' + (lane.id || key) + ' (' + (lane.tier || 'tier n/a') + '): K ' +
+    (lane.K === undefined || lane.K === null ? 'n/a' : lane.K) + ' rounds, need ' +
+    (lane.need === undefined || lane.need === null ? 'n/a' : lane.need) +
+    ', w in {' + listText(lane.widths) + '} on ' + (lane.axis || 'log2(w)') +
+    ', n in {' + listText(lane.ns) + '}';
+}
+
+const BAND_TXT = [];
+
+function buildLane(i, key, host) {
+  const frag = $panelTpl.content.cloneNode(true);
+  const panel = frag.querySelector('.panel');
+  panel.querySelector('.pname').textContent = key === FOIL_KEY ? 'lite-logn Treap (foil)' : NAMES[key];
+  panel.querySelector('.pkind').textContent = key === FOIL_KEY
+    ? 'O(log n) on every op of the same stream'
+    : BOUNDS[key];
+  const cv = panel.querySelector('canvas');
+  if (key === FOIL_KEY) {
+    cv.remove();
+    $CANVAS.push(null);
+    CTX.push(null);
+  } else {
+    cv.width = CANVAS_W;
+    cv.height = CANVAS_H;
+    $CANVAS.push(cv);
+    CTX.push(cv.getContext('2d'));
+    cv.addEventListener('pointermove', (ev) => { PROBE[0] = ev.clientX; probeLane = i; probePending = 1; });
+    cv.addEventListener('pointerleave', () => { probeLane = -1; DIRTY[i] = 1; });
+  }
+  $SVAL.push(panel.querySelector('.sval'));
+  $SBAR.push(panel.querySelector('.sbar'));
+  $PVAL.push(panel.querySelector('.pval'));
+  $PSUB.push(panel.querySelector('.psub'));
+  $PBAR.push(panel.querySelector('.pbar'));
+  $MTEXT.push(panel.querySelector('.mtext'));
+  $MBAR.push(panel.querySelector('.mbar'));
+  $PANEL.push(panel);
+  const band = key === FOIL_KEY ? 'witness lane: n/a (the foil is not a witness lane)' : bandText(key);
+  BAND_TXT.push(band);
+  panel.querySelector('.band').textContent = band;
+  panel.querySelector('.caveat').textContent = CAVEATS[key] || '';
+  host.appendChild(frag);
+}
+
+let probeLane = -1;
+let probePending = 0;
+for (let i = 0; i < NP; i++) buildLane(i, PANEL_KEYS[i], $grid);
+buildLane(FOIL_LANE, FOIL_KEY, $foilLane);
+
+for (let i = 0; i < NP; i++) {
+  const o = document.createElement('option');
+  o.value = PANEL_KEYS[i];
+  o.textContent = NAMES[PANEL_KEYS[i]];
+  $structure.appendChild(o);
+}
+
+// --- timer resolution, measured once (cold) ----------------------------------------
+function measureResolution() {
+  let best = Infinity;
+  let t0 = performance.now();
+  for (let i = 0; i < 200000; i++) {
+    const t1 = performance.now();
+    const d = t1 - t0;
+    if (d > 0 && d < best) best = d;
+    t0 = t1;
+  }
+  return best * NS_PER_MS;
+}
+const RES_NS = measureResolution();
+const RES_TXT = RES_NS === Infinity ? 'unknown' : fmtNs(RES_NS);
+
+// --- formatting (cold, ~10 Hz) -------------------------------------------------------
+function fmtNs(ns) {
+  if (ns >= 1e6) return (ns / 1e6).toFixed(2) + ' ms';
+  if (ns >= 1e3) return (ns / 1e3).toFixed(2) + ' us';
+  return ns.toFixed(1) + ' ns';
+}
+
+function fmtBytes(b) {
+  if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GiB';
+  if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MiB';
+  if (b >= 1024) return (b / 1024).toFixed(1) + ' KiB';
+  return b + ' B';
+}
+
+function pow2Text(v) { return '2^' + Math.round(Math.log2(v)); }
+
+function fillPct(f) {
+  const k = (f * 100 + 0.5) | 0;
+  return PCT[k < 0 ? 0 : (k > 100 ? 100 : k)];
+}
+
+// --- state -----------------------------------------------------------------------
+let engine = null;
+let curU = 0;
+let curN = 0;
+let curKind = '';
+let curSeed = 0;
+let speedOps = BATCH;
+let playing = 0;
+let sweeping = 0;
+let rafId = 0;
+let ringHead = 0;
+let ringFill = 0;
+let frameNo = 0;
+let rr = 0;
+let probeRng = mulberry32(1);
+
+function selectedLane() {
+  const k = PANEL_KEYS.indexOf($structure.value);
+  return k < 0 ? 0 : k;
+}
+
+// --- cold: dials ------------------------------------------------------------------
+function medianNs(i) {
+  const n = ringFill;
+  if (n === 0) return -1;
+  SORT_BUF.set(NS_RING.subarray(i * RING_N, i * RING_N + n));
+  const s = SORT_BUF.subarray(0, n).sort();
+  return s[n >> 1];
+}
+
+function updateSpeed(i) {
+  if (LANE_LIVE[i] === 0) return;
+  const ns = medianNs(i);
+  const q = ns < 0 ? -2 : ((ns * 10 + 0.5) | 0);
+  if (q === SPEED_Q[i]) return;
+  SPEED_Q[i] = q;
+  let txt;
+  let f = 0;
+  if (ns < 0) txt = 'n/a (not measured yet)';
+  else if (ns * speedOps < 2 * RES_NS) txt = 'below timer resolution (raise speed)';
+  else {
+    txt = q === 0 ? '< 0.1 ns/op' : (q / 10).toFixed(1) + ' ns/op';
+    f = Math.log10(ns > 1 ? ns : 1) / 4;
+  }
+  SPEED_TXT[i] = txt;
+  $SVAL[i].textContent = txt;
+  $SBAR[i].style.setProperty('--fill', fillPct(f));
+}
+
+function updateMax(i) {
+  if (LANE_LIVE[i] === 0 || ringFill === 0) return;
+  let worst = 0;
+  const base = i * RING_N;
+  for (let k = 0; k < ringFill; k++) if (MAX_RING[base + k] > worst) worst = MAX_RING[base + k];
+  const below = !(worst >= 2 * RES_NS);
+  const q = below ? -3 : ((worst + 0.5) | 0);
+  if (q === MAX_Q[i]) return;
+  MAX_Q[i] = q;
+  if (below) {
+    $MTEXT[i].textContent = 'worst ' + WIN + '-op window: below timer resolution (' + RES_TXT + ')';
+    $MBAR[i].style.setProperty('--fill', PCT[0]);
+    return;
+  }
+  const med = medianNs(i);
+  const ratio = med > 0 && !(med * speedOps < 2 * RES_NS) ? worst / (med * WIN) : 0;
+  $MTEXT[i].textContent = 'worst ' + WIN + '-op window ' + fmtNs(worst) +
+    (ratio > 0 ? ' (' + ratio.toFixed(1) + 'x the median window)' : '');
+  $MBAR[i].style.setProperty('--fill', fillPct(ratio > 1 ? Math.log2(ratio) / 6 : 0));
+}
+
+function updateSpace(i) {
+  const key = LANE_KEYS[i];
+  const bytes = engine === null ? null : bytesOf(engine, key);
+  const size = engine === null ? null : sizeOf(engine, key);     // fresh every cold tick
+  const n = size === null ? -1 : size;
+  const b = bytes === null ? -1 : bytes;
+  if (b === SPACE_B[i] && n === SPACE_N[i]) return;
+  SPACE_B[i] = b;
+  SPACE_N[i] = n;
+  let main;
+  let sub;
+  let f = 0;
+  if (bytes === null) {
+    main = 'n/a';
+    sub = absentText(i, key);
+  } else {
+    main = fmtBytes(bytes);
+    const perKey = n < 0 ? 'bytes/key n/a' : (n === 0 ? 'bytes/key: empty' : (bytes / n).toFixed(1) + ' bytes/key');
+    sub = perKey + ' | ' + (bytes / curU).toPrecision(3) + ' bytes/U-slot';
+    if (n > 0) f = Math.log10(bytes / n > 1 ? bytes / n : 1) / 6;
+  }
+  SPACE_TXT[i] = main;
+  SPACE_SUB_TXT[i] = sub;
+  $PVAL[i].textContent = main;
+  $PSUB[i].textContent = sub;
+  $PBAR[i].style.setProperty('--fill', fillPct(f));
+}
+
+function absentText(i, key) {
+  // Why a lane shows n/a. The "not built above" text only for the real size cap.
+  if (engine === null) return 'build failed, see status';
+  if (i === FOIL_LANE) return 'the foil reports no byteLength';
+  if (key === 'sb' && curU > SB_U_MAX) return 'O(U/w) space: not built above U = ' + pow2Text(SB_U_MAX);
+  if (key === 'veb' && curU > VEB_U_MAX) return 'O(U) space: not built above U = ' + pow2Text(VEB_U_MAX);
+  return 'member not built at this U';
+}
+
+// Last value written per headline node (null = never written, so the first call writes all 7).
+let hNameLast = null;
+let hSpeedLast = null;
+let hSpeedBarLast = null;
+let hBandLast = null;
+let hSpaceLast = null;
+let hSpaceSubLast = null;
+let hSpaceBarLast = null;
+
+function updateHeadline() {
+  // Dirty-checked: a node is written only when its new value differs from the last one written.
+  const i = selectedLane();
+  const name = NAMES[PANEL_KEYS[i]];
+  if (name !== hNameLast) { hNameLast = name; $hName.textContent = name; }
+  const speed = SPEED_TXT[i];
+  if (speed !== hSpeedLast) { hSpeedLast = speed; $hSpeed.textContent = speed; }
+  const speedFill = $SBAR[i].style.getPropertyValue('--fill') || PCT[0];
+  if (speedFill !== hSpeedBarLast) { hSpeedBarLast = speedFill; $hSpeedBar.style.setProperty('--fill', speedFill); }
+  const band = BAND_TXT[i];
+  if (band !== hBandLast) { hBandLast = band; $hBand.textContent = band; }
+  const space = SPACE_TXT[i];
+  if (space !== hSpaceLast) { hSpaceLast = space; $hSpace.textContent = space; }
+  const spaceSub = SPACE_SUB_TXT[i];
+  if (spaceSub !== hSpaceSubLast) { hSpaceSubLast = spaceSub; $hSpaceSub.textContent = spaceSub; }
+  const spaceFill = $PBAR[i].style.getPropertyValue('--fill') || PCT[0];
+  if (spaceFill !== hSpaceBarLast) { hSpaceBarLast = spaceFill; $hSpaceBar.style.setProperty('--fill', spaceFill); }
+}
+
+// --- cold: one panel from its live snapshot ---------------------------------------------
+function redrawPanel(i) {
+  const key = PANEL_KEYS[i];
+  const g = CTX[i];
+  const R = RENDERERS[key];
+  DIRTY[i] = 0;
+  g.clearRect(0, 0, CANVAS_W, CANVAS_H);
+  PGEOM.path = null;
+  if (engine === null || LANE_LIVE[i] === 0) {
+    PGEOM.note = 'n/a -- ' + absentText(i, key);
+    R.draw(g, null, PGEOM);
+    return;
+  }
+  const bytes = bytesOf(engine, key);
+  if (key !== 'veb' && bytes !== null && bytes > SNAP_BYTES_MAX) {
+    PGEOM.note = 'live snapshot off: dump() would copy ' + fmtBytes(bytes) +
+      ' per refresh (O(U) words) -- the dials stay live';
+    R.draw(g, null, PGEOM);
+    return;
+  }
+  const m = R.model(snapshot(engine, key));
+  if (m === null) {
+    PGEOM.note = 'n/a';
+    R.draw(g, null, PGEOM);
+    return;
+  }
+  const KU = curU < KEY_CAP ? curU : KEY_CAP;
+  let x = Math.floor(probeRng() * KU);
+  if (probeLane === i) x = PROBE[1];
+  PGEOM.path = R.path(m, x);
+  R.draw(g, m, PGEOM);
+}
+
+function redrawAll() {
+  for (let i = 0; i < NP; i++) redrawPanel(i);
+  for (let i = 0; i < NL; i++) updateSpace(i);
+  updateHeadline();
+}
+
+// --- cold tick (~7.5 Hz): layout READS first, then writes --------------------------
+function coldTick() {
+  if (probePending === 1 && probeLane >= 0) {
+    const r = $CANVAS[probeLane].getBoundingClientRect();
+    const cx = (PROBE[0] - r.left) * (CANVAS_W / (r.width > 0 ? r.width : CANVAS_W));
+    let key = Math.floor((cx - PGEOM.x) / PROBE_W[probeLane] * curU);
+    if (key < 0) key = 0;
+    if (key > curU - 1) key = curU - 1;
+    PROBE[1] = key;
+    DIRTY[probeLane] = 1;
+    probePending = 0;
+  }
+  for (let i = 0; i < NL; i++) { updateSpeed(i); updateMax(i); }
+  for (let k = 0; k < NP; k++) {
+    rr = rr + 1 < NP ? rr + 1 : 0;
+    if (DIRTY[rr] === 1) { redrawPanel(rr); break; }
+  }
+  for (let i = 0; i < NL; i++) updateSpace(i);
+  updateHeadline();
+}
+
+// --- the frame loop: timing only, numbers into preallocated rings ------------------------
+function frame(now) {
+  // FRAME-LOOP-BEGIN
+  if (playing === 0 || engine === null) { rafId = 0; return; }
+  const ops = speedOps;
+  for (let i = 0; i < NL; i++) {
+    if (LANE_LIVE[i] === 0) continue;
+    const m = LANE_KEYS[i];
+    const t0 = performance.now();
+    runBatch(engine, m, ops);
+    const t1 = performance.now();
+    NS_RING[i * RING_N + ringHead] = (t1 - t0) * NS_PER_MS / ops;
+    let worst = 0;
+    for (let k = 0; k < WIN_K; k++) {
+      const w0 = performance.now();
+      runBatch(engine, m, WIN);
+      const w1 = performance.now();
+      if (w1 - w0 > worst) worst = w1 - w0;
+    }
+    MAX_RING[i * RING_N + ringHead] = worst * NS_PER_MS;
+    DIRTY[i] = 1;
+  }
+  ringHead = (ringHead + 1) & RING_MASK;
+  if (ringFill < RING_N) ringFill = ringFill + 1;
+  frameNo = (frameNo + 1) & FRAME_WRAP;
+  if ((frameNo & COLD_MASK) === 0) coldTick();
+  rafId = requestAnimationFrame(frame);
+  // FRAME-LOOP-END
+}
+
+// --- engine (re)build (cold) ------------------------------------------------------------
+function readControls() {
+  curKind = $kind.value;
+  curSeed = Number($seed.value) >>> 0;
+  curU = Math.pow(2, Number($ulog.value) | 0);
+  curN = Math.pow(2, Number($nlog.value) | 0);
+}
+
+function showUniverse() {
+  const w = Math.ceil(Math.log2(curU));
+  $universe.textContent = 'U = ' + pow2Text(curU) + ' (' + curU + ')  |  w = ' + w +
+    '  |  log2 w = ' + Math.log2(w).toFixed(2);
+  $keycap.textContent = curU > KEY_CAP
+    ? 'keys drawn below ' + pow2Text(KEY_CAP) + ' (Smi cap); byteLength and w follow U'
+    : '';
+  $uOut.textContent = pow2Text(curU);
+  $nOut.textContent = pow2Text(curN);
+}
+
+function resetRings() {
+  NS_RING.fill(0);
+  MAX_RING.fill(0);
+  ringHead = 0;
+  ringFill = 0;
+  SPEED_Q.fill(-1);
+  MAX_Q.fill(-1);
+  SPACE_B.fill(-2);
+  SPACE_N.fill(-2);
+}
+
+function rebuild() {
+  if (sweeping === 1) return;
+  readControls();
+  showUniverse();
+  resetRings();
+  probeRng = mulberry32(curSeed);
+  try {
+    engine = createEngine({ kind: curKind, seed: curSeed, U: curU, n: curN }, Treap);
+  } catch (err) {
+    engine = null;
+    setPlaying(0);
+    $status.textContent = 'could not build the engine: ' + (err && err.message ? err.message : String(err));
+  }
+  for (let i = 0; i < NL; i++) {
+    LANE_LIVE[i] = engine === null ? 0 : (i === FOIL_LANE ? 1 : (bytesOf(engine, LANE_KEYS[i]) === null ? 0 : 1));
+    SPEED_TXT[i] = LANE_LIVE[i] === 0 ? 'n/a' : 'n/a (not measured yet)';
+    $SVAL[i].textContent = SPEED_TXT[i];
+    $SBAR[i].style.setProperty('--fill', PCT[0]);
+    $MTEXT[i].textContent = LANE_LIVE[i] === 0 ? 'n/a' : 'n/a (not measured yet)';
+    $MBAR[i].style.setProperty('--fill', PCT[0]);
+  }
+  if (sweeping === 0) { $cross.textContent = 'run sweep-n'; $fit.textContent = 'run sweep-U'; }
+  redrawAll();
+  if (engine !== null) {
+    $status.textContent = curKind + ' stream, seed ' + curSeed + ', U = ' + pow2Text(curU) +
+      ', n = ' + pow2Text(curN) + ' -- press play';
+  }
+}
+
+function setPlaying(on) {
+  playing = on;
+  $play.textContent = on === 1 ? 'pause' : 'play';
+  $play.classList.toggle('on', on === 1);
+  if (on === 1 && rafId === 0) rafId = requestAnimationFrame(frame);
+}
+
+// --- sweeps (cold, async across frames; never inside the frame loop) ---------------------
+function nextFrame() { return new Promise((res) => requestAnimationFrame(res)); }
+
+function measureLane(e, key) {
+  for (let r = 0; r < SW_WARM; r++) runBatch(e, key, BATCH);
+  for (let r = 0; r < SW_REPS; r++) {
+    const t0 = performance.now();
+    runBatch(e, key, BATCH);
+    const t1 = performance.now();
+    SW_SAMP[r] = (t1 - t0) * NS_PER_MS / BATCH;
+  }
+  SW_SAMP.sort();
+  // A median whose batch is under 2x the timer resolution is unmeasured: NaN, never a number.
+  const med = SW_SAMP[SW_REPS >> 1];
+  return !(med * BATCH >= 2 * RES_NS) ? NaN : med;
+}
+
+function setSweeping(on) {
+  sweeping = on;
+  $sweepN.disabled = on === 1;
+  $sweepU.disabled = on === 1;
+  $sweepN.classList.toggle('on', on === 1);
+  $sweepU.classList.toggle('on', on === 1);
+}
+
+async function sweepN() {
+  if (sweeping === 1 || engine === null) return;
+  setPlaying(0);
+  setSweeping(1);
+  const key = PANEL_KEYS[selectedLane()];
+  const len = SW_N.length;
+  const range = pow2Text(Math.pow(2, N_LOG2_MIN)) + '..' + pow2Text(Math.pow(2, N_LOG2_MAX));
+  let ok = true;
+  for (let k = 0; k < len && ok; k++) {
+    const n = Math.pow(2, N_LOG2_MIN + k);
+    $status.textContent = 'sweep-n: ' + NAMES[key] + ' vs foil at n = ' + pow2Text(n) + ' ...';
+    await nextFrame();
+    let e2 = null;
+    try {
+      e2 = createEngine({ kind: curKind, seed: curSeed, U: curU, n }, Treap);
+    } catch (err) {
+      $status.textContent = 'sweep-n stopped: ' + (err && err.message ? err.message : String(err));
+      ok = false;
+      break;
+    }
+    if (bytesOf(e2, key) === null) {
+      $status.textContent = 'sweep-n: ' + NAMES[key] + ' is not built at U = ' + pow2Text(curU);
+      ok = false;
+      break;
+    }
+    SW_N[k] = n;
+    SW_MEM[k] = measureLane(e2, key);
+    SW_FOIL[k] = measureLane(e2, FOIL_KEY);
+    e2 = null;
+    if (SW_MEM[k] !== SW_MEM[k] || SW_FOIL[k] !== SW_FOIL[k]) {
+      $status.textContent = 'sweep-n: below timer resolution at ' + pow2Text(n) + ' (' + RES_TXT + ')';
+      ok = false;
+      break;
+    }
+  }
+  if (ok) {
+    const at = crossover(SW_N, SW_MEM, SW_FOIL, len);
+    let txt;
+    if (at === null) txt = 'no crossover observed in n ' + range;
+    else if (at <= SW_N[0]) txt = 'at or below ' + pow2Text(SW_N[0]) + ' (smallest tested)';
+    else txt = 'near n = 2^' + Math.log2(at).toFixed(1);
+    $cross.textContent = NAMES[key] + ': ' + txt + ' (live, approximate; at n = ' +
+      pow2Text(SW_N[len - 1]) + ': ' + fmtNs(SW_MEM[len - 1]) + ' vs foil ' + fmtNs(SW_FOIL[len - 1]) + ')';
+    $status.textContent = 'sweep-n done (U = ' + pow2Text(curU) + ', ' + curKind + ')';
+  } else {
+    $cross.textContent = 'n/a';
+  }
+  setSweeping(0);
+}
+
+async function sweepU() {
+  if (sweeping === 1 || engine === null) return;
+  setPlaying(0);
+  setSweeping(1);
+  const key = PANEL_KEYS[selectedLane()];
+  let len = 0;
+  let ok = true;
+  for (let lg = U_LOG2_MIN; lg <= U_LOG2_MAX && ok; lg += U_SWEEP_STEP) {
+    const U = Math.pow(2, lg);
+    $status.textContent = 'sweep-U: ' + NAMES[key] + ' at U = ' + pow2Text(U) + ' ...';
+    await nextFrame();
+    let e2 = null;
+    try {
+      e2 = createEngine({ kind: curKind, seed: curSeed, U, n: curN }, Treap);
+    } catch (err) {
+      $status.textContent = 'sweep-U stopped: ' + (err && err.message ? err.message : String(err));
+      ok = false;
+      break;
+    }
+    if (bytesOf(e2, key) === null) { e2 = null; continue; }
+    SW_W[len] = lg;
+    SW_NS[len] = measureLane(e2, key);
+    if (SW_NS[len] !== SW_NS[len]) {
+      $status.textContent = 'sweep-U: below timer resolution at ' + pow2Text(U) + ' (' + RES_TXT + ')';
+      ok = false;
+      break;
+    }
+    len++;
+    e2 = null;
+  }
+  if (ok) {
+    const fit = fitLog2w(SW_W, SW_NS, len);
+    let pts = '';
+    for (let k = 0; k < len; k++) pts += (k > 0 ? ', ' : '') + 'w ' + SW_W[k] + ': ' + fmtNs(SW_NS[k]);
+    $fit.textContent = NAMES[key] + ': ' + (fit === null
+      ? 'n/a (too few points: ' + len + ')'
+      : 'slope ' + fit.slope.toFixed(2) + ' ns per log2(w), r2 ' + fit.r2.toFixed(3)) +
+      ' (live, approximate; ' + pts + ')';
+    $status.textContent = 'sweep-U done (n = ' + pow2Text(curN) + ', ' + curKind + ')';
+  } else {
+    $fit.textContent = 'n/a';
+  }
+  setSweeping(0);
+}
+
+// --- controls: initial values from the engine constants, never from the HTML ------------
+$ulog.min = String(U_LOG2_MIN);
+$ulog.max = String(U_LOG2_MAX);
+$ulog.step = '1';
+$ulog.value = String(U_LOG2_MIN + 8);
+$nlog.min = String(N_LOG2_MIN);
+$nlog.max = String(N_LOG2_MAX);
+$nlog.step = '1';
+$nlog.value = String(N_LOG2_MAX);
+$speed.min = String(WIN);
+$speed.max = String(BATCH * 8);
+$speed.step = String(WIN >> 1);
+$speed.value = String(BATCH);
+$speedOut.textContent = BATCH + ' ops/frame';
+$seed.min = '0';
+$seed.value = String(0xC0FFEE);
+$kind.value = 'mixed';
+$structure.value = 'yft';
+$res.textContent = RES_TXT + (RES_NS === Infinity ? '' : ' (MAX shows "below timer resolution" under 2x this)');
+
+$kind.addEventListener('change', rebuild);
+$seed.addEventListener('change', rebuild);
+$ulog.addEventListener('input', () => { $uOut.textContent = pow2Text(Math.pow(2, Number($ulog.value) | 0)); });
+$ulog.addEventListener('change', rebuild);
+$nlog.addEventListener('input', () => { $nOut.textContent = pow2Text(Math.pow(2, Number($nlog.value) | 0)); });
+$nlog.addEventListener('change', rebuild);
+$speed.addEventListener('input', () => {
+  speedOps = Math.max(WIN, Number($speed.value) | 0);
+  $speedOut.textContent = speedOps + ' ops/frame';
+  SPEED_Q.fill(-1);
+});
+$structure.addEventListener('change', () => {
+  const s = selectedLane();
+  for (let i = 0; i < NP; i++) $PANEL[i].classList.toggle('sel', i === s);
+  updateHeadline();
+});
+$play.addEventListener('click', () => { if (engine !== null && sweeping === 0) setPlaying(playing === 1 ? 0 : 1); });
+$step.addEventListener('click', () => {
+  if (engine === null || sweeping === 1) return;
+  step(engine);
+  redrawAll();
+});
+$sweepN.addEventListener('click', sweepN);
+$sweepU.addEventListener('click', sweepU);
+
+for (let i = 0; i < NP; i++) $PANEL[i].classList.toggle('sel', i === selectedLane());
+rebuild();
+</script>
+</body>
+</html>

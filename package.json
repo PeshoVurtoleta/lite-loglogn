@@ -37,6 +37,9 @@
     "witness:roar": "node --expose-gc test/witness-roar.mjs",
     "test:perf": "node --expose-gc --max-semi-space-size=4 --test-concurrency=1 --test test/perf/*.test.mjs",
     "inline-budget-diff": "bash test/tools/inlining-budget-diff.sh",
+    "test:demo": "node --expose-gc --test demo/Demo.test.mjs",
+    "demo": "node demo/Visualize.mjs",
+    "demo:serve": "node demo/serve.mjs",
     "verify": "npm test && npm run test:types && npm run torture && npm run test:perf"
   },
   "keywords": [

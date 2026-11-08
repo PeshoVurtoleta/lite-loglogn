@@ -6,6 +6,20 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Demo (repo-only; `demo/` is not in the tarball).** A visualizer page for all five members
+  (`demo/visuals.html` + `renderers.mjs`, engine `Visualize.mjs`, `witness-data.mjs`, a loopback
+  `serve.mjs`, `Demo.test.mjs` + `_demo-alloc-child.mjs`). Live ns/op is labelled live and
+  approximate; beside it the page shows each member's witness lane copied from the witness gates,
+  with a test that fails if the copy drifts. The O(log n) foil is the `@zakkster/lite-logn` Treap on
+  the same op stream (devDependency). The vEBTree panel decodes the tree's private arrays read-only
+  and checks invariants V2-V5 at every internal node and V1 (decoded count) for the whole tree,
+  failing closed on a missing field or an inconsistent decode. `LogLogN.js` is unchanged.
+- **npm scripts `test:demo`, `demo`, `demo:serve`.** `test:demo` runs
+  `node --expose-gc --test demo/Demo.test.mjs`; it is not part of `npm test` or `npm run verify`.
+  `demo` prints the Node-side smoke table; `demo:serve` serves the page on 127.0.0.1.
+
 ## [0.6.0] - 2026-11-06
 
 ### Added

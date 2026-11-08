@@ -796,7 +796,7 @@ DONE WHEN
 ---
 package: "@zakkster/lite-loglogn"
 version_target: repo-only (no version bump; LogLogN.js byte-identical)
-status: planned
+status: done (2026-11-08, Demo burst 3: review r3 + ruling A11, qa PASS; rides the next release per D-3)
 gc_maxMajor: 0
 gc_maxPauseMs: 4
 alloc_bytes_per_op: 0

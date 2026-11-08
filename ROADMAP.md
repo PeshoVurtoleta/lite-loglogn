@@ -343,13 +343,19 @@ StratifiedBitset (v0.2.0)  <-- headline; brings up witness (both sweeps) + tortu
       +--> vEBTree (v0.5.0)    <-- does NOT need LevelTable (flattened typed arrays)
                  |
                  v
-        R0 RoaringSet research + measurement  <-- done 2026-11-04; G1..G7 + pre-release audit done 2026-11-06; 0.6.0 release next (section 10)
+        R0 RoaringSet research + measurement  <-- done 2026-11-04; shipped 0.6.0 2026-11-06 (G1..G7 + pre-release audit); Demo next (section 10)
                  |
                  v
               Demo  (once 3-4 members exist)
                  |
                  v
         Benchmark-ADOPT (port lite-o1 Bench v2 + double-log fit + crossover foil + memory kernel)
+                 |
+                 v
+        FusionTree spike S0-S2 (magic or wall, one research session; .handoff/research/fusion/)
+                 |
+                 v
+        RoaringSet R2 spike S0-S2 (rank / select; one research session; .handoff/research/roaring-r2/)
                  |
                  v
               Tier 2 (EliasFano, RoaringSet, FusionTree, IntUniverseMap, SegmentedU -- one per session)
@@ -376,6 +382,16 @@ Blockers, precisely:
   - **Handshake:** the maintainer agrees on that draft before the member's planner runs.
   - **Limits:** nothing enters LogLogN.js during research. The quiet-lock and provenance rules apply
     to every timing.
+- **Spike first (maintainer, 2026-11-07; Learning/PracticeOfProgramming.md PART 7).** After Demo and
+  Benchmark-ADOPT, research starts from the smallest measurable kernel, measures it against the best
+  existing baseline, adds one capability, and measures again; it stops at the first wall and records it
+  (a wall is a result, kept in RESEARCH.md / LEDGER.md). Each step names its kill criterion before it
+  runs, so "magic or wall" is known in about one session, not after a full member program. First user:
+  FusionTree, whose outside research (2026-11-07, fact-checked) found no published fusion node beating a
+  B-tree node and both measured ones using PEXT; the open question is a packed small node with SWAR rank
+  over lane-sized keys vs binary search at small k, which nobody measured. Ladder S0 baseline -> S1 SWAR
+  rank -> S2 sketch without PEXT -> S3 full node (only if S2 passes):
+  `.handoff/research/fusion/INTAKE-2026-11-07.md`.
 
 ---
 
@@ -951,7 +967,7 @@ byte-identical. Order and space bound stated up front on each:
   (b) lite-pick ConsistentHash uses a Maglev table (O(1)); a Karger ring would be a successor query
   over the 32-bit hash space -- a possible REPORTED recipe / foil ("Maglev vs ring successor:
   XFastTrie / sorted array"). Source: LitePick/.handoff/XPKG-loglogn.md.
-- **Hybrid tiered bitset** (PROPOSED, maintainer 2026-10-22; name and version slot open; its likely
+- **Hybrid tiered bitset** (FOLDED, maintainer 2026-11-07; was PROPOSED 2026-10-22, no version slot; its likely
   shape is the Dementiev et al. 2004 Stree -- a 2^16 root array, hashed 8-bit levels, a summary
   pyramid on every level -- RESEARCH.md 13.4 row 1) -- one
   ordered integer set that picks the best tier for its universe and workload, Timsort-style:
@@ -963,6 +979,13 @@ byte-identical. Order and space bound stated up front on each:
   which already adapts by density; if it adds nothing, it folds into one of them. Gates: a
   parity fuzz against each tier's general form; tier-boundary mutants (U = 32/33, 1024/1025,
   2^25/2^25+1); speed claims REPORTED only (D-host: no CI).
+  **Evidence for that pass (outside research, fact-checked 2026-11-07; `.handoff/research/hybrid/INTAKE-2026-11-07.md`):**
+  the only post-2004 measurements of Stree (Nash and Gregg, JEA 2010; Dinklage et al., SEA 2021) put it behind
+  burst tries, and in 2021 it was the slowest and most memory-hungry structure (~1,480 bits / key at n = 2^29,
+  out of 256 GB at 2^30); the 2021 winner at 32 bits is Roaring-shaped (2^16 buckets, list <-> bit vector with
+  hysteresis), which RoaringSet ships; the tier dispatch saves no words (0.2.0 planner FINDING 19); bulk ops are
+  surface planned in RoaringSet R2. **Ruled FOLD (maintainer, 2026-11-07):** no member; the bulk and / or / xor /
+  popcount surface goes to RoaringSet R2; a StratifiedBitset bulk-ops research burst only if a consumer appears.
 - **FusionTree** (v0.8.0) -- RESEARCH-TRACK: word-level parallelism packs `w` keys into one
   word; O(log_w n) static predecessor. Notoriously subtle (sketch compression, msb-differing-bit)
   and w=32-capped in JS -- ship with the honest "why this is hard and when word-parallelism pays"
@@ -1088,7 +1111,7 @@ does not touch the code path where the hazard lives is a green light over a hole
 
 ---
 
-## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [GROUPS DONE: G1 + G2 2026-11-04, G3 / G4 / G5 2026-11-05, G6 / G7 2026-11-06; pre-release audit + fixes done 2026-11-06; 0.6.0 release next]
+## 10. Research intake (2026-10-20) -- RoaringSet with a summary pyramid  [SHIPPED (0.6.0, 2026-11-06; release verify exit 0 on a PRELIMINARY host: npm test 1168, torture R 93/93, test:perf 72/72; ADR 0010 ACCEPTED); Demo next]
 
 **Sources:** `RESEARCH.md` section 12 (the design), and `../Research/BITWISE_RESEARCH.md`
 section 10 (the generalization rule, the five tests, the bitset size ladder). Nothing here is
@@ -1200,6 +1223,13 @@ which fits this family's bounded-in-U theme (section 2).
   - in-word select by lookup table (RESEARCH.md 14.7);
   - the cross-chunk prefix as a Fenwick tree (a tax on every add) or a cold `buildRank()` (freezes the set): maintainer call;
   - writing set ops with lazy cardinality (a dirty bitset beside `_card`).
+  - Outside research, fact-checked 2026-11-07 (`.handoff/research/roaring-r2/INTAKE-2026-11-07.md`): no
+    32-bit core caches a cross-container prefix (Java FastRankRoaringBitmap caches one, invalidated by a flag
+    on every write; Roaring64NavigableMap keeps a dirty watermark); run cardinality is cached nowhere upstream
+    (ours caches it in `_card`); in-word select upstream is popcount halving + <= 7 lowest-bit clears, no PDEP.
+    Two further options for the cross-chunk prefix: the dirty watermark, and a count pyramid shaped like
+    `_top` (+2 increments per write, bounded reads). lite-pick needs only the in-chunk part (cap <= 2^16 is one
+    chunk). The R0 ruling (cold `buildRank()`) stands until the spike's decision sheet is handshaken.
 - **Input for R3 / R4:** a private snapshot is a copy of the six typed arrays. The portable format stays R3.
 - **Open:**
   - the version slot and the ADR number: ruled at R0 (0.6.0; decisions/0010).
@@ -1230,14 +1260,14 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   documented `runOptimize` cadence. R2 rank: a cold `buildRank()`. The planner shrinks successor / predecessor
   (both over the 460 B single-inline limit).
 - Version slot 0.6.0; ADR `decisions/0010-roaringset.md`.
-- PROPOSAL pass RULED (2026-11-04; `.handoff/PROPOSAL-roaringset.md`): Q-1 the layout is paged iff its metadata is
+- PROPOSAL pass RULED (2026-11-04; `.handoff/archive/0.6.0/PROPOSAL-roaringset.md`): Q-1 the layout is paged iff its metadata is
   smaller than the direct table at the given maxPages / pageBits; maxPages defaults to all pages, so the default
   set is direct at every U (amends D-R1: paged at 2^32 when maxPages <= 254, pb8). Q-2 one class `RoaringSet` with
   a readonly `paged`. Q-3 `addRange(lo, hi)` half-open, fail-closed (precount, RangeError before any write).
   Q-4 positional (universe, maxSmall = 1024, maxLarge = 256, maxPages = all, pageBits = 8), universe required in
   [1, 2^32], no KNOBS. Q-5 R1 has no iterator / rank / select; `dump()` ships; R2: buildRank + rank / select,
   successorInto, vb2 size classes, deleteRange, forEach.
-- Planners done (2026-11-04): 7 group plans and one SPEC (`.handoff/SPEC-roaringset.md`, CURRENT C-1..C-20).
+- Planners done (2026-11-04): 7 group plans and one SPEC (`.handoff/archive/0.6.0/SPEC-roaringset.md`, CURRENT C-1..C-20).
   `_q` is dropped, so every byteLength is 24 B lower than the drafts' (2^32 default 3,036,180 B). runOptimize lands
   with the engine core; the paged hooks land with it too, so paging leaves the hot bodies byte-identical. Timing is
   REPORTED by a new `npm run witness:roar` (outside verify). Rulings: TurboFan / non-inlined lanes REPORTED only;
@@ -1289,6 +1319,9 @@ Output: the best-version draft, plus a decision sheet for the maintainer handsha
   changes no chunk (addRange mirrors it); torture's JIT box controls (vEBTree CV7, the 8 RoaringSet hi.*) report
   INCONCLUSIVE, exit 2, at an unchecked tier instead of FAIL (CR-box and CV9 keep FAIL); README / llms / d.ts /
   CHANGELOG / ADR 0010 corrected (bitmap range, addRange first-chunk exception, runOptimize rules). Next: 0.6.0.
+- Release burst (2026-11-06): 0.6.0 prepared. Release verify exit 0 (npm test 1168, 1167 pass, 1 skipped; torture R
+  93/93, controls 19/19; test:perf 72/72; host PRELIMINARY, 1 run); revert-checked against the 0.5.0 engine and the
+  pre-audit builds. Next: the Demo.
 
 **Gates (in addition to section 5):**
 - torture 0 B/op on `add` / `delete` / `has` / `successor` in a warmed pool. A conversion lane

@@ -135,7 +135,8 @@ below some minimum relative difference is noise) before the next member's A/B.
   top word cached in a field would leave the typed array (zero-box rule) and
   escape the D7 Proxy.
 - **(d) Bulk and / or / xor / popcount / acquire.** Rejected for 0.2.0: that is new
-  SURFACE, not a tier; it belongs to the planned hybrid tiered member.
+  SURFACE, not a tier; it belonged to the planned hybrid tiered member (folded 2026-11-07:
+  bulk ops go to RoaringSet R2; ROADMAP section 7).
 - **A timing R^2 floor / slope band as the gate.** Rejected (Amendment 1): w and
   log2(w) correlate at 0.9948 over five points.
 

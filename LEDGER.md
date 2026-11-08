@@ -13,8 +13,8 @@ never move. Commit ids are as on `main` after the maintainer's message rewrites 
 pre-rewrite id appears only in #42, as the id that moved (a57c46f, f480ab4, 5601706 are not on
 main). `.handoff/` is gitignored: its paths resolve in the maintainer's main checkout only; so
 does `audit/` (gitignored: each audit's <model>_FINDINGS.md, <model>_reproductions.mjs and
-TRIAGE.md). SPEC = `.handoff/SPEC-roaringset.md` (A-ids are its addenda, C-ids its CURRENT
-rules); PROPOSAL = `.handoff/PROPOSAL-roaringset.md`; DECISIONS =
+TRIAGE.md). SPEC = `.handoff/archive/0.6.0/SPEC-roaringset.md` (A-ids are its addenda, C-ids its CURRENT
+rules); PROPOSAL = `.handoff/archive/0.6.0/PROPOSAL-roaringset.md`; DECISIONS =
 `.handoff/research/roaring/DECISIONS.md`; HISTORY.md = `.handoff/HISTORY.md`; NEXT.md =
 `.handoff/NEXT.md`; vEB PLAN = `.handoff/archive/0.5.0/PLAN-vebtree.md` (its ids are written
 vEB PLAN A9, vEB PLAN C-19).
@@ -227,7 +227,7 @@ vEB PLAN A9, vEB PLAN C-19).
   (parked `g4-b1`). r3: no field-identity check (a replaced typed array was hidden by the
   restore), non-index keys passed the Proxy, the shape check compared names only. r4 APPROVED:
   25/25, each fix piece ablated fails exactly one test.
-- Sources: 3768dfa; `.handoff/evidence/roaring-g4-b1-review.md`; `.handoff/rejected/g4-b1.restored-*`.
+- Sources: 3768dfa; `.handoff/evidence/roaring-g4-b1-review.md`; `.handoff/archive/0.6.0/rejected/g4-b1.restored-*`.
 - Rule: an instrumenting harness checks what the measured call can change -- keys, identity,
   descriptors, prototype -- both since construction and inside the call.
 
@@ -440,9 +440,10 @@ Sources: audit/2026-11-06/TRIAGE.md; SPEC A19 (C-27 amended, C-28, C-29).
 
 ### #41 -- Park after the second REJECT; restore by sha *(standing)*
 - Parked units: `g2-b1`, `g5-b1a`, `g6-b6c` (four times), `g3-b2a`, `g4-b1`, `g7-b1`, each
-  kept under `.handoff/rejected/<unit>.restored-*`. The next burst restored them "with matching
+  kept under `.handoff/rejected/<unit>.restored-*` (archived to `.handoff/archive/0.6.0/rejected/`
+  at the 0.6.0 release). The next burst restored them "with matching
   shas" before the fix round. A fix over the 2-line third-round allowance parks the unit.
-- Sources: `.handoff/rejected/`; HISTORY.md 2026-11-04 G2 burst 2; `.handoff/evidence/roaring-g4-b1-review.md` r2.
+- Sources: `.handoff/archive/0.6.0/rejected/`; HISTORY.md 2026-11-04 G2 burst 2; `.handoff/evidence/roaring-g4-b1-review.md` r2.
 
 ### #42 -- Rewords and autostash move ids and files mid-burst *(standing)*
 - The maintainer reworded commits mid-burst (same trees): G2-B2 / B3 -> 62905d7 / ead5c90;

@@ -20,6 +20,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `node --expose-gc --test demo/Demo.test.mjs`; it is not part of `npm test` or `npm run verify`.
   `demo` prints the Node-side smoke table; `demo:serve` serves the page on 127.0.0.1.
 
+### Changed
+
+- RoaringSet's container search (`_lb16`) is a branchless lower bound; no API, answer, byteLength
+  or threshold change. Reads got faster and a write pair got slower on small and mid-size arrays.
+  Time ratio, new body / old body, on array containers (below 1 is faster):
+
+  | Lane | Ratio, min..max across 2 runs |
+  | --- | --- |
+  | `has`, hit and miss, 16..4,095 keys, mixed sizes, mixed container kinds | 0.355..0.524 |
+  | `predecessor`, hit and miss, 16..4,095 keys, mixed sizes | 0.402..0.534 |
+  | `add` + `delete` of one absent key, 16..2,048 keys | 1.089..1.224 |
+  | `add` + `delete` of one absent key, 4,095 keys | 1.035..1.050 (within the A/A band) |
+  | `add` + `delete` of one absent key, mixed sizes | 0.976..0.981 (within the A/A band) |
+
+  REPORTED, no gate: 2 planned runs under the strict quiet lock, 2026-11-09 01:55-01:58Z, 37 lanes,
+  11 rounds x 3 compilations, Apple M4 Pro, Node v26.8.2 (V8 14.6), load1 1.09..1.27 (baseline
+  2.21). Another `node` read 10.2% CPU at the start of the second run; the other 3 samples saw none
+  at or above the sampler's 10% floor.
+  A/A within 0.95..1.05 in every lane, 0 B/op. `successor` was not timed.
+
 ## [0.6.0] - 2026-11-06
 
 ### Added

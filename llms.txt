@@ -447,8 +447,8 @@ measurements" below (REPORTED, gates nothing).
 
 ## Gates and measurements (tiered)
 
-- DETERMINISTIC (npm test = 1168 tests, 1167 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail,
-  2026-11-06, Node v26.8.2, LogLogN.js baa2818d, the 0.6.0 release verify run, 1 run, PRELIMINARY host; also npm run verify = test + test:types + torture + test:perf): exact counts (words for
+- DETERMINISTIC (npm test = 1188 tests, 1187 pass, 1 skipped (the opt-in DEEP small-scope run), 0 fail,
+  the 2026-11-08 23:09-23:16Z boundary run (revert check, npm test, torture), Node v26.8.2, LogLogN.js 013f97a9, 1 run, PRELIMINARY host (not QUIET; load averages 3.03 4.54 5.07 at the start, 2.73 8.87 8.41 at the end, another node at 9.1% CPU at the start); also npm run verify = test + test:types + torture + test:perf): exact counts (words for
   StratifiedBitset and vEBTree, level-table touches for XFastTrie, touches + bucket reads + word moves for YFastTrie), seeded oracle fuzz,
   sibling oracles (lite-o1 BitSet / EliasFano, lite-logn Scapegoat + SortedArray;
   0 divergences), space pins, tier parity, bytecode-size gates, a parity pin of
@@ -499,7 +499,7 @@ measurements" below (REPORTED, gates nothing).
   box only while the call is not inlined, a JIT decision this run does not check (tf=UNCHECKED): a measured
   non-flip is INCONCLUSIVE, exit 2 NO-VERDICT; their magnitude is REPORTED), a leak census of 0. Bytecode (V8 14.6,
   pinned in test/RoaringBytecode.test.js): has 452, add 838, delete 899, successor 610,
-  predecessor 727, min 56, max 56 B (successor / predecessor / add / delete are over the
+  predecessor 727, min 56, max 56, `_lb16` 91 B (successor / predecessor / add / delete are over the
   460 B inlining limit, so a returned key >= 2^31 can box).
 - REPORTED (no CI for this package: statistical claims are REPORTED only; release-time,
   NOT in verify, 1 run each, exit 0 pass / 1 fail / 2 inconclusive): `npm run witness` (2026-10-22, Apple M4 Pro 12 cores, Node

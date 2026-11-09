@@ -6,15 +6,16 @@ the commit, sha8 or `.handoff/` evidence it rests on; nothing here comes from me
 here is re-litigated without a new mechanism that clears every gate the original decision
 cleared.*
 
-Numbering note: entries are numbered once, in section order (A #1-#16, B #17-#29, C #30-#39,
-D #40-#46); #47-#51 are the 2026-11-06 pre-release audit (end of section B). A new entry
-takes the next free number (#52 on) and is placed at the end of its section; existing numbers
-never move. Commit ids are as on `main` after the maintainer's message rewrites (see #42); a
-pre-rewrite id appears only in #42, as the id that moved (a57c46f, f480ab4, 5601706 are not on
-main). `.handoff/` is gitignored: its paths resolve in the maintainer's main checkout only; so
-does `audit/` (gitignored: each audit's <model>_FINDINGS.md, <model>_reproductions.mjs and
-TRIAGE.md). SPEC = `.handoff/archive/0.6.0/SPEC-roaringset.md` (A-ids are its addenda, C-ids its CURRENT
-rules); PROPOSAL = `.handoff/archive/0.6.0/PROPOSAL-roaringset.md`; DECISIONS =
+Numbering note: entries are numbered once, in section order (A #1-#16, B #17-#29, C #30-#39, D
+#40-#46); #47-#51 are the 2026-11-06 pre-release audit (end of section B); #52 is in section C
+(after #39). A new entry takes the next free number (#53 on) and is placed at the end of its
+section; existing numbers never move. Commit ids are as on `main` after the maintainer's
+message rewrites (see #42); a pre-rewrite id appears only in #42, as the id that moved
+(a57c46f, f480ab4, 5601706 are not on main). `.handoff/` is gitignored: its paths resolve in
+the maintainer's main checkout only; so does `audit/` (gitignored: each audit's
+<model>_FINDINGS.md, <model>_reproductions.mjs and TRIAGE.md). SPEC =
+`.handoff/archive/0.6.0/SPEC-roaringset.md` (A-ids are its addenda, C-ids its CURRENT rules);
+PROPOSAL = `.handoff/archive/0.6.0/PROPOSAL-roaringset.md`; DECISIONS =
 `.handoff/research/roaring/DECISIONS.md`; HISTORY.md = `.handoff/HISTORY.md`; NEXT.md =
 `.handoff/NEXT.md`; vEB PLAN = `.handoff/archive/0.5.0/PLAN-vebtree.md` (its ids are written
 vEB PLAN A9, vEB PLAN C-19).
@@ -423,6 +424,24 @@ Sources: audit/2026-11-06/TRIAGE.md; SPEC A19 (C-27 amended, C-28, C-29).
   (e.g. 1098 = 1097 + 1 skip, 0 fail, HEAD + U0 + G5-B4) and a closing verify.
 - Sources: ~/.claude/LESSONS.md 2026-10-12; HISTORY.md 2026-11-05 bursts 4-6;
   `.handoff/evidence/burst5/`, `burst6/`, `burst7/`.
+
+### #52 -- A 37 B callee growth at 2 sites crossed the caller's cumulative TurboFan budget *(FIXED 2026-11-09, RoaringSet search Batch A)*
+- Mechanism: with a 98 B `_lb16` (v0.6.0: 61 B), `has` dropped out of a mixed-kind caller loop:
+  has@TF charged 322 B, 452 + 322 = 774, x1.2 reserve = 929 > cumulative 920 (v0.6.0: 700,
+  x1.2 = 840). 700 + 2 x (body - 61) <= 766 (766 = floor(920 / 1.2)) gives body <= 94 B.
+- Why nothing saw it: the single-kind trace (Law 3 / #35) and torture's 4-kind `hi.has` lane.
+  Consequence measured: 16.04 vs 0.04 B/op on keys >= 2^31 in a 7-kind (`mix hi`) loop. The
+  16.04 applies to `mix hi` ONLY and read in 13 of 15 concurrent-recompilation runs and 6 of 6
+  sync runs of the 98 B control. The reviewer's boundary measurement: 94 B reads 0.0447, 95 B
+  reads 16.04 (`mix hi`, pinned flags, sync, 2 runs each; review r2's own probe, no log on disk, load not recorded).
+- Fix: sign-shift body, 91 B; gate `_lb16 <= 94` in `test/RoaringBytecode.test.js`. It is a
+  bytecode-size gate, not a JIT-decision gate (Law 14). The `mix hi` B/op itself is not gated: hibox.mjs is evidence, not a test.
+- The measurement trap: hibox.mjs read 0.0459 even with `--no-turbo-inlining` on default
+  semi-space flags (the probe was blind), so only runs with `--min-semi-space-size=4
+  --max-semi-space-size=4` count. One concurrent 0.04 read proves nothing for the 98 B control.
+- Provenance: PRELIMINARY host (load1 3.28-8.34, baseline 2.21), V8 14.6, 2026-11-08. No timing
+  claim about the branchless search is made. Sources: `.handoff/evidence/roaring-search/a-fix/`,
+  `a-fix.md`, `review-r2.md`, `.handoff/evidence/roaring-search/boundary/inl-mix.log` (the 322 / 452 + 322 / 700 numbers).
 
 ---
 

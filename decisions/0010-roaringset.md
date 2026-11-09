@@ -333,3 +333,16 @@ record and are not claimed to pass.
   StratifiedBitset on has / add / delete in every digest column and faster on min / max.
 - Consequence for users: the byte cost is a constructor argument and the default constructor
   is direct at every U; sizing `maxPages` is how a caller buys the small paged floor.
+
+## Addendum 2026-11-09 -- branchless `_lb16` (RoaringSet search program, Batch A)
+
+- `_lb16`, the container lower bound, became branchless. The ruled body is the sign-shift form
+  (91 B), not the boolean form (98 B). No API, answer, `byteLength` or threshold change.
+- Why 91 and not 98: the caller's cumulative TurboFan budget. `has` with the 98 B body dropped
+  out of a mixed-kind caller loop; the body is gated at `_lb16 <= 94` in
+  `test/RoaringBytecode.test.js` (a bytecode-size gate, not a JIT-decision gate; LEDGER #52).
+- Mutant kill sets: RoaringMutants 55 rows, 53 killed, 2 equivalents -> 62 rows, 59 killed,
+  3 equivalents, 0 unexplained (`test/RoaringMutants.test.js`; census and the new lb-m1 .. lb-m6
+  kills in `.handoff/evidence/roaring-search/a-fix.md`). The new equivalent is lb-eq1.
+- The bytecode figure above supersedes none of the G4 pins (has 452, add 838, ...); it adds `_lb16`.
+- No timing claim is made: speed numbers need the two planned QUIET A/B runs (LEDGER Law 6).

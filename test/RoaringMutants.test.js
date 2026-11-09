@@ -11,12 +11,12 @@
  * dropped, so vd-M6 / vf-m3 lose their q-lines; the 4 set-op mutants va-m1 / va-m10b / S7 / S8 came back in G3-B4
  * (SPEC C-21), re-cut to _chunkIntersectionSize's per-set rows mA0 / mB0 (C-6) and killed by checkPair inside job
  * 'fuzz'; va-m10b's two R0 edits are ONE anchor because the shipped pA / pB lines are adjacent):
- *   49 FUZZ rows    job 'fuzz' at BUDGET (S11: 'fuzz:V' at BUDGET_V): 47 must be KILLED, 2 are reasoned EQUIVALENTS (B1, S9) that
+ *   56 FUZZ rows    job 'fuzz' at BUDGET (S11: 'fuzz:V' at BUDGET_V): 53 must be KILLED, 3 are reasoned EQUIVALENTS (B1, S9, lb-eq1) that
  *                   must SURVIVE; a killed "equivalent" FAILS too (its reason is then wrong).
  *    6 CONTRACT rows the 4 NEW throw-site hoists of A-3 (va-m7, the 5th site, is a fuzz row) via job 'a3'; the
  *                   universe-default mutant (A-4) via job 'universe'; the maxSmall-default mutant via the in-file
  *                   'defaults' oracle (byteLength of a default-constructed set vs the C-3 closed form).
- *   TOTAL 55 rows: 53 killed, 2 equivalents, 0 unexplained / ABORT (SPEC C-10a).
+ *   TOTAL 62 rows: 59 killed, 3 equivalents, 0 unexplained / ABORT (SPEC C-10a).
  *
  * Controls: one UNMUTATED run per job kind (fuzz, fuzz:V, a3, universe, defaults) on the same text through the same path
  * (data: URL); each must come back clean, else the file FAILS (a harness bug would otherwise read as a kill).
@@ -49,8 +49,8 @@ const BUDGET = { seeds: 4, ops: 1500 }; // R0's best-mutants.mjs budget (4 seeds
 const BUDGET_V = { seeds: 8, ops: 4000, only: ['V'] };
 const ROW_MS = 300000;                  // per-row kill timer (a hang = killed)
 const POOL = Math.max(2, Math.min(6, availableParallelism() >> 1));
-const EXPECT_KILLED = 53;
-const EXPECT_EQUIV = 2;
+const EXPECT_KILLED = 59;
+const EXPECT_EQUIV = 3;
 
 // [id, what, from, to, job, equivalence reason (equivalents only)]
 const ROWS = [
@@ -175,7 +175,23 @@ const ROWS = [
         '            this._kind[m] = 0;\n            this._topClear(c);\n            this._pageRelease(c);\n            this._size--;',
         '            this._kind[m] = 0;\n            this._pageRelease(c);\n            this._size--;', 'fuzz'],
     ['S10', '_deleteRun 2 -> 1 keeps the deleted end', '(lo === start ? end : start)', '(lo === start ? start : end)', 'fuzz'],
-    // ---- CONTRACT rows (outside the 47): A-3 throw-site hoists, A-4 defaults ----
+    // ---- branchless _lb16 (PLAN-roaring-search A5): killed by the fuzz differential; the loop <= is reasoned equivalent ----
+    ['lb-m1', '_lb16 final read dropped (return b)',
+        '        return b + ((arr[base + b] - lo) >>> 31);\n', '        return b;\n', 'fuzz'],
+    ['lb-m2', '_lb16 final comparison <= (arr - lo - 1 is negative iff arr <= lo)',
+        '        return b + ((arr[base + b] - lo) >>> 31);\n', '        return b + ((arr[base + b] - lo - 1) >>> 31);\n', 'fuzz'],
+    ['lb-m3', '_lb16 w = h (the window loses the ceil half)',
+        '            w -= h;\n', '            w = h;\n', 'fuzz'],
+    ['lb-m4', '_lb16 h = (w + 1) >>> 1 (probe past the midpoint)',
+        '            const h = w >>> 1;\n', '            const h = (w + 1) >>> 1;\n', 'fuzz'],
+    ['lb-m5', '_lb16 while (w > 2) (one comparison short)',
+        '        let w = len;\n        while (w > 1) {\n', '        let w = len;\n        while (w > 2) {\n', 'fuzz'],
+    ['lb-m6', '_lb16 probe ignores b (arr[base + h])',
+        '            b += ((arr[base + b + h] - lo) >> 31) & h;\n', '            b += ((arr[base + h] - lo) >> 31) & h;\n', 'fuzz'],
+    ['lb-eq1', '_lb16 loop comparison <= (arr - lo - 1 is negative iff arr <= lo)',
+        '            b += ((arr[base + b + h] - lo) >> 31) & h;\n', '            b += ((arr[base + b + h] - lo - 1) >> 31) & h;\n', 'fuzz',
+        'EQUIVALENT: keys are 0..65535 and lo is 0..65536, so arr - lo - 1 is in -65537..65534 (no int32 wrap) and its sign is exactly arr <= lo. Keys are strictly sorted, so at most one probed index holds lo, and it is the lower bound itself; taking it moves b onto that index, every later probe is > b and reads a key > lo (sign clear), and the final arr - lo is 0 at b (sign clear), so the return is the same index. lo = 65536 equals no key'],
+    // ---- CONTRACT rows (outside the 53): A-3 throw-site hoists, A-4 defaults ----
     ['A3-h1', '_promoteSingle _card before the pool check',
         '    _promoteSingle(m, old, lo) {\n        const a',
         '    _promoteSingle(m, old, lo) {\n        this._card[m] = 1;\n        const a', 'a3'],
@@ -288,8 +304,8 @@ test('RoaringMutants: every anchor occurs exactly once in ../LogLogN.js (census)
         if (CENSUS) console.log('# census ' + r.id + ' ' + COUNTS[i]);
         if (COUNTS[i] !== 1) bad.push(r.id + ' count ' + COUNTS[i]);
     });
-    assert.equal(ROWS.length, 55, '49 fuzz + 6 contract rows');
-    assert.equal(ROWS.filter((r) => r.job === 'fuzz' || r.job === 'fuzz:V').length, 49);
+    assert.equal(ROWS.length, 62, '56 fuzz + 6 contract rows');
+    assert.equal(ROWS.filter((r) => r.job === 'fuzz' || r.job === 'fuzz:V').length, 56);
     assert.equal(ROWS.filter((r) => r.reason !== null).length, EXPECT_EQUIV);
     assert.equal(new Set(ROWS.map((r) => r.id)).size, ROWS.length, 'unique ids');
     assert.ok(ROWS.every((r) => r.from !== r.to), 'every row changes the text');

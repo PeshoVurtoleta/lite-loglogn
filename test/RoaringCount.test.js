@@ -14,6 +14,8 @@
  *             R/logs/u1-best.json / u1-bestp.json, or the sweep value for a hill-climb row).
  *   HAND   -- the planner's read totals (PROPOSAL 2.3 / PLAN A-1 / A-2), typed by hand; checked against
  *             LEDGER (the two sets agree) and against the engine.
+ * The two last-key has rows (small-64 c7:64515, full-4096 c7:65523; PLAN-roaring-search A4) are not cut from a draft:
+ * both sets are typed from the branchless `_lb16` formula, ceil(log2 len) + 1 search reads + the equality read.
  * Rows: has / successor / predecessor / min / max on singleton, small-64, full-4096, bmp-4097,
  * bmp-poles-4098, full-65536, runs-2048 (at the R0 worst argument); min / max on empty; the conversion rows
  * (65th add, 4,097th add, bitmap delete of `_cMax` / `_cMin`, FULL delete, singleton delete (paged: page
@@ -161,6 +163,13 @@ const LEDGER = {
     'full-65536 delete c7:0': [
         'r3 _kind:1 _slot:1 _sFree:1 | w7 _kind:1 _slot:1 _card:1 _runs:1 _cMin:1 _sData:2 | m0',
         'r4 _dir:1 _kind:1 _slot:1 _sFree:1 | w7 _kind:1 _slot:1 _card:1 _runs:1 _cMin:1 _sData:2 | m0'],
+    // typed from the formula (branchless _lb16 at the last key: 8 / 14 keys read); a branchy search reads 7 / 13 here
+    'small-64 has c7:64515': [
+        'r11 _kind:1 _slot:1 _card:1 _sData:8 | w0 | m0',
+        'r12 _dir:1 _kind:1 _slot:1 _card:1 _sData:8 | w0 | m0'],
+    'full-4096 has c7:65523': [
+        'r17 _kind:1 _slot:1 _card:1 _lU16:14 | w0 | m0',
+        'r18 _dir:1 _kind:1 _slot:1 _card:1 _lU16:14 | w0 | m0'],
     'runs-2048 has c7:0': [
         'r28 _kind:1 _slot:1 _runs:1 _lU16:25 | w0 | m0',
         'r29 _dir:1 _kind:1 _slot:1 _runs:1 _lU16:25 | w0 | m0'],
@@ -198,6 +207,8 @@ const HAND = {
     'bmp-4097 has c7:0': [3, 4],
     'full-65536 has c7:0': [1, 2],
     'runs-2048 has c7:0': [28, 29],
+    'small-64 has c7:64515': [11, 12],
+    'full-4096 has c7:65523': [17, 18],
     'small-64 successor c7:31': [13, 14],
     'full-4096 successor c7:3': [19, 20],
     'runs-2048 successor c7:0': [30, 31],
@@ -366,7 +377,7 @@ test('LEDGER holds exactly one [direct, paged] literal per ROW; no addRange / ru
         for (const s of LEDGER[id]) assert.match(s, /^r\d+( _\w+:\d+)* \| w\d+( _\w+:\d+)* \| m\d+( _\w+:\d+)*$/, id);
     }
     for (const r of ROWS) assert.ok(['has', 'add', 'delete', 'successor', 'predecessor', 'min', 'max'].includes(r.op), r.id);
-    assert.equal(ids.length, 46);
+    assert.equal(ids.length, 48);
 });
 
 test('HAND (PROPOSAL 2.3 / A-1 / A-2 read totals) == LEDGER read totals; A-2 field and move cells', () => {
@@ -379,7 +390,7 @@ test('HAND (PROPOSAL 2.3 / A-1 / A-2 read totals) == LEDGER read totals; A-2 fie
             n++;
         }
     }
-    assert.equal(n, 60, 'HAND cells checked');
+    assert.equal(n, 64, 'HAND cells checked');
     // A-2: the bmp-poles-4098 in-chunk bitmap searches read `_lU32` 2 + `_bSum` 4; singleton delete moves 0 / 768
     for (const id of ['bmp-poles-4098 successor c7:4095', 'bmp-poles-4098 predecessor c7:63486']) {
         for (const s of LEDGER[id]) assert.match(s, / _lU32:2 _bSum:4 \|/, id);

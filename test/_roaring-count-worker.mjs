@@ -361,6 +361,9 @@ ROWS.push(row('full-65536', 'delete', 7, 0, 'full-65536 / delete / conv delete f
 ROWS.push(row('singleton', 'delete', 7, 12345, 'singleton / delete', 'last key of a chunk (paged: the page is freed)'));
 ROWS.push(row('runs-2048', 'add', 7, 60204, 'runs-2048 / add / conv add run spill at 2049 runs (card > 4096)', 'run spill at 2,049 runs -> bitmap'));
 ROWS.push(row('runs-2048', 'delete', 7, 1, 'runs-2048 / delete / conv delete run split spill at 2049 runs (card > 4096)', 'run split spill at 2,049 runs -> bitmap'));
+// branchless _lb16: the last key of a 2^k array reads ceil(log2 len) + 1 keys (a branchy search reads 6 / 12 there)
+ROWS.push(row('small-64', 'has', 7, 64515, null, 'last key (63 * 1024 + 3): 7 search reads + the equality read, R0 had no row at this argument', true));
+ROWS.push(row('full-4096', 'has', 7, 65523, null, 'last key (4095 * 16 + 3): 13 search reads + the equality read, R0 had no row at this argument', true));
 
 // --- model (sorted Float64Array; independent of every RoaringSet internal) -----------------------------------
 

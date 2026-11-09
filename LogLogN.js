@@ -2419,14 +2419,14 @@ export class RoaringSet {
     }
 
     _lb16(arr, base, len, lo) {
-        let l = 0;
-        let h = len;
-        while (l < h) {
-            const m = (l + h) >>> 1;
-            if (arr[base + m] < lo) l = m + 1;
-            else h = m;
+        let b = 0;
+        let w = len;
+        while (w > 1) {
+            const h = w >>> 1;
+            b += ((arr[base + b + h] - lo) >> 31) & h;
+            w -= h;
         }
-        return l;
+        return b + ((arr[base + b] - lo) >>> 31);
     }
 
     _lbRun(u16, base, nRuns, lo) {
